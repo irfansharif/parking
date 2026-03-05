@@ -1,0 +1,13 @@
+{
+  "name": "parking-lot-gen",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:update": "UPDATE_GOLDEN=1 playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "typescript": "^5.4.0"
+  }
+}

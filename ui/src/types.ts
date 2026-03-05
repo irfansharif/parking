@@ -1,0 +1,76 @@
+export interface Vec2 {
+  x: number;
+  y: number;
+}
+
+export interface StallQuad {
+  corners: [Vec2, Vec2, Vec2, Vec2];
+  kind: "Standard" | "Ada" | "Compact" | "Ev";
+}
+
+export interface Island {
+  polygon: Vec2[];
+  kind: "MaxRun" | "EndCap" | "Corner" | "AislePadding";
+}
+
+export interface Metrics {
+  total_stalls: number;
+  ada_stalls: number;
+}
+
+export interface SpineLine {
+  start: Vec2;
+  end: Vec2;
+  normal: Vec2;
+}
+
+export interface Face {
+  contour: Vec2[];
+  holes?: Vec2[][];
+}
+
+export interface ParkingLayout {
+  aisle_polygons: Vec2[][];
+  stalls: StallQuad[];
+  islands: Island[];
+  metrics: Metrics;
+  resolved_graph: DriveAisleGraph;
+  spines: SpineLine[];
+  faces: Face[];
+}
+
+export interface AisleEdge {
+  start: number;
+  end: number;
+  width: number;
+}
+
+export interface DriveAisleGraph {
+  vertices: Vec2[];
+  edges: AisleEdge[];
+  perim_vertex_count?: number;
+}
+
+export interface Polygon {
+  outer: Vec2[];
+  holes: Vec2[][];
+}
+
+export interface ParkingParams {
+  stall_width: number;
+  stall_depth: number;
+  aisle_width: number;
+  stall_angle_deg: number;
+  aisle_angle_deg: number;
+  aisle_offset: number;
+  max_run: number;
+  island_width: number;
+  ada_count: number;
+  site_offset: number;
+}
+
+export interface GenerateInput {
+  boundary: Polygon;
+  aisle_graph: DriveAisleGraph | null;
+  params: ParkingParams;
+}
