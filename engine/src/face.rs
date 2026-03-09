@@ -65,7 +65,7 @@ fn extract_faces(
 }
 
 // ---------------------------------------------------------------------------
-// Per-edge spine generation (replaces skeleton polygon approach)
+// Straight skeleton spine generation
 // ---------------------------------------------------------------------------
 
 /// Test if point `p` is inside `polygon` using the winding-number rule.
@@ -218,6 +218,17 @@ fn classify_face_edges(contour: &[Vec2], boundary: &Polygon, tolerance: f64) -> 
 /// The segment from one miter vertex to the next, clipped to the face
 /// interior, is the spine for that edge. Boundary/hole edges stay put
 /// (distance = 0) and don't produce spines.
+/// Compute spines for a face using a straight-skeleton-style weighted inset.
+///
+/// Each aisle-facing edge is offset inward by `effective_depth`; boundary
+/// edges stay put (distance 0). The inset polygon is computed with proper
+/// edge-collapse handling: when an edge shrinks to zero, only that edge is
+/// removed (not both neighbors), preserving adjacent spines. The surviving
+/// edges that map to aisle-facing original edges become spines.
+///
+/// This partitions the face interior among its edges — two opposing aisle
+/// edges each get half the face width, and edges at different angles get
+/// non-overlapping regions bounded by the skeleton ridges (miter points).
 fn compute_face_spines(
     shape: &[Vec<Vec2>],
     effective_depth: f64,
@@ -236,38 +247,171 @@ fn compute_face_spines(
             continue;
         }
 
-        let aisle_facing = classify_face_edges(contour, boundary, 0.5);
-
+        let aisle_facing = classify_face_edges(contour, boundary, 2.0);
         let ed = effective_depth - 0.05;
+        let min_edge_len = effective_depth * 2.0;
+
+        // Per-edge inset distances: ed for substantial aisle-facing edges,
+        // 0 for boundary edges and short boolean-artifact edges.
         let distances: Vec<f64> = (0..n)
-            .map(|i| if aisle_facing[i] { ed } else { 0.0 })
+            .map(|i| {
+                let j = (i + 1) % n;
+                let edge_len = (contour[j] - contour[i]).length();
+                if aisle_facing[i] && edge_len >= min_edge_len {
+                    ed
+                } else {
+                    0.0
+                }
+            })
             .collect();
 
-        // Compute miter vertices with edge-collapse handling.
-        let (miter, live, normals) =
-            crate::inset::inset_per_edge_core(contour, &distances, Some(outer_sign));
-        if live.is_empty() {
+        let spines = skeleton_inset_spines(contour, &distances, &aisle_facing, outer_sign, shape);
+        all_spines.extend(spines);
+    }
+
+    all_spines
+}
+
+/// Straight-skeleton weighted inset to produce spine segments.
+///
+/// Offsets each edge by its distance, iteratively removing collapsed edges
+/// until the inset polygon is stable. Each surviving aisle-facing edge
+/// produces a spine clipped to the face interior.
+fn skeleton_inset_spines(
+    polygon: &[Vec2],
+    distances: &[f64],
+    aisle_facing: &[bool],
+    sign: f64,
+    face_shape: &[Vec<Vec2>],
+) -> Vec<SpineSegment> {
+    let n = polygon.len();
+    if n < 3 {
+        return vec![];
+    }
+
+    // Precompute edge directions and inward normals.
+    let mut edge_dirs: Vec<Vec2> = Vec::with_capacity(n);
+    let mut normals: Vec<Vec2> = Vec::with_capacity(n);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let e = polygon[j] - polygon[i];
+        edge_dirs.push(e);
+        let len = e.length();
+        if len < 1e-12 {
+            normals.push(Vec2::new(0.0, 0.0));
+        } else {
+            normals.push(Vec2::new(-e.y * sign / len, e.x * sign / len));
+        }
+    }
+
+    let mut alive = vec![true; n];
+
+    // Compute miter vertices for the alive set.
+    let compute_miter = |alive: &[bool]| -> Vec<Vec2> {
+        let live: Vec<usize> = (0..n).filter(|i| alive[*i]).collect();
+        let mut result = vec![Vec2::new(0.0, 0.0); n];
+        for idx in 0..live.len() {
+            let i = live[idx];
+            let prev = live[if idx == 0 { live.len() - 1 } else { idx - 1 }];
+
+            let a = polygon[prev] + normals[prev] * distances[prev];
+            let da = edge_dirs[prev];
+            let b = polygon[i] + normals[i] * distances[i];
+            let db = edge_dirs[i];
+            let denom = da.cross(db);
+
+            if denom.abs() < 1e-12 {
+                // Parallel edges: place miter at the midpoint of the two
+                // offset lines (degenerate skeleton ridge).
+                result[i] = (a + b) * 0.5;
+            } else {
+                let t = (b - a).cross(db) / denom;
+                result[i] = a + da * t;
+            }
+        }
+        result
+    };
+
+    let mut miter = compute_miter(&alive);
+
+    // Iteratively process edge-collapse events. When an inset edge flips
+    // direction, remove only that edge (the vertex at its start), NOT both
+    // endpoints. This is the key difference from the old approach — it
+    // preserves neighboring edges through the collapse.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let live: Vec<usize> = (0..n).filter(|i| alive[*i]).collect();
+        if live.len() < 3 {
+            return vec![];
+        }
+
+        for idx in 0..live.len() {
+            let i = live[idx];
+            let j = live[(idx + 1) % live.len()];
+            let new_dir = miter[j] - miter[i];
+            let orig_dir = edge_dirs[i];
+
+            if new_dir.dot(orig_dir) <= 0.0 {
+                // Edge from i→j has collapsed. Remove vertex i (and its
+                // edge). The previous edge and edge j become adjacent.
+                alive[i] = false;
+                changed = true;
+                break;
+            }
+        }
+
+        if changed {
+            let live: Vec<usize> = (0..n).filter(|i| alive[*i]).collect();
+            if live.len() < 3 {
+                return vec![];
+            }
+            miter = compute_miter(&alive);
+        }
+    }
+
+    // Extract spines from surviving aisle-facing edges, clipped to face.
+    let live: Vec<usize> = (0..n).filter(|i| alive[*i]).collect();
+    let mut spines = Vec::new();
+
+    for idx in 0..live.len() {
+        let i = live[idx];
+        if distances[i] == 0.0 || !aisle_facing[i] {
             continue;
         }
 
-        // For each surviving aisle-facing edge, clip its miter-to-miter
-        // segment to the face interior.
-        for idx in 0..live.len() {
-            let i = live[idx];
-            if !aisle_facing[i] {
-                continue;
-            }
-            let j = live[(idx + 1) % live.len()];
-            let spine_start = miter[i];
-            let spine_end = miter[j];
-            let outward = Vec2::new(-normals[i].x, -normals[i].y);
+        let j = live[(idx + 1) % live.len()];
+        let spine_start = miter[i];
+        let spine_end = miter[j];
+        let outward = Vec2::new(-normals[i].x, -normals[i].y);
 
-            for (t0, t1) in clip_segment_to_face(spine_start, spine_end, shape) {
+        // Clip both the spine and the "stall reach" line (spine offset by
+        // stall_depth in the outward direction) to the face interior. Stalls
+        // extend perpendicular from the spine by stall_depth, so the offset
+        // line must also be inside the face to avoid protrusion.
+        let spine_clips = clip_segment_to_face(spine_start, spine_end, face_shape);
+        // Use a slightly reduced offset (0.5ft margin) so the offset line
+        // stays clearly inside the face rather than landing exactly on the
+        // boundary edge, which would fail the winding-number containment
+        // check due to floating-point.
+        let reach = (distances[i] - 0.5).max(0.0);
+        let offset_start = spine_start + outward * reach;
+        let offset_end = spine_end + outward * reach;
+        let offset_clips = clip_segment_to_face(offset_start, offset_end, face_shape);
+
+        // Intersect the two sets of t-parameter intervals.
+        for (st0, st1) in &spine_clips {
+            for (ot0, ot1) in &offset_clips {
+                let t0 = st0.max(*ot0);
+                let t1 = st1.min(*ot1);
+                if t1 - t0 < 1e-9 {
+                    continue;
+                }
                 let d = spine_end - spine_start;
                 let s = spine_start + d * t0;
                 let e = spine_start + d * t1;
                 if (e - s).length() > 1.0 {
-                    all_spines.push(SpineSegment {
+                    spines.push(SpineSegment {
                         start: s,
                         end: e,
                         outward_normal: outward,
@@ -277,7 +421,7 @@ fn compute_face_spines(
         }
     }
 
-    all_spines
+    spines
 }
 
 // ---------------------------------------------------------------------------
@@ -376,8 +520,12 @@ fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
             }
 
             // Fill wedge: vertex center → left corner of edge 1 → miter
-            // point → right corner of edge 2.
-            fills.push(vec![v, p1, miter, p2]);
+            // point → right corner of edge 2. Skip degenerate slivers.
+            let wedge = vec![v, p1, miter, p2];
+            if signed_area(&wedge).abs() < 1.0 {
+                continue;
+            }
+            fills.push(wedge);
         }
     }
 
@@ -808,6 +956,356 @@ mod tests {
         eprintln!(
             "\nMerged polygon has {} verts (expected 6 for mitered, got 8 from union)",
             merged[0].len()
+        );
+    }
+
+    /// Trapezoidal face: horizontal bottom (aisle), diagonal top (aisle),
+    /// vertical sides (boundary).
+    ///
+    /// Face shape (CCW):
+    ///
+    ///   v3 -------- v2        diagonal top edge (aisle-facing)
+    ///   |            \
+    ///   |             \
+    ///   v0 ----------- v1     horizontal bottom edge (aisle-facing)
+    ///
+    /// The skeleton should partition the face so that each aisle edge's
+    /// stalls stay in their own region. The right side of the face is
+    /// narrower than the left, so the bottom spine should be clipped
+    /// where it meets the diagonal's territory.
+    #[test]
+    fn test_trapezoid_face_spines() {
+        let face_contour = vec![
+            Vec2::new(0.0, 0.0),     // v0: bottom-left
+            Vec2::new(200.0, 0.0),   // v1: bottom-right
+            Vec2::new(200.0, 20.0),  // v2: top-right (lower)
+            Vec2::new(0.0, 60.0),    // v3: top-left (higher)
+        ];
+        let shape = vec![face_contour.clone()];
+
+        // Boundary includes the left (v3→v0) and right (v1→v2) edges.
+        let boundary = Polygon {
+            outer: vec![
+                Vec2::new(0.0, -50.0),
+                Vec2::new(200.0, -50.0),
+                Vec2::new(200.0, 100.0),
+                Vec2::new(0.0, 100.0),
+            ],
+            holes: vec![],
+        };
+
+        let params = ParkingParams::default(); // 90° stalls, 18ft depth
+        let stall_angle_rad = params.stall_angle_deg.to_radians();
+        let effective_depth = params.stall_depth * stall_angle_rad.sin();
+
+        let spines = compute_face_spines(&shape, effective_depth, &boundary);
+
+        eprintln!("\n=== Trapezoid face spine test ===");
+        eprintln!("effective_depth = {:.1}", effective_depth);
+        eprintln!("spines generated: {}", spines.len());
+        for (i, s) in spines.iter().enumerate() {
+            let len = (s.end - s.start).length();
+            eprintln!(
+                "  spine {}: ({:.1},{:.1})→({:.1},{:.1}) len={:.1} normal=({:.2},{:.2})",
+                i, s.start.x, s.start.y, s.end.x, s.end.y, len,
+                s.outward_normal.x, s.outward_normal.y
+            );
+        }
+
+        assert!(
+            !spines.is_empty(),
+            "trapezoid face should produce at least one spine"
+        );
+
+        // The two spines should meet at a skeleton node — no overlap.
+        // Both spines should exist (face is wide enough on the left for
+        // two rows: 60 > 2×18 = 36).
+        assert_eq!(
+            spines.len(),
+            2,
+            "should have 2 spines (bottom horizontal + top diagonal)"
+        );
+
+        // Place stalls and verify ALL stall corners are inside the face.
+        let stalls = place_stalls_on_spines(&spines, &params);
+        eprintln!("stalls placed: {}", stalls.len());
+        assert!(stalls.len() > 0, "should place some stalls");
+
+        let mut outside_count = 0;
+        for (si, stall) in stalls.iter().enumerate() {
+            for (ci, corner) in stall.corners.iter().enumerate() {
+                if !point_in_face(*corner, &shape) {
+                    let min_dist = face_contour
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| {
+                            let j = (i + 1) % face_contour.len();
+                            point_to_segment_dist(*corner, face_contour[i], face_contour[j])
+                        })
+                        .fold(f64::INFINITY, f64::min);
+                    if min_dist > 1.0 {
+                        eprintln!(
+                            "  OUTSIDE: stall {} corner {} at ({:.1},{:.1}), dist_to_edge={:.1}",
+                            si, ci, corner.x, corner.y, min_dist
+                        );
+                        outside_count += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            outside_count, 0,
+            "all stall corners must be inside the face (or within 1ft tolerance)"
+        );
+    }
+
+    /// Pentagon face: two parallel aisle edges, flat base, pointed cap.
+    /// This is the original flickering case — the skeleton should always
+    /// produce spines for both long parallel edges.
+    ///
+    ///   v0 ——————————— v1
+    ///   |                \
+    ///   |                 v2    ← cap
+    ///   |                /
+    ///   v4 ——————————— v3
+    #[test]
+    fn test_pentagon_face_spines() {
+        let face_contour = vec![
+            Vec2::new(0.0, 60.0),    // v0: top-left
+            Vec2::new(180.0, 60.0),  // v1: top-right
+            Vec2::new(200.0, 30.0),  // v2: cap point
+            Vec2::new(180.0, 0.0),   // v3: bottom-right
+            Vec2::new(0.0, 0.0),     // v4: bottom-left
+        ];
+        let shape = vec![face_contour.clone()];
+
+        // Boundary includes the left edge (v4→v0) and cap edges
+        // (v1→v2, v2→v3). Top and bottom are aisle-facing.
+        let boundary = Polygon {
+            outer: vec![
+                Vec2::new(-10.0, -10.0),
+                Vec2::new(210.0, -10.0),
+                Vec2::new(210.0, 70.0),
+                Vec2::new(-10.0, 70.0),
+            ],
+            holes: vec![],
+        };
+
+        let params = ParkingParams::default();
+        let stall_angle_rad = params.stall_angle_deg.to_radians();
+        let effective_depth = params.stall_depth * stall_angle_rad.sin();
+
+        let spines = compute_face_spines(&shape, effective_depth, &boundary);
+
+        eprintln!("\n=== Pentagon face spine test ===");
+        eprintln!("effective_depth = {:.1}", effective_depth);
+        eprintln!("spines generated: {}", spines.len());
+        for (i, s) in spines.iter().enumerate() {
+            let len = (s.end - s.start).length();
+            eprintln!(
+                "  spine {}: ({:.1},{:.1})→({:.1},{:.1}) len={:.1} normal=({:.2},{:.2})",
+                i, s.start.x, s.start.y, s.end.x, s.end.y, len,
+                s.outward_normal.x, s.outward_normal.y
+            );
+        }
+
+        // Must always produce spines (no flickering to zero).
+        assert!(
+            !spines.is_empty(),
+            "pentagon face must always produce spines"
+        );
+
+        // Should have at least one spine for each parallel aisle edge
+        // (top and bottom), meeting at a skeleton node near the cap.
+        let top_spines: Vec<&SpineSegment> =
+            spines.iter().filter(|s| s.outward_normal.y > 0.5).collect();
+        let bottom_spines: Vec<&SpineSegment> =
+            spines.iter().filter(|s| s.outward_normal.y < -0.5).collect();
+
+        eprintln!(
+            "top spines: {}, bottom spines: {}",
+            top_spines.len(),
+            bottom_spines.len()
+        );
+
+        // The face is 60ft tall and stalls are 18ft deep. Two rows of 18
+        // = 36ft < 60ft, so both spines should exist.
+        assert!(
+            !top_spines.is_empty(),
+            "should have a top spine (aisle along v0→v1)"
+        );
+        assert!(
+            !bottom_spines.is_empty(),
+            "should have a bottom spine (aisle along v3→v4)"
+        );
+
+        // Place stalls and verify containment.
+        let stalls = place_stalls_on_spines(&spines, &params);
+        eprintln!("stalls placed: {}", stalls.len());
+        assert!(stalls.len() > 0, "should place some stalls");
+
+        let mut outside_count = 0;
+        for (si, stall) in stalls.iter().enumerate() {
+            for (ci, corner) in stall.corners.iter().enumerate() {
+                if !point_in_face(*corner, &shape) {
+                    let min_dist = face_contour
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| {
+                            let j = (i + 1) % face_contour.len();
+                            point_to_segment_dist(*corner, face_contour[i], face_contour[j])
+                        })
+                        .fold(f64::INFINITY, f64::min);
+                    if min_dist > 1.0 {
+                        eprintln!(
+                            "  OUTSIDE: stall {} corner {} at ({:.1},{:.1}), dist_to_edge={:.1}",
+                            si, ci, corner.x, corner.y, min_dist
+                        );
+                        outside_count += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            outside_count, 0,
+            "all stall corners must be inside the face (or within 1ft tolerance)"
+        );
+    }
+
+    /// Narrow face: two parallel aisle edges only 30ft apart (< 2×18=36ft).
+    /// The skeleton collapses — both offset lines cross at 15ft, so no
+    /// valid inset polygon survives. No stalls are placed (face too narrow
+    /// for two opposing rows).
+    #[test]
+    fn test_narrow_face_no_stalls() {
+        let face_contour = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(200.0, 0.0),
+            Vec2::new(200.0, 30.0),
+            Vec2::new(0.0, 30.0),
+        ];
+        let shape = vec![face_contour.clone()];
+
+        let boundary = Polygon {
+            outer: vec![
+                Vec2::new(0.0, -50.0),
+                Vec2::new(200.0, -50.0),
+                Vec2::new(200.0, 80.0),
+                Vec2::new(0.0, 80.0),
+            ],
+            holes: vec![],
+        };
+
+        let params = ParkingParams::default();
+        let effective_depth = params.stall_depth
+            * params.stall_angle_deg.to_radians().sin();
+
+        let spines = compute_face_spines(&shape, effective_depth, &boundary);
+        let stalls = place_stalls_on_spines(&spines, &params);
+
+        eprintln!("\n=== Narrow face test (30ft between aisles) ===");
+        eprintln!("spines: {}, stalls: {}", spines.len(), stalls.len());
+
+        assert_eq!(spines.len(), 0, "skeleton should collapse for narrow face");
+        assert_eq!(stalls.len(), 0, "no stalls in a face too narrow for two rows");
+    }
+
+    /// Face between left/right aisle corridors with a diagonal boundary
+    /// at the top. The vertical spines run between the corridors, with
+    /// stalls going left and right. Near the diagonal top, the face
+    /// narrows — stalls there must not extend outside the face.
+    ///
+    ///     v3 --------- v2      ← diagonal boundary (top)
+    ///    /               |
+    ///   /                |
+    ///  v0 ------------- v1     ← horizontal boundary (bottom)
+    ///
+    /// Left edge (v0→v3): aisle-facing (corridor on the left)
+    /// Right edge (v1→v2): aisle-facing (corridor on the right)
+    /// Bottom (v0→v1) and top diagonal (v2→v3): boundary
+    ///
+    /// The face is 80ft wide × 100ft (left) / 120ft (right) tall.
+    /// The left spine (x=18) and right spine (x=62) each produce stalls.
+    /// Near the top where the diagonal cuts across, the last stalls
+    /// must not poke outside the face.
+    #[test]
+    fn test_vertical_spines_diagonal_top() {
+        let face_contour = vec![
+            Vec2::new(0.0, 0.0),      // v0: bottom-left
+            Vec2::new(80.0, 0.0),     // v1: bottom-right
+            Vec2::new(80.0, 120.0),   // v2: top-right
+            Vec2::new(0.0, 100.0),    // v3: top-left
+        ];
+        let shape = vec![face_contour.clone()];
+
+        // Boundary: the site perimeter includes the bottom edge and
+        // diagonal top, but extends far left/right (the left and right
+        // face edges are interior corridor edges, not on the boundary).
+        let boundary = Polygon {
+            outer: vec![
+                Vec2::new(-100.0, 0.0),    // far left, same y as v0
+                Vec2::new(200.0, 0.0),     // far right, same y as v1
+                Vec2::new(200.0, 120.0),   // far right, same y as v2
+                Vec2::new(80.0, 120.0),    // matches v2
+                Vec2::new(0.0, 100.0),     // matches v3
+                Vec2::new(-100.0, 100.0),  // far left
+            ],
+            holes: vec![],
+        };
+
+        let params = ParkingParams::default();
+        let effective_depth =
+            params.stall_depth * params.stall_angle_deg.to_radians().sin();
+
+        let spines = compute_face_spines(&shape, effective_depth, &boundary);
+
+        eprintln!("\n=== Vertical spines + diagonal top test ===");
+        eprintln!("effective_depth = {:.1}", effective_depth);
+        eprintln!("spines generated: {}", spines.len());
+        for (i, s) in spines.iter().enumerate() {
+            let len = (s.end - s.start).length();
+            eprintln!(
+                "  spine {}: ({:.1},{:.1})→({:.1},{:.1}) len={:.1} normal=({:.2},{:.2})",
+                i, s.start.x, s.start.y, s.end.x, s.end.y, len,
+                s.outward_normal.x, s.outward_normal.y
+            );
+        }
+
+        assert!(
+            !spines.is_empty(),
+            "should produce vertical spines from left/right aisle edges"
+        );
+
+        // Place stalls and verify ALL corners are inside the face.
+        let stalls = place_stalls_on_spines(&spines, &params);
+        eprintln!("stalls placed: {}", stalls.len());
+        assert!(stalls.len() > 0, "should place some stalls");
+
+        let mut outside_count = 0;
+        for (si, stall) in stalls.iter().enumerate() {
+            for (ci, corner) in stall.corners.iter().enumerate() {
+                if !point_in_face(*corner, &shape) {
+                    let min_dist = face_contour
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| {
+                            let j = (i + 1) % face_contour.len();
+                            point_to_segment_dist(*corner, face_contour[i], face_contour[j])
+                        })
+                        .fold(f64::INFINITY, f64::min);
+                    if min_dist > 1.0 {
+                        eprintln!(
+                            "  OUTSIDE: stall {} corner {} at ({:.1},{:.1}), dist={:.1}",
+                            si, ci, corner.x, corner.y, min_dist
+                        );
+                        outside_count += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            outside_count, 0,
+            "stalls near the diagonal top must not extend outside the face"
         );
     }
 }
