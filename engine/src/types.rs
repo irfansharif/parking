@@ -20,6 +20,10 @@ impl Vec2 {
         self.x * rhs.x + self.y * rhs.y
     }
 
+    pub fn cross(self, rhs: Self) -> f64 {
+        self.x * rhs.y - self.y * rhs.x
+    }
+
     pub fn length(self) -> f64 {
         self.dot(self).sqrt()
     }
@@ -32,22 +36,6 @@ impl Vec2 {
         Self {
             x: self.x / len,
             y: self.y / len,
-        }
-    }
-
-    pub fn scale(self, s: f64) -> Self {
-        Self {
-            x: self.x * s,
-            y: self.y * s,
-        }
-    }
-
-    pub fn rotate(self, angle: f64) -> Self {
-        let c = angle.cos();
-        let s = angle.sin();
-        Self {
-            x: self.x * c - self.y * s,
-            y: self.x * s + self.y * c,
         }
     }
 }

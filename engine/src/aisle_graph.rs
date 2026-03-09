@@ -1,4 +1,5 @@
 use crate::clip::polygons_overlap;
+use crate::face::corridor_polygon;
 use crate::inset::{inset_polygon, signed_area};
 use crate::types::*;
 
@@ -66,11 +67,11 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
     // Project perimeter vertices onto perpendicular direction.
     let min_proj = outer_loop
         .iter()
-        .map(|v| dot(*v, perp_dir))
+        .map(|v| v.dot(perp_dir))
         .fold(f64::INFINITY, f64::min);
     let max_proj = outer_loop
         .iter()
-        .map(|v| dot(*v, perp_dir))
+        .map(|v| v.dot(perp_dir))
         .fold(f64::NEG_INFINITY, f64::max);
 
     // Collect splits on the outer perimeter edges.
@@ -316,28 +317,6 @@ fn ensure_ccw(mut poly: Vec<Vec2>) -> Vec<Vec2> {
     poly
 }
 
-fn dot(a: Vec2, b: Vec2) -> f64 {
-    a.x * b.x + a.y * b.y
-}
-
-fn cross(a: Vec2, b: Vec2) -> f64 {
-    a.x * b.y - a.y * b.x
-}
-
-/// Build the corridor quad for an aisle edge.
-fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2> {
-    let start = vertices[edge.start];
-    let end = vertices[edge.end];
-    let dir = (end - start).normalize();
-    let normal = Vec2::new(-dir.y, dir.x);
-    let w = edge.width;
-    vec![
-        start + normal * w,
-        end + normal * w,
-        end - normal * w,
-        start - normal * w,
-    ]
-}
 
 /// Find an existing vertex within tolerance, or add a new one.
 fn find_or_add_vertex(vertices: &mut Vec<Vec2>, point: Vec2, tolerance: f64) -> usize {
@@ -370,13 +349,13 @@ fn intersect_line_polygon(origin: Vec2, dir: Vec2, polygon: &[Vec2]) -> Vec<Hit>
         let j = (i + 1) % n;
         let p = polygon[i];
         let e = polygon[j] - polygon[i];
-        let denom = cross(dir, e);
+        let denom = dir.cross(e);
         if denom.abs() < 1e-12 {
             continue;
         }
         let h = p - origin;
-        let t = cross(h, e) / denom;
-        let s = -cross(dir, h) / denom;
+        let t = h.cross(e) / denom;
+        let s = -dir.cross(h) / denom;
         if s >= 0.0 && s < 1.0 {
             hits.push(Hit {
                 t_line: t,

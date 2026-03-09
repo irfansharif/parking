@@ -10,7 +10,7 @@ use i_overlay::float::single::SingleFloatOverlay;
 // ---------------------------------------------------------------------------
 
 /// Build corridor rectangle for a single aisle edge.
-fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2> {
+pub(crate) fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2> {
     let start = vertices[edge.start];
     let end = vertices[edge.end];
     let dir = (end - start).normalize();
@@ -62,54 +62,6 @@ fn extract_faces(
                 .collect()
         })
         .collect()
-}
-
-/// Perpendicular distance from point `p` to the infinite line through `a` and `b`.
-fn point_dist_to_line(p: Vec2, a: Vec2, b: Vec2) -> f64 {
-    let ab = b - a;
-    let len = ab.length();
-    if len < 1e-12 {
-        return (p - a).length();
-    }
-    let cross = (p.x - a.x) * ab.y - (p.y - a.y) * ab.x;
-    cross.abs() / len
-}
-
-/// Classify each edge of a face contour as aisle-facing or not.
-/// An edge is aisle-facing if both endpoints are within `tolerance` of some
-/// corridor edge AND their directions are nearly parallel (|dot| > 0.99).
-fn classify_face_edges(
-    contour: &[Vec2],
-    corridor_edges: &[(Vec2, Vec2)],
-    tolerance: f64,
-) -> Vec<bool> {
-    let n = contour.len();
-    let mut aisle_facing = vec![false; n];
-
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let fa = contour[i];
-        let fb = contour[j];
-        let face_dir = (fb - fa).normalize();
-
-        for &(ca, cb) in corridor_edges {
-            let corr_dir = (cb - ca).normalize();
-            // Check directions are parallel.
-            let dot = face_dir.dot(corr_dir).abs();
-            if dot < 0.99 {
-                continue;
-            }
-            // Check both face edge endpoints are close to the corridor line.
-            let d_a = point_dist_to_line(fa, ca, cb);
-            let d_b = point_dist_to_line(fb, ca, cb);
-            if d_a < tolerance && d_b < tolerance {
-                aisle_facing[i] = true;
-                break;
-            }
-        }
-    }
-
-    aisle_facing
 }
 
 // ---------------------------------------------------------------------------
@@ -210,18 +162,65 @@ fn clip_segment_to_face(a: Vec2, b: Vec2, shape: &[Vec<Vec2>]) -> Vec<(f64, f64)
     segments
 }
 
+/// Shortest distance from point `p` to line segment `a→b`.
+fn point_to_segment_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
+    let ab = b - a;
+    let len_sq = ab.dot(ab);
+    if len_sq < 1e-12 {
+        return (p - a).length();
+    }
+    let t = (p - a).dot(ab) / len_sq;
+    let proj = a + ab * t.clamp(0.0, 1.0);
+    (p - proj).length()
+}
+
+/// Classify each edge of `contour` as aisle-facing (true) or not.
+/// An edge is aisle-facing if its midpoint is NOT close to the site
+/// boundary or any hole boundary — meaning it was carved by a corridor.
+fn classify_face_edges(contour: &[Vec2], boundary: &Polygon, tolerance: f64) -> Vec<bool> {
+    let n = contour.len();
+    let mut aisle_facing = vec![true; n];
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let mid = (contour[i] + contour[j]) * 0.5;
+
+        for bi in 0..boundary.outer.len() {
+            let bj = (bi + 1) % boundary.outer.len();
+            if point_to_segment_dist(mid, boundary.outer[bi], boundary.outer[bj]) < tolerance {
+                aisle_facing[i] = false;
+                break;
+            }
+        }
+        if !aisle_facing[i] {
+            continue;
+        }
+
+        for hole in &boundary.holes {
+            for hi in 0..hole.len() {
+                let hj = (hi + 1) % hole.len();
+                if point_to_segment_dist(mid, hole[hi], hole[hj]) < tolerance {
+                    aisle_facing[i] = false;
+                    break;
+                }
+            }
+            if !aisle_facing[i] {
+                break;
+            }
+        }
+    }
+    aisle_facing
+}
+
 /// Generate spine segments for a face shape (outer contour + holes)
 /// using a polygon-inset approach.
 ///
-/// For each contour, aisle-facing edges are inset by `effective_depth`
-/// while non-aisle-facing edges stay at 0.  Miter intersections at
-/// vertices naturally handle corners, acute angles, and degenerate
-/// (too-narrow) faces.  The resulting inset edges corresponding to
-/// aisle-facing originals are the spine segments.
+/// Only aisle-facing edges (those adjacent to corridors) are inset by
+/// `effective_depth`. Boundary/hole edges stay put and don't produce
+/// spines.
 fn compute_face_spines(
     shape: &[Vec<Vec2>],
-    corridor_edges: &[(Vec2, Vec2)],
     effective_depth: f64,
+    boundary: &Polygon,
 ) -> Vec<SpineSegment> {
     if shape.is_empty() || shape[0].len() < 3 {
         return vec![];
@@ -239,11 +238,10 @@ fn compute_face_spines(
             continue;
         }
 
-        let aisle_facing = classify_face_edges(contour, corridor_edges, 0.5);
+        let aisle_facing = classify_face_edges(contour, boundary, 0.5);
 
-        // Per-edge inset distances.  The small epsilon keeps spines
-        // slightly inside the face boundary, avoiding ambiguous
-        // point-in-polygon results for points exactly on an edge.
+        // Per-edge inset: aisle-facing edges move inward by
+        // effective_depth, boundary/hole edges stay put.
         let ed = effective_depth - 0.05;
         let distances: Vec<f64> = (0..n)
             .map(|i| if aisle_facing[i] { ed } else { 0.0 })
@@ -256,20 +254,17 @@ fn compute_face_spines(
             continue;
         }
 
-        // Extract spine segments from surviving aisle-facing edges.
         for idx in 0..live.len() {
             let i = live[idx];
             let j = live[(idx + 1) % live.len()];
+
+            // Only aisle-facing edges produce spines.
             if !aisle_facing[i] {
                 continue;
             }
 
             let spine_start = inset_verts[i];
             let spine_end = inset_verts[j];
-
-            if (spine_end - spine_start).length() < 1.0 {
-                continue;
-            }
 
             // Outward normal: toward the corridor (opposite of inward).
             let outward = Vec2::new(-normals[i].x, -normals[i].y);
@@ -293,66 +288,12 @@ fn compute_face_spines(
 }
 
 // ---------------------------------------------------------------------------
-// End-cap islands at acute spine corners
-// ---------------------------------------------------------------------------
-
-fn generate_endcap_islands(segments: &[SpineSegment]) -> Vec<Island> {
-    let mut islands = Vec::new();
-
-    if segments.len() < 2 {
-        return islands;
-    }
-
-    for i in 0..segments.len() {
-        for j in (i + 1)..segments.len() {
-            let s1 = &segments[i];
-            let s2 = &segments[j];
-
-            // Check if any endpoints are close.
-            let pairs = [
-                (s1.end, s2.start),
-                (s1.start, s2.end),
-                (s1.end, s2.end),
-                (s1.start, s2.start),
-            ];
-
-            for (p1, p2) in &pairs {
-                let gap = (*p1 - *p2).length();
-                if gap > 2.0 {
-                    continue;
-                }
-
-                let d1 = (s1.end - s1.start).normalize();
-                let d2 = (s2.end - s2.start).normalize();
-                let angle = d1.dot(d2).abs().acos();
-
-                // Acute corner: angle between directions > 120° (turn < 60°).
-                if angle > std::f64::consts::PI * 2.0 / 3.0 {
-                    let corner = Vec2::new(
-                        (p1.x + p2.x) / 2.0,
-                        (p1.y + p2.y) / 2.0,
-                    );
-                    let tip1 = corner + s1.outward_normal * 5.0;
-                    let tip2 = corner + s2.outward_normal * 5.0;
-                    islands.push(Island {
-                        polygon: vec![corner, tip1, tip2],
-                        kind: IslandKind::EndCap,
-                    });
-                }
-            }
-        }
-    }
-
-    islands
-}
-
-// ---------------------------------------------------------------------------
 // Top-level orchestration
 // ---------------------------------------------------------------------------
 
 /// Build deduplicated corridor polygons for overlap checks.
 fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
-    let mut seen: Vec<(usize, usize)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     let mut corridors = Vec::new();
     for edge in &graph.edges {
         let key = if edge.start < edge.end {
@@ -360,17 +301,85 @@ fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
         } else {
             (edge.end, edge.start)
         };
-        if seen.contains(&key) {
+        if !seen.insert(key) {
             continue;
         }
-        seen.push(key);
         corridors.push(corridor_polygon(&graph.vertices, edge));
     }
     corridors
 }
 
+/// Place stalls on a set of spine segments, returning the stall quads.
+fn place_stalls_on_spines(spines: &[SpineSegment], params: &ParkingParams) -> Vec<StallQuad> {
+    let mut stalls = Vec::new();
+    for seg in spines {
+        let edge_dir = (seg.end - seg.start).normalize();
+        let left_normal = Vec2::new(-edge_dir.y, edge_dir.x);
+        let dot = left_normal.dot(seg.outward_normal);
+
+        // Orient so that fill_strip's side=+1 places stalls toward
+        // the outward_normal direction.
+        let (start, end) = if dot > 0.0 {
+            (seg.start, seg.end)
+        } else {
+            (seg.end, seg.start)
+        };
+
+        stalls.extend(fill_strip(start, end, 1.0, 0.0, params));
+    }
+    stalls
+}
+
+/// Compute endcap islands for a face by subtracting placed stalls from
+/// the face polygon. The remaining fragments (filtered by area) are the
+/// leftover regions at strip ends, corners, and narrow zones.
+fn endcap_islands_for_face(
+    shape: &[Vec<Vec2>],
+    stalls: &[StallQuad],
+    min_area: f64,
+) -> Vec<Island> {
+    if shape.is_empty() || shape[0].is_empty() || stalls.is_empty() {
+        return vec![];
+    }
+
+    // Subject: full face shape (outer contour + hole contours).
+    let subj: Vec<Vec<[f64; 2]>> = shape
+        .iter()
+        .map(|contour| contour.iter().map(|v| [v.x, v.y]).collect())
+        .collect();
+
+    // Clips: each stall quad.
+    let clips: Vec<Vec<[f64; 2]>> = stalls
+        .iter()
+        .map(|s| s.corners.iter().map(|v| [v.x, v.y]).collect())
+        .collect();
+
+    let result = subj.overlay(&clips, OverlayRule::Difference, FillRule::EvenOdd);
+
+    let mut islands = Vec::new();
+    for fragment in result {
+        // Only keep simple-polygon fragments (no holes). Multi-contour
+        // results are structural margins (e.g., boundary-to-stall gaps),
+        // not endcap islands.
+        if fragment.len() != 1 {
+            continue;
+        }
+        let polygon: Vec<Vec2> = fragment[0]
+            .iter()
+            .map(|p| Vec2::new(p[0], p[1]))
+            .collect();
+        if signed_area(&polygon).abs() >= min_area {
+            islands.push(Island {
+                polygon,
+                kind: IslandKind::EndCap,
+            });
+        }
+    }
+    islands
+}
+
 /// Generate stalls from positive-space face extraction + per-edge spine shifting.
-/// Returns (stalls, spine_islands, corridor_polygons, spine_lines, faces).
+/// Returns (stalls, islands, corridor_polygons, spine_lines, faces).
 pub fn generate_from_spines(
     graph: &DriveAisleGraph,
     boundary: &Polygon,
@@ -392,41 +401,20 @@ pub fn generate_from_spines(
     // Extract positive-space faces: boundary MINUS corridors MINUS holes.
     let faces = extract_faces(boundary, &dedup_corridors);
 
-    // Build flat corridor edges list for classification.
-    let corridor_edges: Vec<(Vec2, Vec2)> = dedup_corridors
-        .iter()
-        .flat_map(|quad| {
-            let n = quad.len();
-            (0..n).map(move |i| (quad[i], quad[(i + 1) % n]))
-        })
-        .collect();
-
     let mut all_spines = Vec::new();
+    let mut all_stalls = Vec::new();
+    let mut all_islands = Vec::new();
+
+    let min_island_area = 10.0;
 
     for shape in &faces {
-        let spines = compute_face_spines(shape, &corridor_edges, effective_depth);
+        let spines = compute_face_spines(shape, effective_depth, boundary);
+        let stalls = place_stalls_on_spines(&spines, params);
+        let islands = endcap_islands_for_face(shape, &stalls, min_island_area);
+
         all_spines.extend(spines);
-    }
-
-    let endcap_islands = generate_endcap_islands(&all_spines);
-
-    let mut all_stalls = Vec::new();
-
-    for seg in &all_spines {
-        let edge_dir = (seg.end - seg.start).normalize();
-        let left_normal = Vec2::new(-edge_dir.y, edge_dir.x);
-        let dot = left_normal.dot(seg.outward_normal);
-
-        // Orient so that fill_strip's side=+1 places stalls toward
-        // the outward_normal direction.
-        let (start, end) = if dot > 0.0 {
-            (seg.start, seg.end)
-        } else {
-            (seg.end, seg.start)
-        };
-
-        let stalls = fill_strip(start, end, 1.0, 0.0, params);
         all_stalls.extend(stalls);
+        all_islands.extend(islands);
     }
 
     let spine_lines: Vec<SpineLine> = all_spines
@@ -447,7 +435,7 @@ pub fn generate_from_spines(
         })
         .collect();
 
-    (all_stalls, endcap_islands, aisle_polygons, spine_lines, face_list)
+    (all_stalls, all_islands, aisle_polygons, spine_lines, face_list)
 }
 
 #[cfg(test)]
@@ -469,15 +457,13 @@ mod tests {
         let params = ParkingParams::default();
         let graph = auto_generate(&boundary, &params);
 
-        let (stalls, _, _, spines, _) = generate_from_spines(&graph, &boundary, &params);
+        let (stalls, islands, _, spines, _) = generate_from_spines(&graph, &boundary, &params);
         eprintln!("\nTotal stalls: {}", stalls.len());
         eprintln!("Total spines: {}", spines.len());
-        for (i, s) in spines.iter().enumerate() {
-            let len = (s.end - s.start).length();
-            eprintln!(
-                "  spine {}: ({:.0},{:.0})->({:.0},{:.0}) len={:.0} n=({:.1},{:.1})",
-                i, s.start.x, s.start.y, s.end.x, s.end.y, len, s.normal.x, s.normal.y
-            );
+        eprintln!("Total islands: {}", islands.len());
+        for (i, isl) in islands.iter().enumerate() {
+            let isl_area = signed_area(&isl.polygon).abs();
+            eprintln!("  island {}: area={:.0} kind={:?}", i, isl_area, isl.kind);
         }
         assert!(stalls.len() > 50);
     }
