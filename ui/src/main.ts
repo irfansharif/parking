@@ -18,7 +18,7 @@ async function main() {
   const app = new App(generate_js, () => renderer.render(app.state));
 
   setupInteraction(canvas, app, renderer);
-  setupParamsPanel(paramsPanel, app);
+  setupParamsPanel(paramsPanel, app, () => renderer.render(app.state));
   setupToolbar(app, renderer);
   updateModeHint(app);
 

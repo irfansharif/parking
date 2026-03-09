@@ -221,6 +221,7 @@ pub struct DriveAisleGraph {
 // Spine-based face types
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct SpineSegment {
     pub start: Vec2,
     pub end: Vec2,

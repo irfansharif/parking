@@ -95,7 +95,7 @@ const PARAM_DEFS: ParamDef[] = [
   },
 ];
 
-export function setupParamsPanel(container: HTMLElement, app: App): void {
+export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () => void): void {
   const title = document.createElement("h2");
   title.textContent = "Parameters";
   container.appendChild(title);
@@ -171,7 +171,7 @@ export function setupParamsPanel(container: HTMLElement, app: App): void {
     checkbox.checked = app.state.layers[def.key];
     checkbox.addEventListener("change", () => {
       app.state.layers[def.key] = checkbox.checked;
-      app.generate();
+      onUpdate();
     });
     label.appendChild(checkbox);
     label.appendChild(document.createTextNode(` ${def.label}`));
