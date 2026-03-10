@@ -513,8 +513,16 @@ fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
         let ne = edges.len();
         for i in 0..ne {
             let j = (i + 1) % ne;
-            let (_, d1, w1) = edges[i];
-            let (_, d2, w2) = edges[j];
+            let (a1, d1, w1) = edges[i];
+            let (a2, d2, w2) = edges[j];
+
+            // Angular gap from edge i to edge j going CCW.  Gaps < π are
+            // the "inner" side where corridors already overlap — skip those.
+            // Only fill the "outer" side (gap > π) where corridors diverge.
+            let gap = if a2 > a1 { a2 - a1 } else { a2 - a1 + 2.0 * std::f64::consts::PI };
+            if gap < std::f64::consts::PI {
+                continue;
+            }
 
             let n1 = Vec2::new(-d1.y, d1.x);
             let n2 = Vec2::new(-d2.y, d2.x);
@@ -532,12 +540,6 @@ fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
 
             let t = (p2 - p1).cross(d2) / denom;
             let miter = p1 + d1 * t;
-
-            // Miter limit: cap at 4x edge width to avoid long spikes.
-            let max_w = w1.max(w2);
-            if (miter - v).length() > max_w * 4.0 {
-                continue;
-            }
 
             // Fill wedge: vertex center → left corner of edge 1 → miter
             // point → right corner of edge 2. Skip degenerate slivers.
@@ -912,12 +914,12 @@ fn dedup_overlapping_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<Sp
 }
 
 /// Generate stalls from positive-space face extraction + per-edge spine shifting.
-/// Returns (stalls, islands, corridor_polygons, spine_lines, faces).
+/// Returns (stalls, islands, corridor_polygons, spine_lines, faces, miter_fills).
 pub fn generate_from_spines(
     graph: &DriveAisleGraph,
     boundary: &Polygon,
     params: &ParkingParams,
-) -> (Vec<StallQuad>, Vec<Island>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>) {
+) -> (Vec<StallQuad>, Vec<Island>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>) {
     let stall_angle_rad = params.stall_angle_deg.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
@@ -1009,7 +1011,7 @@ pub fn generate_from_spines(
         })
         .collect();
 
-    (all_stalls, all_islands, aisle_polygons, spine_lines, face_list)
+    (all_stalls, all_islands, aisle_polygons, spine_lines, face_list, miter_fills)
 }
 
 #[cfg(test)]
