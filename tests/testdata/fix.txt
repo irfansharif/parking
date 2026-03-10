@@ -1,0 +1,22 @@
+polygon outer
+0,0
+327.33,23
+300,200
+0,200
+----
+polygon outer: 4 vertices
+
+generate
+----
+total_stalls: 158
+ada_stalls: 0
+
+screenshot fix-all.png
+----
+
+layers stalls=off aisles=off vertices=off islands=off spines=on faces=on
+----
+layers updated
+
+screenshot fix-spines.png
+----

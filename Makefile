@@ -12,7 +12,7 @@ test: build-engine
 
 test-update: build-engine
 	cd ui && npx vite build
-	npx playwright test --update-snapshots
+	npx playwright test --update-snapshots $(if $(GREP),--grep "$(GREP)",)
 
 clean:
 	rm -rf engine/target ui/src/wasm ui/dist ui/node_modules

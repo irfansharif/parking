@@ -141,6 +141,19 @@ export function createCommandAPI(app: App): CommandAPI {
           return `hole: ${points.length} vertices`;
         }
 
+        case "layers": {
+          // Toggle layer visibility. Usage: layers stalls=on aisles=off spines=on
+          const rest = parts.slice(1).join(" ");
+          for (const pair of rest.split(/\s+/)) {
+            const [key, val] = pair.split("=");
+            if (key in app.state.layers) {
+              (app.state.layers as any)[key] = val === "on" || val === "true";
+            }
+          }
+          app.generate(); // re-render with new layer visibility
+          return "layers updated";
+        }
+
         default:
           return `error: unknown command '${cmd}'`;
       }

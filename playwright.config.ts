@@ -8,6 +8,7 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:4173",
     headless: true,
+    viewport: { width: 1920, height: 1080 },
   },
   webServer: {
     command: "cd ui && npx vite preview --port 4173",

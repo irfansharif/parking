@@ -1,4 +1,4 @@
-import init, { generate_js } from "./wasm/parking_lot_engine";
+import init, { generate_js, debug_input_js } from "./wasm/parking_lot_engine";
 import { App } from "./app";
 import { Renderer } from "./renderer";
 import { setupInteraction, updateModeHint } from "./interaction";
@@ -33,6 +33,11 @@ async function main() {
   // Expose command API for testing
   const commandAPI = createCommandAPI(app);
   (window as any).app = commandAPI;
+
+  // Expose fixture dumper for debugging. Usage:
+  //   copy(window.dumpFixture())
+  // Then paste into tests/testdata/<name>.txt
+  (window as any).dumpFixture = () => debug_input_js((window as any).__parkingInput);
 }
 
 function setupToolbar(app: App, renderer: Renderer): void {

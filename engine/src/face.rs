@@ -238,10 +238,23 @@ fn compute_face_spines(
         return vec![];
     }
 
+    // Skip faces that are too narrow to hold a stall strip. Approximate
+    // minimum width as 4 * area / perimeter; faces narrower than the
+    // effective stall depth are corner artifacts from miter fills.
+    let outer = &shape[0];
+    let area = signed_area(outer).abs();
+    let perimeter: f64 = outer.iter().enumerate().map(|(i, v)| {
+        let next = &outer[(i + 1) % outer.len()];
+        (*next - *v).length()
+    }).sum();
+    if perimeter > 0.0 && 4.0 * area / perimeter < effective_depth {
+        return vec![];
+    }
+
     let outer_sign = if signed_area(&shape[0]) >= 0.0 { 1.0 } else { -1.0 };
     let mut all_spines = Vec::new();
 
-    for contour in shape.iter() {
+    for (ci, contour) in shape.iter().enumerate() {
         let n = contour.len();
         if n < 3 {
             continue;
@@ -251,17 +264,23 @@ fn compute_face_spines(
         let ed = effective_depth - 0.05;
         let min_edge_len = effective_depth * 2.0;
 
-        // Per-edge inset distances: ed for substantial aisle-facing edges,
-        // 0 for boundary edges and short boolean-artifact edges.
+        // Per-edge inset distances: ed for aisle-facing edges, 0 for boundary
+        // edges. For the outer contour, also filter short boolean-artifact
+        // edges; for hole contours, use uniform ed for all aisle-facing edges
+        // to avoid mixed-distance degenerate miters at corridor corners.
         let distances: Vec<f64> = (0..n)
             .map(|i| {
-                let j = (i + 1) % n;
-                let edge_len = (contour[j] - contour[i]).length();
-                if aisle_facing[i] && edge_len >= min_edge_len {
-                    ed
-                } else {
-                    0.0
+                if !aisle_facing[i] {
+                    return 0.0;
                 }
+                if ci == 0 {
+                    let j = (i + 1) % n;
+                    let edge_len = (contour[j] - contour[i]).length();
+                    if edge_len < min_edge_len {
+                        return 0.0;
+                    }
+                }
+                ed
             })
             .collect();
 
@@ -352,9 +371,10 @@ fn skeleton_inset_spines(
             let new_dir = miter[j] - miter[i];
             let orig_dir = edge_dirs[i];
 
+            // Use a small negative threshold instead of exactly 0 to avoid
+            // false collapses from floating-point imprecision. Scale by the
+            // original edge length so the threshold is meaningful.
             if new_dir.dot(orig_dir) <= 0.0 {
-                // Edge from i→j has collapsed. Remove vertex i (and its
-                // edge). The previous edge and edge j become adjacent.
                 alive[i] = false;
                 changed = true;
                 break;
@@ -699,6 +719,31 @@ fn try_merge_spines(a: &SpineSegment, b: &SpineSegment, tolerance: f64) -> Optio
 // Top-level orchestration
 // ---------------------------------------------------------------------------
 
+/// Remove stalls where any shrunk corner falls outside all face shapes.
+/// This catches stalls in corner regions that protrude past the face
+/// boundary into the corridor.
+fn clip_stalls_to_faces(stalls: Vec<StallQuad>, faces: &[Vec<Vec<Vec2>>]) -> Vec<StallQuad> {
+    stalls
+        .into_iter()
+        .filter(|stall| {
+            // Shrink 0.5ft toward centroid for tolerance.
+            let cx = stall.corners.iter().map(|c| c.x).sum::<f64>() / 4.0;
+            let cy = stall.corners.iter().map(|c| c.y).sum::<f64>() / 4.0;
+            let centroid = Vec2::new(cx, cy);
+            let shrunk: Vec<Vec2> = stall.corners.iter().map(|c| {
+                let d = *c - centroid;
+                let len = d.length();
+                if len < 1e-12 { *c } else { *c - d * (0.5 / len) }
+            }).collect();
+            // Every shrunk corner must be inside at least one face.
+            shrunk.iter().all(|corner| {
+                faces.iter().any(|shape| point_in_face(*corner, shape))
+            })
+        })
+        .collect()
+}
+
+
 /// Place stalls on a set of spine segments, returning the stall quads.
 fn place_stalls_on_spines(spines: &[SpineSegment], params: &ParkingParams) -> Vec<StallQuad> {
     let mut stalls = Vec::new();
@@ -768,6 +813,104 @@ fn endcap_islands_for_face(
     islands
 }
 
+/// Deduplicate overlapping collinear spines. When two spines have the same
+/// direction and outward normal and overlap along their length, trim the
+/// shorter one to only its non-overlapping portion. This prevents
+/// miter-fill spines from extending into regions already covered by the
+/// main corridor spine, while preserving the unique tail of each spine.
+fn dedup_overlapping_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<SpineSegment> {
+    let mut result = spines;
+
+    // For each pair of collinear, overlapping spines: trim the shorter one.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let n = result.len();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let dir_i = (result[i].end - result[i].start).normalize();
+                let dir_j = (result[j].end - result[j].start).normalize();
+
+                // Must be collinear and same normal.
+                if dir_i.dot(dir_j).abs() < 0.99 {
+                    continue;
+                }
+                if result[i].outward_normal.dot(result[j].outward_normal) < 0.99 {
+                    continue;
+                }
+
+                // Must be on the same line (close perpendicularly).
+                let perp = Vec2::new(-dir_i.y, dir_i.x);
+                if perp.dot(result[j].start - result[i].start).abs() > tolerance {
+                    continue;
+                }
+
+                // Project both onto the shared direction.
+                let origin = result[i].start;
+                let ti_s = dir_i.dot(result[i].start - origin);
+                let ti_e = dir_i.dot(result[i].end - origin);
+                let tj_s = dir_i.dot(result[j].start - origin);
+                let tj_e = dir_i.dot(result[j].end - origin);
+
+                let (i_min, i_max) = (ti_s.min(ti_e), ti_s.max(ti_e));
+                let (j_min, j_max) = (tj_s.min(tj_e), tj_s.max(tj_e));
+
+                // Check for overlap.
+                let overlap_start = i_min.max(j_min);
+                let overlap_end = i_max.min(j_max);
+                if overlap_end - overlap_start < 1.0 {
+                    continue; // No significant overlap.
+                }
+
+                // Trim the shorter spine to its non-overlapping portion.
+                let len_i = i_max - i_min;
+                let len_j = j_max - j_min;
+                let (shorter, longer_min, longer_max) = if len_i <= len_j {
+                    (i, j_min, j_max)
+                } else {
+                    (j, i_min, i_max)
+                };
+
+                let s_min = if shorter == i { i_min } else { j_min };
+                let s_max = if shorter == i { i_max } else { j_max };
+
+                // The non-overlapping portion is [s_min, longer_min) or
+                // (longer_max, s_max]. Keep the longer tail.
+                let tail_left = (longer_min - s_min).max(0.0);
+                let tail_right = (s_max - longer_max).max(0.0);
+
+                if tail_left > tail_right && tail_left > 1.0 {
+                    // Keep the left tail.
+                    result[shorter].start = origin + dir_i * s_min;
+                    result[shorter].end = origin + dir_i * longer_min;
+                    changed = true;
+                } else if tail_right > 1.0 {
+                    // Keep the right tail.
+                    result[shorter].start = origin + dir_i * longer_max;
+                    result[shorter].end = origin + dir_i * s_max;
+                    changed = true;
+                } else {
+                    // Entirely covered: mark for removal (zero length).
+                    result[shorter].end = result[shorter].start;
+                    changed = true;
+                }
+
+                if changed {
+                    break;
+                }
+            }
+            if changed {
+                break;
+            }
+        }
+
+        // Remove zero-length spines.
+        result.retain(|s| (s.end - s.start).length() > 1.0);
+    }
+
+    result
+}
+
 /// Generate stalls from positive-space face extraction + per-edge spine shifting.
 /// Returns (stalls, islands, corridor_polygons, spine_lines, faces).
 pub fn generate_from_spines(
@@ -799,13 +942,33 @@ pub fn generate_from_spines(
     // Collect spines from all faces, then merge collinear segments across
     // face boundaries so stalls flow continuously along shared aisle edges.
     let mut raw_spines = Vec::new();
-    for shape in &faces {
-        raw_spines.extend(compute_face_spines(shape, effective_depth, boundary));
+    for shape in faces.iter() {
+        let face_spines = compute_face_spines(shape, effective_depth, boundary);
+        // Deduplicate overlapping collinear spines within each face.
+        // This prevents miter-fill edge spines from double-covering
+        // regions already handled by the main corridor spine, without
+        // affecting legitimate cross-face overlaps (which should merge).
+        let face_spines = dedup_overlapping_spines(face_spines, 2.0);
+        raw_spines.extend(face_spines);
     }
     let all_spines = merge_collinear_spines(raw_spines, 2.0);
 
+    // Filter short spines that are miter-fill corner artifacts. Spines
+    // shorter than effective_depth can't support a meaningful stall strip.
+    let min_spine_len = effective_depth;
+    let all_spines: Vec<SpineSegment> = all_spines
+        .into_iter()
+        .filter(|s| (s.end - s.start).length() >= min_spine_len)
+        .collect();
+
     // Place stalls on merged spines.
     let all_stalls = place_stalls_on_spines(&all_spines, params);
+
+    // Clip stalls to face interiors. A stall that protrudes past the face
+    // boundary into a corridor (at miter-fill corners) is removed.
+    let all_stalls = clip_stalls_to_faces(all_stalls, &faces);
+
+
 
     // Compute endcap islands per face (face minus stalls placed in that face).
     let mut all_islands = Vec::new();
@@ -1307,5 +1470,165 @@ mod tests {
             outside_count, 0,
             "stalls near the diagonal top must not extend outside the face"
         );
+    }
+
+    /// Debug: reproduce the slanted-boundary layout from attempt.txt and
+    /// trace why the rightmost face has no stalls.
+    #[test]
+    fn test_attempt_boundary_debug() {
+        use crate::generate::generate;
+        use crate::types::GenerateInput;
+
+        let input = GenerateInput {
+            boundary: Polygon {
+                outer: vec![
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(327.33, 23.0),
+                    Vec2::new(300.0, 200.0),
+                    Vec2::new(0.0, 200.0),
+                ],
+                holes: vec![],
+            },
+            aisle_graph: None,
+            params: ParkingParams::default(),
+        };
+
+        let layout = generate(input.clone());
+        eprintln!("\n=== attempt boundary debug ===");
+        eprintln!("stalls: {}, spines: {}, faces: {}", layout.stalls.len(), layout.spines.len(), layout.faces.len());
+
+        let effective_depth = input.params.stall_depth
+            * input.params.stall_angle_deg.to_radians().sin();
+
+        for (fi, face) in layout.faces.iter().enumerate() {
+            let contour = &face.contour;
+            let area = crate::inset::signed_area(contour).abs();
+            let perimeter: f64 = contour.iter().enumerate().map(|(i, v)| {
+                let next = &contour[(i + 1) % contour.len()];
+                (*next - *v).length()
+            }).sum();
+            let min_width = if perimeter > 0.0 { 4.0 * area / perimeter } else { 0.0 };
+            eprintln!("\n  face {}: {} vertices, area={:.1}, perimeter={:.1}, min_width={:.1} (ed={:.1})",
+                fi, contour.len(), area, perimeter, min_width, effective_depth);
+            for (vi, v) in contour.iter().enumerate() {
+                eprintln!("    v{}: ({:.1}, {:.1})", vi, v.x, v.y);
+            }
+
+            let aisle_facing = classify_face_edges(contour, &input.boundary, 2.0);
+            let ed = effective_depth - 0.05;
+            let min_edge_len = effective_depth * 2.0;
+            for i in 0..contour.len() {
+                let j = (i + 1) % contour.len();
+                let edge_len = (contour[j] - contour[i]).length();
+                let dist = if aisle_facing[i] && edge_len >= min_edge_len { ed } else { 0.0 };
+                eprintln!(
+                    "    edge {}->{}: len={:.1} aisle_facing={} dist={:.1}{}",
+                    i, j, edge_len, aisle_facing[i], dist,
+                    if !aisle_facing[i] { " (boundary)" }
+                    else if edge_len < min_edge_len { " (too short)" }
+                    else { "" }
+                );
+            }
+
+            for (hi, hole) in face.holes.iter().enumerate() {
+                eprintln!("    hole {}: {} verts", hi, hole.len());
+                let hole_af = classify_face_edges(hole, &input.boundary, 2.0);
+                for i in 0..hole.len() {
+                    let j = (i + 1) % hole.len();
+                    let elen = (hole[j] - hole[i]).length();
+                    eprintln!("      edge {}->{}: len={:.1} af={} ({:.1},{:.1})->({:.1},{:.1})",
+                        i, j, elen, hole_af[i], hole[i].x, hole[i].y, hole[j].x, hole[j].y);
+                }
+            }
+            let mut shape = vec![contour.clone()];
+            shape.extend(face.holes.iter().cloned());
+            let spines = compute_face_spines(&shape, effective_depth, &input.boundary);
+            eprintln!("    spines: {}", spines.len());
+            for (si, s) in spines.iter().enumerate() {
+                let len = (s.end - s.start).length();
+                eprintln!(
+                    "      spine {}: ({:.1},{:.1})->({:.1},{:.1}) len={:.1} n=({:.2},{:.2})",
+                    si, s.start.x, s.start.y, s.end.x, s.end.y, len,
+                    s.outward_normal.x, s.outward_normal.y
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_slanted_boundary_debug() {
+        use crate::generate::generate;
+        use crate::types::GenerateInput;
+
+        let input = GenerateInput {
+            boundary: Polygon {
+                outer: vec![
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(429.0, 1.67),
+                    Vec2::new(300.0, 200.0),
+                    Vec2::new(0.0, 200.0),
+                ],
+                holes: vec![],
+            },
+            aisle_graph: None,
+            params: ParkingParams::default(),
+        };
+
+        let layout = generate(input.clone());
+        eprintln!("\n=== slanted boundary debug ===");
+        eprintln!("stalls: {}, spines: {}, faces: {}", layout.stalls.len(), layout.spines.len(), layout.faces.len());
+
+        let effective_depth = input.params.stall_depth
+            * input.params.stall_angle_deg.to_radians().sin();
+
+        // Examine each face.
+        for (fi, face) in layout.faces.iter().enumerate() {
+            let contour = &face.contour;
+            let area = crate::inset::signed_area(contour).abs();
+            eprintln!("\n  face {}: {} vertices, area={:.1}", fi, contour.len(), area);
+            for (vi, v) in contour.iter().enumerate() {
+                eprintln!("    v{}: ({:.1}, {:.1})", vi, v.x, v.y);
+            }
+
+            // Classify edges for this face.
+            let aisle_facing = classify_face_edges(contour, &input.boundary, 2.0);
+            let ed = effective_depth - 0.05;
+            let min_edge_len = effective_depth * 2.0;
+            for i in 0..contour.len() {
+                let j = (i + 1) % contour.len();
+                let edge_len = (contour[j] - contour[i]).length();
+                let dist = if aisle_facing[i] && edge_len >= min_edge_len { ed } else { 0.0 };
+                eprintln!(
+                    "    edge {}->{}: len={:.1} aisle_facing={} dist={:.1}{}",
+                    i, j, edge_len, aisle_facing[i], dist,
+                    if !aisle_facing[i] { " (boundary)" }
+                    else if edge_len < min_edge_len { " (too short)" }
+                    else { "" }
+                );
+            }
+
+            // Print holes.
+            eprintln!("    holes: {}", face.holes.len());
+            for (hi, hole) in face.holes.iter().enumerate() {
+                eprintln!("    hole {}: {} vertices", hi, hole.len());
+                for (vi, v) in hole.iter().enumerate() {
+                    eprintln!("      v{}: ({:.1}, {:.1})", vi, v.x, v.y);
+                }
+            }
+
+            // Compute spines for this face using full shape (contour + holes).
+            let mut shape = vec![contour.clone()];
+            shape.extend(face.holes.iter().cloned());
+            let spines = compute_face_spines(&shape, effective_depth, &input.boundary);
+            eprintln!("    spines: {}", spines.len());
+            for (si, s) in spines.iter().enumerate() {
+                let len = (s.end - s.start).length();
+                eprintln!(
+                    "      spine {}: ({:.1},{:.1})->({:.1},{:.1}) len={:.1} n=({:.2},{:.2})",
+                    si, s.start.x, s.start.y, s.end.x, s.end.y, len,
+                    s.outward_normal.x, s.outward_normal.y
+                );
+            }
+        }
     }
 }

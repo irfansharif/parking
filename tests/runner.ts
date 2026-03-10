@@ -23,7 +23,8 @@ for (const file of testFiles) {
       const actual = await executeCase(page, tc);
 
       if (tc.command.startsWith("screenshot")) {
-        const goldenName = tc.expected || `${path.basename(file, ".txt")}.png`;
+        const parts = tc.command.trim().split(/\s+/);
+        const goldenName = parts[1] || tc.expected || `${path.basename(file, ".txt")}.png`;
         await expect(page).toHaveScreenshot(goldenName, {
           maxDiffPixelRatio: 0.01,
         });

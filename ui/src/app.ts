@@ -108,8 +108,14 @@ export class App {
       aisle_graph: this.state.aisleGraph,
       params: this.state.params,
     };
+    const inputJson = JSON.stringify(input);
+    // Stash on window so you can grab it from the console:
+    //   copy(window.__parkingInput)
+    // Then save to engine/testdata/<name>.json and run:
+    //   cargo test -- datadriven
+    (window as any).__parkingInput = inputJson;
     try {
-      const resultJson = this.generateFn(JSON.stringify(input));
+      const resultJson = this.generateFn(inputJson);
       this.state.layout = JSON.parse(resultJson);
     } catch (e) {
       console.error("Generate failed:", e);

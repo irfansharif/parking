@@ -12,7 +12,9 @@ pub fn clip_stalls_to_boundary(
         .filter(|stall| {
             // Shrink toward centroid before testing so stalls whose tips are
             // right at the boundary aren't rejected by floating-point noise.
-            let shrunk = shrink_polygon(&stall.corners, 0.5);
+            // Use a small tolerance (0.1ft) to catch stalls that slightly
+            // protrude past the boundary at corners.
+            let shrunk = shrink_polygon(&stall.corners, 0.1);
             // Every corner must be inside the outer boundary.
             for c in &shrunk {
                 if !point_in_polygon(c, &boundary.outer) {
