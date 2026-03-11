@@ -329,7 +329,8 @@ fn compute_face_spines(
             })
             .collect();
 
-        let spines = skeleton_inset_spines(&contour, &distances, &aisle_facing, 1.0, shape, debug.spine_clipping);
+        let sign = if is_hole { -1.0 } else { 1.0 };
+        let spines = skeleton_inset_spines(&contour, &distances, &aisle_facing, sign, shape, debug.spine_clipping);
         all_spines.extend(spines);
     }
 
@@ -369,7 +370,7 @@ fn skeleton_inset_spines(
     let sk = skeleton::compute_skeleton(polygon);
 
     // Get the offset polygon at the effective depth.
-    let (offset_pts, active_edges) = match skeleton::wavefront_at(&sk, effective_depth) {
+    let (offset_pts, active_edges) = match skeleton::wavefront_at(&sk, effective_depth * sign) {
         Some(result) => result,
         None => return vec![],
     };
