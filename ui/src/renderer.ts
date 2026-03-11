@@ -55,7 +55,7 @@ export class Renderer {
         }
       }
 
-      // 3b. Spines
+      // 3a. Spines
       if (state.layers.spines && state.layout.spines) {
         for (const spine of state.layout.spines) {
           this.drawSpine(spine);

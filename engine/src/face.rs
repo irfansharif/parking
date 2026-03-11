@@ -33,16 +33,18 @@ pub(crate) fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2>
 /// with shape[0] = outer contour, shape[1..] = holes within that face.
 fn extract_faces(
     boundary: &Polygon,
-    corridors: &[Vec<Vec2>],
+    merged_corridors: &[Vec<Vec<Vec2>>],
 ) -> Vec<Vec<Vec<Vec2>>> {
     // Subject: boundary outer ring.
     let subj: Vec<[f64; 2]> = boundary.outer.iter().map(|v| [v.x, v.y]).collect();
 
-    // Clip: all corridors + all holes.
+    // Clip: all contours from merged corridor shapes + boundary holes.
     let mut clip_paths: Vec<Vec<[f64; 2]>> = Vec::new();
-    for corridor in corridors {
-        let path: Vec<[f64; 2]> = corridor.iter().map(|v| [v.x, v.y]).collect();
-        clip_paths.push(path);
+    for shape in merged_corridors {
+        for contour in shape {
+            let path: Vec<[f64; 2]> = contour.iter().map(|v| [v.x, v.y]).collect();
+            clip_paths.push(path);
+        }
     }
     for hole in &boundary.holes {
         let path: Vec<[f64; 2]> = hole.iter().map(|v| [v.x, v.y]).collect();
@@ -254,7 +256,7 @@ fn compute_face_spines(
     let outer_sign = if signed_area(&shape[0]) >= 0.0 { 1.0 } else { -1.0 };
     let mut all_spines = Vec::new();
 
-    for (ci, contour) in shape.iter().enumerate() {
+    for contour in shape.iter() {
         let n = contour.len();
         if n < 3 {
             continue;
@@ -265,20 +267,18 @@ fn compute_face_spines(
         let min_edge_len = effective_depth * 2.0;
 
         // Per-edge inset distances: ed for aisle-facing edges, 0 for boundary
-        // edges. For the outer contour, also filter short boolean-artifact
-        // edges; for hole contours, use uniform ed for all aisle-facing edges
-        // to avoid mixed-distance degenerate miters at corridor corners.
+        // edges. Filter short boolean-artifact edges on all contours; for
+        // hole contours, use uniform ed for all aisle-facing edges to avoid
+        // mixed-distance degenerate miters at corridor corners.
         let distances: Vec<f64> = (0..n)
             .map(|i| {
                 if !aisle_facing[i] {
                     return 0.0;
                 }
-                if ci == 0 {
-                    let j = (i + 1) % n;
-                    let edge_len = (contour[j] - contour[i]).length();
-                    if edge_len < min_edge_len {
-                        return 0.0;
-                    }
+                let j = (i + 1) % n;
+                let edge_len = (contour[j] - contour[i]).length();
+                if edge_len < min_edge_len {
+                    return 0.0;
                 }
                 ed
             })
@@ -466,10 +466,11 @@ fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
     corridors
 }
 
-/// Generate miter-fill polygons at graph vertices where edges meet at
-/// angles. For each pair of adjacent edges (sorted by angle), extend their
-/// outer corridor edges to a sharp miter intersection point, producing a
-/// wedge that fills the gap between the two corridor rectangles.
+/// Generate miter-fill polygons at graph vertices where edges meet.
+/// At each vertex with 2+ edges, compute the convex hull of all corridor
+/// corner points (left and right sides of each edge at the vertex). This
+/// covers all gaps between corridor rectangles in one polygon, regardless
+/// of how many edges meet or their angles.
 fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
     let mut fills = Vec::new();
     let mut seen_edges: std::collections::HashSet<(usize, usize)> =
@@ -504,34 +505,26 @@ fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
         let v = graph.vertices[vi];
 
         // Sort edges by outgoing angle from the vertex.
-        let mut edges: Vec<(f64, Vec2, f64)> = adj[vi]
+        let mut edges_sorted: Vec<(f64, Vec2, f64)> = adj[vi]
             .iter()
             .map(|(d, w)| (d.y.atan2(d.x), *d, *w))
             .collect();
-        edges.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        edges_sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-        let ne = edges.len();
+        // For each consecutive pair of edges (sorted by angle), create a
+        // miter fill wedge. The wedge connects the left side of edge i to
+        // the right side of edge j via their miter intersection point.
+        let ne = edges_sorted.len();
         for i in 0..ne {
             let j = (i + 1) % ne;
-            let (a1, d1, w1) = edges[i];
-            let (a2, d2, w2) = edges[j];
-
-            // Angular gap from edge i to edge j going CCW.  Gaps < π are
-            // the "inner" side where corridors already overlap — skip those.
-            // Only fill the "outer" side (gap > π) where corridors diverge.
-            let gap = if a2 > a1 { a2 - a1 } else { a2 - a1 + 2.0 * std::f64::consts::PI };
-            if gap < std::f64::consts::PI {
-                continue;
-            }
+            let (_, d1, w1) = edges_sorted[i];
+            let (_, d2, w2) = edges_sorted[j];
 
             let n1 = Vec2::new(-d1.y, d1.x);
             let n2 = Vec2::new(-d2.y, d2.x);
 
-            // The gap between consecutive edges (sorted CCW) is bounded by:
-            //   - left side of edge 1:  line through (v + n1*w1), direction d1
-            //   - right side of edge 2: line through (v - n2*w2), direction d2
-            let p1 = v + n1 * w1;
-            let p2 = v - n2 * w2;
+            let p1 = v + n1 * w1;  // left side of edge i
+            let p2 = v - n2 * w2;  // right side of edge j
 
             let denom = d1.cross(d2);
             if denom.abs() < 1e-12 {
@@ -541,8 +534,12 @@ fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
             let t = (p2 - p1).cross(d2) / denom;
             let miter = p1 + d1 * t;
 
-            // Fill wedge: vertex center → left corner of edge 1 → miter
-            // point → right corner of edge 2. Skip degenerate slivers.
+            // Miter limit: cap at 4x edge width to avoid long spikes.
+            let max_w = w1.max(w2);
+            if (miter - v).length() > max_w * 4.0 {
+                continue;
+            }
+
             let wedge = vec![v, p1, miter, p2];
             if signed_area(&wedge).abs() < 1.0 {
                 continue;
@@ -553,61 +550,122 @@ fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
 
     fills
 }
-
 /// Boolean-union all corridor rectangles + miter fills into merged
-/// polygons. Produces clean mitered corners where aisles meet at angles.
-fn merge_corridor_polygons(
+/// shapes. Each shape is Vec<Vec<Vec2>> where [0] = outer contour and
+/// [1..] = hole contours (for corridors that form loops enclosing faces).
+fn merge_corridor_shapes(
     corridors: &[Vec<Vec2>],
     graph: &DriveAisleGraph,
-) -> Vec<Vec<Vec2>> {
+) -> Vec<Vec<Vec<Vec2>>> {
     if corridors.is_empty() {
         return vec![];
     }
 
     let miter_fills = generate_miter_fills(graph);
 
-    // Iterative pairwise union: merge shapes one at a time to avoid
-    // robustness issues with multi-shape self-union in i_overlay.
-    let all_shapes: Vec<Vec<[f64; 2]>> = corridors
+    // All corridor rects + miter fills as subject paths in a single
+    // union operation. This avoids the compounding floating-point errors
+    // of iterative pairwise union.
+    let subj: Vec<Vec<[f64; 2]>> = corridors
         .iter()
         .chain(miter_fills.iter())
         .map(|c| c.iter().map(|v| [v.x, v.y]).collect())
         .collect();
 
-    if all_shapes.is_empty() {
+    if subj.is_empty() {
         return vec![];
     }
 
-    // Start with the first shape as the accumulated result.
-    let mut acc: Vec<Vec<Vec<[f64; 2]>>> = vec![vec![all_shapes[0].clone()]];
+    // Self-union: union all subject paths with an empty clip set.
+    // NonZero fill rule merges all overlapping/touching paths into
+    // a single outline, preserving holes where corridors form loops.
+    let empty_clip: Vec<Vec<[f64; 2]>> = vec![];
+    let result = subj.overlay(&empty_clip, OverlayRule::Union, FillRule::NonZero);
 
-    for shape in &all_shapes[1..] {
-        let clip = vec![shape.clone()];
-        let subj: Vec<Vec<[f64; 2]>> = acc
-            .iter()
-            .map(|s| s[0].clone())
-            .collect();
-        let merged = subj.overlay(&clip, OverlayRule::Union, FillRule::NonZero);
-        acc = if merged.is_empty() {
-            // If union produced nothing, keep accumulator as-is and add
-            // the new shape as a separate polygon.
-            let mut keep = acc;
-            keep.push(vec![shape.clone()]);
-            keep
-        } else {
-            merged
-        };
-    }
+    // Compute minimum hole area threshold: holes in the merged corridor
+    // smaller than max_width² are junction artifacts, not real face
+    // regions. Real face holes (from corridor loops) are much larger.
+    let max_width = graph.edges.iter().map(|e| e.width).fold(0.0f64, f64::max);
+    let min_hole_area = max_width * max_width;
 
-    acc.into_iter()
+    // Convert to Vec2, preserving outer contours and large holes.
+    // Clean up degenerate spikes and filter out small junction-artifact
+    // holes that would otherwise become sliver faces.
+    result
+        .into_iter()
         .filter(|shape| !shape.is_empty())
         .map(|shape| {
-            shape[0]
-                .iter()
-                .map(|p| Vec2::new(p[0], p[1]))
+            shape
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, contour)| {
+                    let pts: Vec<Vec2> = contour.into_iter().map(|p| Vec2::new(p[0], p[1])).collect();
+                    let pts = remove_contour_spikes(pts, 2.0);
+                    // Keep outer contour (index 0) unconditionally.
+                    // Filter hole contours (index 1+) by area.
+                    if i > 0 && signed_area(&pts).abs() < min_hole_area {
+                        return None;
+                    }
+                    Some(pts)
+                })
                 .collect()
         })
         .collect()
+}
+
+/// Remove degenerate spikes from a polygon contour. A spike is a
+/// vertex where consecutive edges are anti-parallel (the path doubles
+/// back on itself), creating a zero-area protrusion. This happens when
+/// boolean union merges thin miter fill wedges with corridor rectangles.
+fn remove_contour_spikes(mut contour: Vec<Vec2>, tolerance: f64) -> Vec<Vec2> {
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let n = contour.len();
+        if n < 4 {
+            break;
+        }
+        for i in 0..n {
+            let prev = if i == 0 { n - 1 } else { i - 1 };
+            let next = (i + 1) % n;
+            let a = contour[prev];
+            let b = contour[i];
+            let c = contour[next];
+            let ab = b - a;
+            let bc = c - b;
+            let ab_len = ab.length();
+            let bc_len = bc.length();
+            if ab_len < tolerance || bc_len < tolerance {
+                // Degenerate near-zero-length edge; remove the vertex.
+                contour.remove(i);
+                changed = true;
+                break;
+            }
+            let ab_n = ab * (1.0 / ab_len);
+            let bc_n = bc * (1.0 / bc_len);
+            // Anti-parallel: dot product ≈ -1.
+            if ab_n.dot(bc_n) < -0.95 {
+                // Spike at vertex i: the path goes A→B then reverses B→C.
+                // Also check if C is close to A (the path doubles back to
+                // where it started).
+                if (c - a).length() < tolerance {
+                    // Remove both the spike tip (i) and the return vertex
+                    // (next), collapsing A→B→C→D into A→D.
+                    let remove_second = next;
+                    if remove_second > i {
+                        contour.remove(remove_second);
+                        contour.remove(i);
+                    } else {
+                        contour.remove(i);
+                        contour.remove(remove_second);
+                    }
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+    contour
 }
 
 // ---------------------------------------------------------------------------
@@ -914,32 +972,31 @@ fn dedup_overlapping_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<Sp
 }
 
 /// Generate stalls from positive-space face extraction + per-edge spine shifting.
-/// Returns (stalls, islands, corridor_polygons, spine_lines, faces, miter_fills).
+/// Returns (stalls, islands, corridor_polygons, spine_lines, faces).
 pub fn generate_from_spines(
     graph: &DriveAisleGraph,
     boundary: &Polygon,
     params: &ParkingParams,
-) -> (Vec<StallQuad>, Vec<Island>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>) {
+) -> (Vec<StallQuad>, Vec<Island>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>) {
     let stall_angle_rad = params.stall_angle_deg.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
-    // Build deduplicated corridor rectangles + miter wedge fills.
+    // Build deduplicated corridor rectangles + miter wedge fills, then
+    // boolean-union them into merged shapes (preserving holes for loops).
     let dedup_corridors = deduplicate_corridors(graph);
-    let miter_fills = generate_miter_fills(graph);
+    let merged_corridors = merge_corridor_shapes(&dedup_corridors, graph);
 
-    // Boolean-union corridor rectangles + miter fills for clean rendering.
-    let aisle_polygons = merge_corridor_polygons(&dedup_corridors, graph);
-
-    // For face extraction, pass individual shapes (rectangles + wedges) so
-    // that the boolean difference works correctly even when corridors form
-    // loops (merged outlines would discard hole contours and erase the
-    // entire lot interior).
-    let all_corridor_shapes: Vec<Vec<Vec2>> = dedup_corridors
+    // Flatten outer contours for rendering (aisle polygon overlay).
+    let aisle_polygons: Vec<Vec<Vec2>> = merged_corridors
         .iter()
-        .chain(miter_fills.iter())
-        .cloned()
+        .filter(|shape| !shape.is_empty())
+        .map(|shape| shape[0].clone())
         .collect();
-    let faces = extract_faces(boundary, &all_corridor_shapes);
+
+    // Extract faces by subtracting the merged corridor union from the
+    // boundary. Since the union resolves all internal seams between
+    // corridor rects and miter fills, no sliver artifacts remain.
+    let faces = extract_faces(boundary, &merged_corridors);
 
     // Collect spines from all faces, then merge collinear segments across
     // face boundaries so stalls flow continuously along shared aisle edges.
@@ -1011,7 +1068,7 @@ pub fn generate_from_spines(
         })
         .collect();
 
-    (all_stalls, all_islands, aisle_polygons, spine_lines, face_list, miter_fills)
+    (all_stalls, all_islands, aisle_polygons, spine_lines, face_list)
 }
 
 #[cfg(test)]
@@ -1042,6 +1099,94 @@ mod tests {
             eprintln!("  island {}: area={:.0} kind={:?}", i, isl_area, isl.kind);
         }
         assert!(stalls.len() > 50);
+    }
+
+    #[test]
+    fn test_attempt_debug() {
+        let boundary = Polygon {
+            outer: vec![
+                Vec2::new(0.0, 0.0),
+                Vec2::new(95.33, 51.0),
+                Vec2::new(300.0, 200.0),
+                Vec2::new(0.0, 200.0),
+            ],
+            holes: vec![],
+        };
+        let params = ParkingParams::default();
+        let graph = auto_generate(&boundary, &params);
+
+        eprintln!("\n=== Attempt polygon debug ===");
+        eprintln!("Graph: {} vertices, {} edges", graph.vertices.len(), graph.edges.len());
+        for (i, v) in graph.vertices.iter().enumerate() {
+            eprintln!("  v{}: ({:.1}, {:.1})", i, v.x, v.y);
+        }
+        for (i, e) in graph.edges.iter().enumerate() {
+            let s = graph.vertices[e.start];
+            let end = graph.vertices[e.end];
+            eprintln!("  e{}: v{}→v{} ({:.1},{:.1})→({:.1},{:.1}) w={:.1}",
+                i, e.start, e.end, s.x, s.y, end.x, end.y, e.width);
+        }
+
+        let stall_angle_rad = params.stall_angle_deg.to_radians();
+        let effective_depth = params.stall_depth * stall_angle_rad.sin();
+        let dedup_corridors = deduplicate_corridors(&graph);
+
+        eprintln!("\nMiter fills:");
+        let miter_fills = generate_miter_fills(&graph);
+        for (i, fill) in miter_fills.iter().enumerate() {
+            let area = signed_area(fill).abs();
+            eprintln!("  fill {}: area={:.1}, {} verts", i, area, fill.len());
+            for (vi, v) in fill.iter().enumerate() {
+                eprintln!("    v{}: ({:.1}, {:.1})", vi, v.x, v.y);
+            }
+        }
+
+        eprintln!("\nCorridor rects:");
+        for (i, c) in dedup_corridors.iter().enumerate() {
+            eprintln!("  rect {}: {} verts", i, c.len());
+            for (vi, v) in c.iter().enumerate() {
+                eprintln!("    v{}: ({:.1}, {:.1})", vi, v.x, v.y);
+            }
+        }
+
+        let merged_corridors = merge_corridor_shapes(&dedup_corridors, &graph);
+
+        eprintln!("\nMerged corridors: {}", merged_corridors.len());
+        for (ci, shape) in merged_corridors.iter().enumerate() {
+            eprintln!("  corridor shape {}: {} contours", ci, shape.len());
+            for (ki, contour) in shape.iter().enumerate() {
+                let area = signed_area(contour);
+                eprintln!("    contour {}: {} verts, signed_area={:.0}", ki, contour.len(), area);
+                for (vi, v) in contour.iter().enumerate() {
+                    eprintln!("      v{}: ({:.1}, {:.1})", vi, v.x, v.y);
+                }
+            }
+        }
+
+        let faces = extract_faces(&boundary, &merged_corridors);
+        eprintln!("\nFaces: {}", faces.len());
+        for (fi, shape) in faces.iter().enumerate() {
+            let outer = &shape[0];
+            let area = signed_area(outer).abs();
+            eprintln!("  face {}: {} contours, outer={} verts, area={:.0}", fi, shape.len(), outer.len(), area);
+            for (ki, contour) in shape.iter().enumerate() {
+                let sa = signed_area(contour);
+                let label = if ki == 0 { "outer" } else { "hole" };
+                eprintln!("    {} {}: {} verts, signed_area={:.0}", label, ki, contour.len(), sa);
+                for (vi, v) in contour.iter().enumerate() {
+                    eprintln!("      v{}: ({:.1}, {:.1})", vi, v.x, v.y);
+                }
+            }
+
+            let face_spines = compute_face_spines(shape, effective_depth, &boundary);
+            eprintln!("  spines from face {}: {}", fi, face_spines.len());
+            for (si, s) in face_spines.iter().enumerate() {
+                let len = (s.end - s.start).length();
+                eprintln!("    spine {}: ({:.1},{:.1})→({:.1},{:.1}) len={:.1} n=({:.2},{:.2})",
+                    si, s.start.x, s.start.y, s.end.x, s.end.y, len,
+                    s.outward_normal.x, s.outward_normal.y);
+            }
+        }
     }
 
     /// Two aisle edges meeting at an acute corner: unmerged corridor
@@ -1088,16 +1233,19 @@ mod tests {
             edges: vec![edge_a.clone(), edge_b.clone()],
             perim_vertex_count: 3,
         };
-        let merged = merge_corridor_polygons(&[rect_a.clone(), rect_b.clone()], &graph);
+        let merged = merge_corridor_shapes(&[rect_a.clone(), rect_b.clone()], &graph);
 
         eprintln!("\nUnmerged: 2 rects × 4 verts = 8 verts");
-        eprintln!("Merged: {} polygon(s)", merged.len());
-        for (i, poly) in merged.iter().enumerate() {
+        eprintln!("Merged: {} shape(s)", merged.len());
+        for (i, shape) in merged.iter().enumerate() {
+            if shape.is_empty() { continue; }
+            let poly = &shape[0];
             let area = signed_area(poly).abs();
             eprintln!(
-                "  polygon {}: {} verts, area={:.0}",
+                "  shape {}: {} verts (outer), {} holes, area={:.0}",
                 i,
                 poly.len(),
+                shape.len() - 1,
                 area
             );
             for (vi, v) in poly.iter().enumerate() {
@@ -1106,22 +1254,8 @@ mod tests {
         }
 
         // The two rectangles overlap at the corner, so the union should
-        // produce exactly 1 merged polygon (not 2 separate ones).
-        assert_eq!(merged.len(), 1, "overlapping corridors should merge into 1 polygon");
-
-        // NOTE: boolean union of two rectangles produces the outer hull
-        // with intersection vertices — it preserves the jagged inner
-        // edges at the corner. A proper fix requires miter-join corridor
-        // generation (extending outer edges to their intersection),
-        // not just boolean union of independent rectangles.
-        //
-        // The merged polygon has 8 vertices: the union traces both
-        // rectangles' outlines through the overlap region instead of
-        // producing a clean 6-vertex mitered shape.
-        eprintln!(
-            "\nMerged polygon has {} verts (expected 6 for mitered, got 8 from union)",
-            merged[0].len()
-        );
+        // produce exactly 1 merged shape (not 2 separate ones).
+        assert_eq!(merged.len(), 1, "overlapping corridors should merge into 1 shape");
     }
 
     /// Trapezoidal face: horizontal bottom (aisle), diagonal top (aisle),
