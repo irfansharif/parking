@@ -466,11 +466,7 @@ fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
 /// corner points (left and right sides of each edge at the vertex). This
 /// covers all gaps between corridor rectangles in one polygon, regardless
 /// of how many edges meet or their angles.
-fn generate_miter_fills(_graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
-    vec![]
-}
-
-fn _generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
+fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
     let mut fills = Vec::new();
     let mut seen_edges: std::collections::HashSet<(usize, usize)> =
         std::collections::HashSet::new();
@@ -575,12 +571,19 @@ fn merge_corridor_shapes(
     let miter_fills = generate_miter_fills(graph);
 
     // All corridor rects + miter fills as subject paths in a single
-    // union operation. This avoids the compounding floating-point errors
-    // of iterative pairwise union.
+    // union operation. Normalize all polygons to CCW winding (positive
+    // signed area) so the NonZero fill rule unions them correctly —
+    // mixed winding causes overlapping regions to cancel instead of merge.
     let subj: Vec<Vec<[f64; 2]>> = corridors
         .iter()
         .chain(miter_fills.iter())
-        .map(|c| c.iter().map(|v| [v.x, v.y]).collect())
+        .map(|c| {
+            let mut pts = c.clone();
+            if signed_area(&pts) < 0.0 {
+                pts.reverse();
+            }
+            pts.iter().map(|v| [v.x, v.y]).collect()
+        })
         .collect();
 
     if subj.is_empty() {
@@ -1026,8 +1029,7 @@ pub fn generate_from_spines(
         let face_spines = dedup_overlapping_spines(face_spines, 2.0);
         raw_spines.extend(face_spines);
     }
-    // TODO: re-enable collinear spine merging once cross-edge issues are resolved.
-    let all_spines = raw_spines;
+    let all_spines = merge_collinear_spines(raw_spines, 1.0);
 
     // Filter short spines that are miter-fill corner artifacts. Spines
     // shorter than effective_depth can't support a meaningful stall strip.
