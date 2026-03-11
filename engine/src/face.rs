@@ -177,36 +177,27 @@ fn point_to_segment_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
 }
 
 /// Classify each edge of `contour` as aisle-facing (true) or not.
-/// An edge is aisle-facing if its midpoint is NOT close to the site
-/// boundary or any hole boundary — meaning it was carved by a corridor.
-fn classify_face_edges(contour: &[Vec2], boundary: &Polygon, tolerance: f64) -> Vec<bool> {
+/// An edge is aisle-facing if its midpoint lies on a corridor polygon
+/// edge — meaning it was carved by a corridor during the boolean
+/// difference. Uses a tight floating-point epsilon since face edges
+/// are exact sub-segments of corridor edges after the boolean overlay.
+fn classify_face_edges(contour: &[Vec2], corridor_shapes: &[Vec<Vec<Vec2>>]) -> Vec<bool> {
+    let eps = 0.1;
     let n = contour.len();
-    let mut aisle_facing = vec![true; n];
+    let mut aisle_facing = vec![false; n];
     for i in 0..n {
         let j = (i + 1) % n;
         let mid = (contour[i] + contour[j]) * 0.5;
 
-        for bi in 0..boundary.outer.len() {
-            let bj = (bi + 1) % boundary.outer.len();
-            if point_to_segment_dist(mid, boundary.outer[bi], boundary.outer[bj]) < tolerance {
-                aisle_facing[i] = false;
-                break;
-            }
-        }
-        if !aisle_facing[i] {
-            continue;
-        }
-
-        for hole in &boundary.holes {
-            for hi in 0..hole.len() {
-                let hj = (hi + 1) % hole.len();
-                if point_to_segment_dist(mid, hole[hi], hole[hj]) < tolerance {
-                    aisle_facing[i] = false;
-                    break;
+        'outer: for shape in corridor_shapes {
+            for ring in shape {
+                for ci in 0..ring.len() {
+                    let cj = (ci + 1) % ring.len();
+                    if point_to_segment_dist(mid, ring[ci], ring[cj]) < eps {
+                        aisle_facing[i] = true;
+                        break 'outer;
+                    }
                 }
-            }
-            if !aisle_facing[i] {
-                break;
             }
         }
     }
@@ -234,7 +225,7 @@ fn classify_face_edges(contour: &[Vec2], boundary: &Polygon, tolerance: f64) -> 
 fn compute_face_spines(
     shape: &[Vec<Vec2>],
     effective_depth: f64,
-    boundary: &Polygon,
+    corridor_shapes: &[Vec<Vec<Vec2>>],
 ) -> Vec<SpineSegment> {
     if shape.is_empty() || shape[0].len() < 3 {
         return vec![];
@@ -262,7 +253,7 @@ fn compute_face_spines(
             continue;
         }
 
-        let aisle_facing = classify_face_edges(contour, boundary, 2.0);
+        let aisle_facing = classify_face_edges(contour, corridor_shapes);
         let ed = effective_depth - 0.05;
         let min_edge_len = effective_depth * 2.0;
         let is_hole = ci > 0;
@@ -1023,7 +1014,7 @@ pub fn generate_from_spines(
     // face boundaries so stalls flow continuously along shared aisle edges.
     let mut raw_spines = Vec::new();
     for shape in faces.iter() {
-        let face_spines = compute_face_spines(shape, effective_depth, boundary);
+        let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors);
         // Deduplicate overlapping collinear spines within each face.
         // This prevents miter-fill edge spines from double-covering
         // regions already handled by the main corridor spine, without
@@ -1031,7 +1022,8 @@ pub fn generate_from_spines(
         let face_spines = dedup_overlapping_spines(face_spines, 2.0);
         raw_spines.extend(face_spines);
     }
-    let all_spines = merge_collinear_spines(raw_spines, 2.0);
+    // TODO: re-enable collinear spine merging once cross-edge issues are resolved.
+    let all_spines = raw_spines;
 
     // Filter short spines that are miter-fill corner artifacts. Spines
     // shorter than effective_depth can't support a meaningful stall strip.
@@ -1096,6 +1088,15 @@ pub fn generate_from_spines(
 mod tests {
     use super::*;
     use crate::aisle_graph::auto_generate;
+
+    /// Test helper: create a corridor rectangle with one side along a→b.
+    /// The face edge midpoint will lie exactly on this corridor edge.
+    fn test_corridor_along(a: Vec2, b: Vec2) -> Vec<Vec<Vec2>> {
+        let dir = (b - a).normalize();
+        let perp = Vec2::new(-dir.y, dir.x);
+        let w = 24.0;
+        vec![vec![a, b, b + perp * w, a + perp * w]]
+    }
 
     #[test]
     fn test_basic_rectangle_debug() {
@@ -1199,7 +1200,7 @@ mod tests {
                 }
             }
 
-            let face_spines = compute_face_spines(shape, effective_depth, &boundary);
+            let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors);
             eprintln!("  spines from face {}: {}", fi, face_spines.len());
             for (si, s) in face_spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -1303,22 +1304,17 @@ mod tests {
         ];
         let shape = vec![face_contour.clone()];
 
-        // Boundary includes the left (v3→v0) and right (v1→v2) edges.
-        let boundary = Polygon {
-            outer: vec![
-                Vec2::new(0.0, -50.0),
-                Vec2::new(200.0, -50.0),
-                Vec2::new(200.0, 100.0),
-                Vec2::new(0.0, 100.0),
-            ],
-            holes: vec![],
-        };
+        // Corridors along the aisle-facing edges (bottom and top diagonal).
+        let corridor_shapes = vec![
+            test_corridor_along(face_contour[0], face_contour[1]),
+            test_corridor_along(face_contour[2], face_contour[3]),
+        ];
 
         let params = ParkingParams::default(); // 90° stalls, 18ft depth
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &boundary);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes);
 
         eprintln!("\n=== Trapezoid face spine test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -1399,23 +1395,17 @@ mod tests {
         ];
         let shape = vec![face_contour.clone()];
 
-        // Boundary includes the left edge (v4→v0) and cap edges
-        // (v1→v2, v2→v3). Top and bottom are aisle-facing.
-        let boundary = Polygon {
-            outer: vec![
-                Vec2::new(-10.0, -10.0),
-                Vec2::new(210.0, -10.0),
-                Vec2::new(210.0, 70.0),
-                Vec2::new(-10.0, 70.0),
-            ],
-            holes: vec![],
-        };
+        // Corridors along the aisle-facing edges (top and bottom).
+        let corridor_shapes = vec![
+            test_corridor_along(face_contour[0], face_contour[1]),
+            test_corridor_along(face_contour[3], face_contour[4]),
+        ];
 
         let params = ParkingParams::default();
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &boundary);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes);
 
         eprintln!("\n=== Pentagon face spine test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -1506,21 +1496,17 @@ mod tests {
         ];
         let shape = vec![face_contour.clone()];
 
-        let boundary = Polygon {
-            outer: vec![
-                Vec2::new(0.0, -50.0),
-                Vec2::new(200.0, -50.0),
-                Vec2::new(200.0, 80.0),
-                Vec2::new(0.0, 80.0),
-            ],
-            holes: vec![],
-        };
+        // Corridors along the aisle-facing edges (bottom and top).
+        let corridor_shapes = vec![
+            test_corridor_along(face_contour[0], face_contour[1]),
+            test_corridor_along(face_contour[2], face_contour[3]),
+        ];
 
         let params = ParkingParams::default();
         let effective_depth = params.stall_depth
             * params.stall_angle_deg.to_radians().sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &boundary);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes);
         let stalls = place_stalls_on_spines(&spines, &params);
 
         eprintln!("\n=== Narrow face test (30ft between aisles) ===");
@@ -1558,26 +1544,17 @@ mod tests {
         ];
         let shape = vec![face_contour.clone()];
 
-        // Boundary: the site perimeter includes the bottom edge and
-        // diagonal top, but extends far left/right (the left and right
-        // face edges are interior corridor edges, not on the boundary).
-        let boundary = Polygon {
-            outer: vec![
-                Vec2::new(-100.0, 0.0),    // far left, same y as v0
-                Vec2::new(200.0, 0.0),     // far right, same y as v1
-                Vec2::new(200.0, 120.0),   // far right, same y as v2
-                Vec2::new(80.0, 120.0),    // matches v2
-                Vec2::new(0.0, 100.0),     // matches v3
-                Vec2::new(-100.0, 100.0),  // far left
-            ],
-            holes: vec![],
-        };
+        // Corridors along the aisle-facing edges (left and right verticals).
+        let corridor_shapes = vec![
+            test_corridor_along(face_contour[0], face_contour[3]),
+            test_corridor_along(face_contour[1], face_contour[2]),
+        ];
 
         let params = ParkingParams::default();
         let effective_depth =
             params.stall_depth * params.stall_angle_deg.to_radians().sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &boundary);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes);
 
         eprintln!("\n=== Vertical spines + diagonal top test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -1654,6 +1631,11 @@ mod tests {
         eprintln!("\n=== attempt boundary debug ===");
         eprintln!("stalls: {}, spines: {}, faces: {}", layout.stalls.len(), layout.spines.len(), layout.faces.len());
 
+        // Recompute corridor shapes for debug classification.
+        let graph = auto_generate(&input.boundary, &input.params);
+        let dedup_corridors = deduplicate_corridors(&graph);
+        let merged_corridors = merge_corridor_shapes(&dedup_corridors, &graph);
+
         let effective_depth = input.params.stall_depth
             * input.params.stall_angle_deg.to_radians().sin();
 
@@ -1671,7 +1653,7 @@ mod tests {
                 eprintln!("    v{}: ({:.1}, {:.1})", vi, v.x, v.y);
             }
 
-            let aisle_facing = classify_face_edges(contour, &input.boundary, 2.0);
+            let aisle_facing = classify_face_edges(contour, &merged_corridors);
             let ed = effective_depth - 0.05;
             let min_edge_len = effective_depth * 2.0;
             for i in 0..contour.len() {
@@ -1689,7 +1671,7 @@ mod tests {
 
             for (hi, hole) in face.holes.iter().enumerate() {
                 eprintln!("    hole {}: {} verts", hi, hole.len());
-                let hole_af = classify_face_edges(hole, &input.boundary, 2.0);
+                let hole_af = classify_face_edges(hole, &merged_corridors);
                 for i in 0..hole.len() {
                     let j = (i + 1) % hole.len();
                     let elen = (hole[j] - hole[i]).length();
@@ -1699,7 +1681,7 @@ mod tests {
             }
             let mut shape = vec![contour.clone()];
             shape.extend(face.holes.iter().cloned());
-            let spines = compute_face_spines(&shape, effective_depth, &input.boundary);
+            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors);
             eprintln!("    spines: {}", spines.len());
             for (si, s) in spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -1735,6 +1717,11 @@ mod tests {
         eprintln!("\n=== slanted boundary debug ===");
         eprintln!("stalls: {}, spines: {}, faces: {}", layout.stalls.len(), layout.spines.len(), layout.faces.len());
 
+        // Recompute corridor shapes for debug classification.
+        let graph = auto_generate(&input.boundary, &input.params);
+        let dedup_corridors = deduplicate_corridors(&graph);
+        let merged_corridors = merge_corridor_shapes(&dedup_corridors, &graph);
+
         let effective_depth = input.params.stall_depth
             * input.params.stall_angle_deg.to_radians().sin();
 
@@ -1748,7 +1735,7 @@ mod tests {
             }
 
             // Classify edges for this face.
-            let aisle_facing = classify_face_edges(contour, &input.boundary, 2.0);
+            let aisle_facing = classify_face_edges(contour, &merged_corridors);
             let ed = effective_depth - 0.05;
             let min_edge_len = effective_depth * 2.0;
             for i in 0..contour.len() {
@@ -1776,7 +1763,7 @@ mod tests {
             // Compute spines for this face using full shape (contour + holes).
             let mut shape = vec![contour.clone()];
             shape.extend(face.holes.iter().cloned());
-            let spines = compute_face_spines(&shape, effective_depth, &input.boundary);
+            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors);
             eprintln!("    spines: {}", spines.len());
             for (si, s) in spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
