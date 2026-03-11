@@ -256,7 +256,7 @@ fn compute_face_spines(
     let outer_sign = if signed_area(&shape[0]) >= 0.0 { 1.0 } else { -1.0 };
     let mut all_spines = Vec::new();
 
-    for contour in shape.iter() {
+    for (ci, contour) in shape.iter().enumerate() {
         let n = contour.len();
         if n < 3 {
             continue;
@@ -265,20 +265,24 @@ fn compute_face_spines(
         let aisle_facing = classify_face_edges(contour, boundary, 2.0);
         let ed = effective_depth - 0.05;
         let min_edge_len = effective_depth * 2.0;
+        let is_hole = ci > 0;
 
         // Per-edge inset distances: ed for aisle-facing edges, 0 for boundary
-        // edges. Filter short boolean-artifact edges on all contours; for
-        // hole contours, use uniform ed for all aisle-facing edges to avoid
-        // mixed-distance degenerate miters at corridor corners.
+        // edges. For hole contours (corridor cutouts in boundary faces), all
+        // aisle-facing edges get uniform ed regardless of length; zeroing
+        // short connector edges between corridor segments creates
+        // mixed-distance transitions that blow up the miter computation.
         let distances: Vec<f64> = (0..n)
             .map(|i| {
                 if !aisle_facing[i] {
                     return 0.0;
                 }
-                let j = (i + 1) % n;
-                let edge_len = (contour[j] - contour[i]).length();
-                if edge_len < min_edge_len {
-                    return 0.0;
+                if !is_hole {
+                    let j = (i + 1) % n;
+                    let edge_len = (contour[j] - contour[i]).length();
+                    if edge_len < min_edge_len {
+                        return 0.0;
+                    }
                 }
                 ed
             })
@@ -517,8 +521,8 @@ fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
         let ne = edges_sorted.len();
         for i in 0..ne {
             let j = (i + 1) % ne;
-            let (_, d1, w1) = edges_sorted[i];
-            let (_, d2, w2) = edges_sorted[j];
+            let (a1, d1, w1) = edges_sorted[i];
+            let (a2, d2, w2) = edges_sorted[j];
 
             let n1 = Vec2::new(-d1.y, d1.x);
             let n2 = Vec2::new(-d2.y, d2.x);
@@ -534,10 +538,22 @@ fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
             let t = (p2 - p1).cross(d2) / denom;
             let miter = p1 + d1 * t;
 
-            // Miter limit: cap at 4x edge width to avoid long spikes.
-            let max_w = w1.max(w2);
-            if (miter - v).length() > max_w * 4.0 {
-                continue;
+            // Angular gap from edge i to edge j (going CCW).
+            let gap = if j > i {
+                a2 - a1
+            } else {
+                (a2 + std::f64::consts::TAU) - a1
+            };
+
+            // For outer/convex gaps (< 180°), cap the miter distance to
+            // prevent spikes from acute corners extending across the lot.
+            // Inner/concave gaps point inward between corridors and are
+            // naturally bounded by neighboring geometry.
+            if gap < std::f64::consts::PI {
+                let max_w = w1.max(w2);
+                if (miter - v).length() > max_w * 4.0 {
+                    continue;
+                }
             }
 
             let wedge = vec![v, p1, miter, p2];
@@ -735,8 +751,12 @@ fn try_merge_spines(a: &SpineSegment, b: &SpineSegment, tolerance: f64) -> Optio
         return None;
     }
 
-    // Must have same outward normal direction.
-    if a.outward_normal.dot(b.outward_normal) < 0.99 {
+    // Must have (nearly) identical outward normals. Spines from the same
+    // corridor edge have exactly equal normals; spines from different edges
+    // at the same boundary corner differ by the angle between the edges.
+    // A tight threshold (0.9999 ≈ 0.8°) prevents cross-edge merging that
+    // would extend one edge's normal over another edge's territory.
+    if a.outward_normal.dot(b.outward_normal) < 0.9999 {
         return None;
     }
 
@@ -972,18 +992,19 @@ fn dedup_overlapping_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<Sp
 }
 
 /// Generate stalls from positive-space face extraction + per-edge spine shifting.
-/// Returns (stalls, islands, corridor_polygons, spine_lines, faces).
+/// Returns (stalls, islands, corridor_polygons, spine_lines, faces, miter_fills).
 pub fn generate_from_spines(
     graph: &DriveAisleGraph,
     boundary: &Polygon,
     params: &ParkingParams,
-) -> (Vec<StallQuad>, Vec<Island>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>) {
+) -> (Vec<StallQuad>, Vec<Island>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>) {
     let stall_angle_rad = params.stall_angle_deg.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
     // Build deduplicated corridor rectangles + miter wedge fills, then
     // boolean-union them into merged shapes (preserving holes for loops).
     let dedup_corridors = deduplicate_corridors(graph);
+    let miter_fills = generate_miter_fills(graph);
     let merged_corridors = merge_corridor_shapes(&dedup_corridors, graph);
 
     // Flatten outer contours for rendering (aisle polygon overlay).
@@ -1068,7 +1089,7 @@ pub fn generate_from_spines(
         })
         .collect();
 
-    (all_stalls, all_islands, aisle_polygons, spine_lines, face_list)
+    (all_stalls, all_islands, aisle_polygons, spine_lines, face_list, miter_fills)
 }
 
 #[cfg(test)]
@@ -1090,7 +1111,7 @@ mod tests {
         let params = ParkingParams::default();
         let graph = auto_generate(&boundary, &params);
 
-        let (stalls, islands, _, spines, _) = generate_from_spines(&graph, &boundary, &params);
+        let (stalls, islands, _, spines, _, _) = generate_from_spines(&graph, &boundary, &params);
         eprintln!("\nTotal stalls: {}", stalls.len());
         eprintln!("Total spines: {}", spines.len());
         eprintln!("Total islands: {}", islands.len());
@@ -1106,7 +1127,7 @@ mod tests {
         let boundary = Polygon {
             outer: vec![
                 Vec2::new(0.0, 0.0),
-                Vec2::new(95.33, 51.0),
+                Vec2::new(227.0, 24.33),
                 Vec2::new(300.0, 200.0),
                 Vec2::new(0.0, 200.0),
             ],
@@ -1619,7 +1640,7 @@ mod tests {
             boundary: Polygon {
                 outer: vec![
                     Vec2::new(0.0, 0.0),
-                    Vec2::new(327.33, 23.0),
+                    Vec2::new(130.67, 102.33),
                     Vec2::new(300.0, 200.0),
                     Vec2::new(0.0, 200.0),
                 ],
