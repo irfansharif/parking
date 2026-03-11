@@ -28,42 +28,79 @@ pub(crate) fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2>
 // Face extraction via boolean overlay
 // ---------------------------------------------------------------------------
 
+/// Compute signed area of a path in [f64; 2] form.
+fn signed_area_f64(path: &[[f64; 2]]) -> f64 {
+    let n = path.len();
+    let mut area = 0.0;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        area += path[i][0] * path[j][1] - path[j][0] * path[i][1];
+    }
+    area * 0.5
+}
+
+/// Normalize a path to CCW winding (positive signed area).
+fn ensure_ccw(path: &mut Vec<[f64; 2]>) {
+    if signed_area_f64(path) < 0.0 {
+        path.reverse();
+    }
+}
+
 /// Extract positive-space face polygons by subtracting corridors and holes
 /// from the boundary. Returns Vec<Shape> where each shape is Vec<Vec<Vec2>>
 /// with shape[0] = outer contour, shape[1..] = holes within that face.
+///
+/// Done in two steps so that corridor contours (which have consistent
+/// relative winding from the union output) never share a clip set with
+/// boundary hole contours (which have user-determined winding). Mixing
+/// them in a single NonZero operation causes winding interference.
 fn extract_faces(
     boundary: &Polygon,
     merged_corridors: &[Vec<Vec<Vec2>>],
 ) -> Vec<Vec<Vec<Vec2>>> {
-    // Subject: boundary outer ring.
-    let subj: Vec<[f64; 2]> = boundary.outer.iter().map(|v| [v.x, v.y]).collect();
+    let to_path = |pts: &[Vec2]| -> Vec<[f64; 2]> {
+        pts.iter().map(|v| [v.x, v.y]).collect()
+    };
+    let to_vec2 = |shape: Vec<Vec<[f64; 2]>>| -> Vec<Vec<Vec2>> {
+        shape
+            .into_iter()
+            .map(|contour| contour.into_iter().map(|p| Vec2::new(p[0], p[1])).collect())
+            .collect()
+    };
 
-    // Clip: all contours from merged corridor shapes + boundary holes.
-    let mut clip_paths: Vec<Vec<[f64; 2]>> = Vec::new();
+    // Step 1: boundary MINUS corridors. Corridor outers and holes have
+    // consistent relative winding from the boolean union output, so
+    // NonZero handles them correctly in isolation.
+    let subj = to_path(&boundary.outer);
+    let mut corridor_paths: Vec<Vec<[f64; 2]>> = Vec::new();
     for shape in merged_corridors {
         for contour in shape {
-            let path: Vec<[f64; 2]> = contour.iter().map(|v| [v.x, v.y]).collect();
-            clip_paths.push(path);
+            corridor_paths.push(to_path(contour));
         }
     }
-    for hole in &boundary.holes {
-        let path: Vec<[f64; 2]> = hole.iter().map(|v| [v.x, v.y]).collect();
-        clip_paths.push(path);
+    let after_corridors = subj.overlay(&corridor_paths, OverlayRule::Difference, FillRule::NonZero);
+
+    // Step 2: subtract boundary holes. Kept separate so that boundary
+    // hole winding can't interfere with corridor hole winding.
+    if boundary.holes.is_empty() {
+        return after_corridors.into_iter().map(to_vec2).collect();
     }
 
-    // Perform boolean difference: boundary MINUS (corridors + holes).
-    let result = subj.overlay(&clip_paths, OverlayRule::Difference, FillRule::NonZero);
+    let mut hole_paths: Vec<Vec<[f64; 2]>> = Vec::new();
+    for hole in &boundary.holes {
+        let mut path = to_path(hole);
+        ensure_ccw(&mut path);
+        hole_paths.push(path);
+    }
 
-    // Convert back to Vec2.
-    result
+    // Feed step 1 output as subject paths for the second subtraction.
+    let subj2: Vec<Vec<[f64; 2]>> = after_corridors
         .into_iter()
-        .map(|shape| {
-            shape
-                .into_iter()
-                .map(|contour| contour.into_iter().map(|p| Vec2::new(p[0], p[1])).collect())
-                .collect()
-        })
-        .collect()
+        .flat_map(|shape| shape.into_iter())
+        .collect();
+    let result = subj2.overlay(&hole_paths, OverlayRule::Difference, FillRule::NonZero);
+
+    result.into_iter().map(to_vec2).collect()
 }
 
 // ---------------------------------------------------------------------------
