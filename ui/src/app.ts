@@ -5,6 +5,7 @@ import {
   ParkingParams,
   ParkingLayout,
   GenerateInput,
+  DebugToggles,
 } from "./types";
 
 export interface Camera {
@@ -39,6 +40,7 @@ export interface AppState {
   boundary: Polygon;
   aisleGraph: DriveAisleGraph | null;
   params: ParkingParams;
+  debug: DebugToggles;
   layout: ParkingLayout | null;
   selectedVertex: VertexRef | null;
   hoveredVertex: VertexRef | null;
@@ -84,6 +86,23 @@ export class App {
         ada_count: 0,
         site_offset: 0,
       },
+      debug: {
+        miter_fills: true,
+        inner_miter_fills: true,
+        spike_removal: true,
+        hole_filtering: true,
+        face_extraction: true,
+        edge_classification: true,
+        short_edge_zeroing: true,
+        spine_clipping: true,
+        spine_dedup: true,
+        spine_merging: true,
+        short_spine_filter: true,
+        stall_face_clipping: true,
+        endcap_islands: true,
+        island_width_filter: true,
+        boundary_clipping: true,
+      },
       layout: null,
       selectedVertex: null,
       hoveredVertex: null,
@@ -109,6 +128,7 @@ export class App {
       boundary: this.state.boundary,
       aisle_graph: this.state.aisleGraph,
       params: this.state.params,
+      debug: this.state.debug,
     };
     const inputJson = JSON.stringify(input);
     // Stash on window so you can grab it from the console:

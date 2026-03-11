@@ -238,6 +238,83 @@ pub struct SpineLine {
 }
 
 // ---------------------------------------------------------------------------
+// Debug toggles (diagnostic flags for isolating pipeline stages)
+// ---------------------------------------------------------------------------
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DebugToggles {
+    // Corridor merging
+    #[serde(default = "default_true")]
+    pub miter_fills: bool,
+    #[serde(default = "default_true")]
+    pub inner_miter_fills: bool,
+    #[serde(default = "default_true")]
+    pub spike_removal: bool,
+    #[serde(default = "default_true")]
+    pub hole_filtering: bool,
+
+    // Face extraction
+    #[serde(default = "default_true")]
+    pub face_extraction: bool,
+
+    // Spine generation
+    #[serde(default = "default_true")]
+    pub edge_classification: bool,
+    #[serde(default = "default_true")]
+    pub short_edge_zeroing: bool,
+    #[serde(default = "default_true")]
+    pub spine_clipping: bool,
+
+    // Spine post-processing
+    #[serde(default = "default_true")]
+    pub spine_dedup: bool,
+    #[serde(default = "default_true")]
+    pub spine_merging: bool,
+    #[serde(default = "default_true")]
+    pub short_spine_filter: bool,
+
+    // Stall placement
+    #[serde(default = "default_true")]
+    pub stall_face_clipping: bool,
+
+    // Islands
+    #[serde(default = "default_true")]
+    pub endcap_islands: bool,
+    #[serde(default = "default_true")]
+    pub island_width_filter: bool,
+
+    // Boundary
+    #[serde(default = "default_true")]
+    pub boundary_clipping: bool,
+}
+
+impl Default for DebugToggles {
+    fn default() -> Self {
+        Self {
+            miter_fills: true,
+            inner_miter_fills: true,
+            spike_removal: true,
+            hole_filtering: true,
+            face_extraction: true,
+            edge_classification: true,
+            short_edge_zeroing: true,
+            spine_clipping: true,
+            spine_dedup: true,
+            spine_merging: true,
+            short_spine_filter: true,
+            stall_face_clipping: true,
+            endcap_islands: true,
+            island_width_filter: true,
+            boundary_clipping: true,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Top-level input
 // ---------------------------------------------------------------------------
 
@@ -246,4 +323,6 @@ pub struct GenerateInput {
     pub boundary: Polygon,
     pub aisle_graph: Option<DriveAisleGraph>,
     pub params: ParkingParams,
+    #[serde(default)]
+    pub debug: DebugToggles,
 }

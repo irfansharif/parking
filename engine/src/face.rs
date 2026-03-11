@@ -181,7 +181,10 @@ fn point_to_segment_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
 /// edge — meaning it was carved by a corridor during the boolean
 /// difference. Uses a tight floating-point epsilon since face edges
 /// are exact sub-segments of corridor edges after the boolean overlay.
-fn classify_face_edges(contour: &[Vec2], corridor_shapes: &[Vec<Vec<Vec2>>]) -> Vec<bool> {
+fn classify_face_edges(contour: &[Vec2], corridor_shapes: &[Vec<Vec<Vec2>>], classify: bool) -> Vec<bool> {
+    if !classify {
+        return vec![true; contour.len()];
+    }
     let eps = 0.1;
     let n = contour.len();
     let mut aisle_facing = vec![false; n];
@@ -226,6 +229,7 @@ fn compute_face_spines(
     shape: &[Vec<Vec2>],
     effective_depth: f64,
     corridor_shapes: &[Vec<Vec<Vec2>>],
+    debug: &DebugToggles,
 ) -> Vec<SpineSegment> {
     if shape.is_empty() || shape[0].len() < 3 {
         return vec![];
@@ -253,7 +257,7 @@ fn compute_face_spines(
             continue;
         }
 
-        let aisle_facing = classify_face_edges(contour, corridor_shapes);
+        let aisle_facing = classify_face_edges(contour, corridor_shapes, debug.edge_classification);
         let ed = effective_depth - 0.05;
         let min_edge_len = effective_depth * 2.0;
         let is_hole = ci > 0;
@@ -268,7 +272,7 @@ fn compute_face_spines(
                 if !aisle_facing[i] {
                     return 0.0;
                 }
-                if !is_hole {
+                if debug.short_edge_zeroing && !is_hole {
                     let j = (i + 1) % n;
                     let edge_len = (contour[j] - contour[i]).length();
                     if edge_len < min_edge_len {
@@ -279,7 +283,7 @@ fn compute_face_spines(
             })
             .collect();
 
-        let spines = skeleton_inset_spines(contour, &distances, &aisle_facing, outer_sign, shape);
+        let spines = skeleton_inset_spines(contour, &distances, &aisle_facing, outer_sign, shape, debug.spine_clipping);
         all_spines.extend(spines);
     }
 
@@ -297,6 +301,7 @@ fn skeleton_inset_spines(
     aisle_facing: &[bool],
     sign: f64,
     face_shape: &[Vec<Vec2>],
+    clip: bool,
 ) -> Vec<SpineSegment> {
     let n = polygon.len();
     if n < 3 {
@@ -400,6 +405,17 @@ fn skeleton_inset_spines(
         let spine_end = miter[j];
         let outward = Vec2::new(-normals[i].x, -normals[i].y);
 
+        if !clip {
+            if (spine_end - spine_start).length() > 1.0 {
+                spines.push(SpineSegment {
+                    start: spine_start,
+                    end: spine_end,
+                    outward_normal: outward,
+                });
+            }
+            continue;
+        }
+
         // Clip both the spine and the "stall reach" line (spine offset by
         // stall_depth in the outward direction) to the face interior. Stalls
         // extend perpendicular from the spine by stall_depth, so the offset
@@ -466,7 +482,10 @@ fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
 /// corner points (left and right sides of each edge at the vertex). This
 /// covers all gaps between corridor rectangles in one polygon, regardless
 /// of how many edges meet or their angles.
-fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
+fn generate_miter_fills(graph: &DriveAisleGraph, debug: &DebugToggles) -> Vec<Vec<Vec2>> {
+    if !debug.miter_fills {
+        return vec![];
+    }
     let mut fills = Vec::new();
     let mut seen_edges: std::collections::HashSet<(usize, usize)> =
         std::collections::HashSet::new();
@@ -545,6 +564,8 @@ fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
                 if (miter - v).length() > max_w * 4.0 {
                     continue;
                 }
+            } else if !debug.inner_miter_fills {
+                continue;
             }
 
             let wedge = vec![v, p1, miter, p2];
@@ -563,12 +584,13 @@ fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
 fn merge_corridor_shapes(
     corridors: &[Vec<Vec2>],
     graph: &DriveAisleGraph,
+    debug: &DebugToggles,
 ) -> Vec<Vec<Vec<Vec2>>> {
     if corridors.is_empty() {
         return vec![];
     }
 
-    let miter_fills = generate_miter_fills(graph);
+    let miter_fills = generate_miter_fills(graph, debug);
 
     // All corridor rects + miter fills as subject paths in a single
     // union operation. Normalize all polygons to CCW winding (positive
@@ -614,10 +636,14 @@ fn merge_corridor_shapes(
                 .enumerate()
                 .filter_map(|(i, contour)| {
                     let pts: Vec<Vec2> = contour.into_iter().map(|p| Vec2::new(p[0], p[1])).collect();
-                    let pts = remove_contour_spikes(pts, 2.0);
+                    let pts = if debug.spike_removal {
+                        remove_contour_spikes(pts, 2.0)
+                    } else {
+                        pts
+                    };
                     // Keep outer contour (index 0) unconditionally.
                     // Filter hole contours (index 1+) by area.
-                    if i > 0 && signed_area(&pts).abs() < min_hole_area {
+                    if i > 0 && debug.hole_filtering && signed_area(&pts).abs() < min_hole_area {
                         return None;
                     }
                     Some(pts)
@@ -995,6 +1021,7 @@ pub fn generate_from_spines(
     graph: &DriveAisleGraph,
     boundary: &Polygon,
     params: &ParkingParams,
+    debug: &DebugToggles,
 ) -> (Vec<StallQuad>, Vec<Island>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>) {
     let stall_angle_rad = params.stall_angle_deg.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin();
@@ -1002,8 +1029,8 @@ pub fn generate_from_spines(
     // Build deduplicated corridor rectangles + miter wedge fills, then
     // boolean-union them into merged shapes (preserving holes for loops).
     let dedup_corridors = deduplicate_corridors(graph);
-    let miter_fills = generate_miter_fills(graph);
-    let merged_corridors = merge_corridor_shapes(&dedup_corridors, graph);
+    let miter_fills = generate_miter_fills(graph, debug);
+    let merged_corridors = merge_corridor_shapes(&dedup_corridors, graph, debug);
 
     // Flatten outer contours for rendering (aisle polygon overlay).
     let aisle_polygons: Vec<Vec<Vec2>> = merged_corridors
@@ -1015,36 +1042,50 @@ pub fn generate_from_spines(
     // Extract faces by subtracting the merged corridor union from the
     // boundary. Since the union resolves all internal seams between
     // corridor rects and miter fills, no sliver artifacts remain.
-    let faces = extract_faces(boundary, &merged_corridors);
+    let faces = if debug.face_extraction {
+        extract_faces(boundary, &merged_corridors)
+    } else {
+        vec![]
+    };
 
     // Collect spines from all faces, then merge collinear segments across
     // face boundaries so stalls flow continuously along shared aisle edges.
     let mut raw_spines = Vec::new();
     for shape in faces.iter() {
-        let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors);
-        // Deduplicate overlapping collinear spines within each face.
-        // This prevents miter-fill edge spines from double-covering
-        // regions already handled by the main corridor spine, without
-        // affecting legitimate cross-face overlaps (which should merge).
-        let face_spines = dedup_overlapping_spines(face_spines, 2.0);
+        let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, debug);
+        let face_spines = if debug.spine_dedup {
+            dedup_overlapping_spines(face_spines, 2.0)
+        } else {
+            face_spines
+        };
         raw_spines.extend(face_spines);
     }
-    let all_spines = merge_collinear_spines(raw_spines, 1.0);
+    let all_spines = if debug.spine_merging {
+        merge_collinear_spines(raw_spines, 1.0)
+    } else {
+        raw_spines
+    };
 
-    // Filter short spines that are miter-fill corner artifacts. Spines
-    // shorter than effective_depth can't support a meaningful stall strip.
-    let min_spine_len = effective_depth;
-    let all_spines: Vec<SpineSegment> = all_spines
-        .into_iter()
-        .filter(|s| (s.end - s.start).length() >= min_spine_len)
-        .collect();
+    let all_spines: Vec<SpineSegment> = if debug.short_spine_filter {
+        let min_spine_len = effective_depth;
+        all_spines
+            .into_iter()
+            .filter(|s| (s.end - s.start).length() >= min_spine_len)
+            .collect()
+    } else {
+        all_spines
+    };
 
     // Place stalls on merged spines.
     let all_stalls = place_stalls_on_spines(&all_spines, params);
 
     // Clip stalls to face interiors. A stall that protrudes past the face
     // boundary into a corridor (at miter-fill corners) is removed.
-    let all_stalls = clip_stalls_to_faces(all_stalls, &faces);
+    let all_stalls = if debug.stall_face_clipping {
+        clip_stalls_to_faces(all_stalls, &faces)
+    } else {
+        all_stalls
+    };
 
 
 
@@ -1054,17 +1095,23 @@ pub fn generate_from_spines(
     // Minimum island width: filter thin slivers between close parallel spines.
     let min_island_width = params.stall_width;
 
-    for shape in &faces {
-        let islands = endcap_islands_for_face(shape, &all_stalls, min_island_area);
-        for island in islands {
-            // Approximate minimum width: 4 * area / perimeter.
-            let area = signed_area(&island.polygon).abs();
-            let perimeter: f64 = island.polygon.iter().enumerate().map(|(i, v)| {
-                let next = &island.polygon[(i + 1) % island.polygon.len()];
-                (*next - *v).length()
-            }).sum();
-            if perimeter > 0.0 && 4.0 * area / perimeter >= min_island_width {
-                all_islands.push(island);
+    if debug.endcap_islands {
+        for shape in &faces {
+            let islands = endcap_islands_for_face(shape, &all_stalls, min_island_area);
+            for island in islands {
+                if !debug.island_width_filter {
+                    all_islands.push(island);
+                    continue;
+                }
+                // Approximate minimum width: 4 * area / perimeter.
+                let area = signed_area(&island.polygon).abs();
+                let perimeter: f64 = island.polygon.iter().enumerate().map(|(i, v)| {
+                    let next = &island.polygon[(i + 1) % island.polygon.len()];
+                    (*next - *v).length()
+                }).sum();
+                if perimeter > 0.0 && 4.0 * area / perimeter >= min_island_width {
+                    all_islands.push(island);
+                }
             }
         }
     }
@@ -1118,7 +1165,7 @@ mod tests {
         let params = ParkingParams::default();
         let graph = auto_generate(&boundary, &params);
 
-        let (stalls, islands, _, spines, _, _) = generate_from_spines(&graph, &boundary, &params);
+        let (stalls, islands, _, spines, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default());
         eprintln!("\nTotal stalls: {}", stalls.len());
         eprintln!("Total spines: {}", spines.len());
         eprintln!("Total islands: {}", islands.len());

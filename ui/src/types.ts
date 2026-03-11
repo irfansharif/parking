@@ -70,8 +70,34 @@ export interface ParkingParams {
   site_offset: number;
 }
 
+export interface DebugToggles {
+  // Corridor merging
+  miter_fills: boolean;
+  inner_miter_fills: boolean;
+  spike_removal: boolean;
+  hole_filtering: boolean;
+  // Face extraction
+  face_extraction: boolean;
+  // Spine generation
+  edge_classification: boolean;
+  short_edge_zeroing: boolean;
+  spine_clipping: boolean;
+  // Spine post-processing
+  spine_dedup: boolean;
+  spine_merging: boolean;
+  short_spine_filter: boolean;
+  // Stall placement
+  stall_face_clipping: boolean;
+  // Islands
+  endcap_islands: boolean;
+  island_width_filter: boolean;
+  // Boundary
+  boundary_clipping: boolean;
+}
+
 export interface GenerateInput {
   boundary: Polygon;
   aisle_graph: DriveAisleGraph | null;
   params: ParkingParams;
+  debug: DebugToggles;
 }

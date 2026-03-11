@@ -21,9 +21,13 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     };
 
     let (stalls, spine_islands, aisle_polygons, spines, faces, miter_fills) =
-        generate_from_spines(&graph, &input.boundary, &input.params);
+        generate_from_spines(&graph, &input.boundary, &input.params, &input.debug);
 
-    let mut stalls = clip_stalls_to_boundary(stalls, &input.boundary);
+    let mut stalls = if input.debug.boundary_clipping {
+        clip_stalls_to_boundary(stalls, &input.boundary)
+    } else {
+        stalls
+    };
 
     // ADA stall assignment: mark the N stalls closest to a focus point
     // (default: centroid of the first hole, or bottom-left of boundary).

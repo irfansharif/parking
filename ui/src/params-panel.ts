@@ -1,5 +1,5 @@
 import { App, LayerVisibility } from "./app";
-import { ParkingParams } from "./types";
+import { ParkingParams, DebugToggles } from "./types";
 
 interface ParamDef {
   key: keyof ParkingParams;
@@ -178,6 +178,132 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     label.appendChild(document.createTextNode(` ${def.label}`));
     group.appendChild(label);
     container.appendChild(group);
+  }
+
+  // Debug toggles section (hierarchical)
+  const debugTitle = document.createElement("h2");
+  debugTitle.textContent = "Debug Toggles";
+  container.appendChild(debugTitle);
+
+  interface DebugGroupDef {
+    label: string;
+    toggles: { key: keyof DebugToggles; label: string; parent?: keyof DebugToggles }[];
+  }
+
+  const DEBUG_GROUPS: DebugGroupDef[] = [
+    {
+      label: "Corridor Merging",
+      toggles: [
+        { key: "miter_fills", label: "Miter Fills" },
+        { key: "inner_miter_fills", label: "Inner Miter Fills", parent: "miter_fills" },
+        { key: "spike_removal", label: "Spike Removal" },
+        { key: "hole_filtering", label: "Hole Filtering" },
+      ],
+    },
+    {
+      label: "Face Extraction",
+      toggles: [
+        { key: "face_extraction", label: "Face Extraction" },
+      ],
+    },
+    {
+      label: "Spine Generation",
+      toggles: [
+        { key: "edge_classification", label: "Edge Classification" },
+        { key: "short_edge_zeroing", label: "Short Edge Zeroing" },
+        { key: "spine_clipping", label: "Spine Clipping" },
+      ],
+    },
+    {
+      label: "Spine Post-processing",
+      toggles: [
+        { key: "spine_dedup", label: "Spine Dedup" },
+        { key: "spine_merging", label: "Spine Merging" },
+        { key: "short_spine_filter", label: "Short Spine Filter" },
+      ],
+    },
+    {
+      label: "Stall Placement",
+      toggles: [
+        { key: "stall_face_clipping", label: "Stall-to-Face Clipping" },
+      ],
+    },
+    {
+      label: "Islands",
+      toggles: [
+        { key: "endcap_islands", label: "Endcap Islands" },
+        { key: "island_width_filter", label: "Island Width Filter", parent: "endcap_islands" },
+      ],
+    },
+    {
+      label: "Boundary",
+      toggles: [
+        { key: "boundary_clipping", label: "Boundary Clipping" },
+      ],
+    },
+  ];
+
+  const checkboxMap = new Map<keyof DebugToggles, HTMLInputElement>();
+
+  for (const group of DEBUG_GROUPS) {
+    const groupLabel = document.createElement("div");
+    groupLabel.className = "param-group";
+    groupLabel.style.fontWeight = "bold";
+    groupLabel.style.fontSize = "0.85em";
+    groupLabel.style.opacity = "0.6";
+    groupLabel.style.marginTop = "8px";
+    groupLabel.textContent = group.label;
+    container.appendChild(groupLabel);
+
+    for (const def of group.toggles) {
+      const row = document.createElement("div");
+      row.className = "param-group layer-toggle";
+      if (def.parent) {
+        row.style.paddingLeft = "16px";
+      }
+
+      const label = document.createElement("label");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = app.state.debug[def.key];
+      checkboxMap.set(def.key, checkbox);
+
+      checkbox.addEventListener("change", () => {
+        app.state.debug[def.key] = checkbox.checked;
+        // If disabling a parent, disable its children too.
+        if (!checkbox.checked) {
+          for (const t of group.toggles) {
+            if (t.parent === def.key) {
+              app.state.debug[t.key] = false;
+              const childCb = checkboxMap.get(t.key);
+              if (childCb) childCb.checked = false;
+            }
+          }
+        }
+        app.generate();
+      });
+
+      // Disable child checkbox when parent is off.
+      if (def.parent) {
+        const parentCb = checkboxMap.get(def.parent);
+        if (parentCb && !parentCb.checked) {
+          checkbox.disabled = true;
+        }
+        // Watch parent changes to enable/disable.
+        parentCb?.addEventListener("change", () => {
+          checkbox.disabled = !parentCb.checked;
+          if (!parentCb.checked) {
+            checkbox.checked = false;
+            app.state.debug[def.key] = false;
+          }
+        });
+      }
+
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode(` ${def.label}`));
+      row.appendChild(label);
+      container.appendChild(row);
+    }
   }
 
   // Metrics section
