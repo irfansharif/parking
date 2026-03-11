@@ -38,8 +38,8 @@ export class Renderer {
     if (state.layout) {
       // 2b. Positive-space faces (debug overlay)
       if (state.layers.faces && state.layout.faces) {
-        for (const face of state.layout.faces) {
-          this.drawFace(face);
+        for (let i = 0; i < state.layout.faces.length; i++) {
+          this.drawFace(state.layout.faces[i], i);
         }
       }
 
@@ -52,6 +52,28 @@ export class Renderer {
             "rgba(255, 80, 80, 0.7)",
             0.5,
           );
+        }
+      }
+
+      // 2d. Skeleton debug (arcs + nodes)
+      if (state.layers.skeletonDebug && state.layout.skeleton_debug) {
+        for (const sk of state.layout.skeleton_debug) {
+          // Draw skeleton arcs as thin cyan lines.
+          for (const arc of sk.arcs) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(arc[0].x, arc[0].y);
+            this.ctx.lineTo(arc[1].x, arc[1].y);
+            this.ctx.strokeStyle = "rgba(78, 205, 196, 0.7)";
+            this.ctx.lineWidth = 1;
+            this.ctx.stroke();
+          }
+          // Draw skeleton nodes as yellow dots.
+          for (const node of sk.nodes) {
+            this.ctx.beginPath();
+            this.ctx.arc(node.x, node.y, 2.5, 0, Math.PI * 2);
+            this.ctx.fillStyle = "rgba(255, 221, 87, 0.85)";
+            this.ctx.fill();
+          }
         }
       }
 
@@ -172,30 +194,6 @@ export class Renderer {
       ctx.fillStyle = "rgba(30, 30, 50, 0.95)";
       ctx.fill();
 
-      // Crosshatch pattern
-      ctx.save();
-      ctx.beginPath();
-      this.tracePath(hole);
-      ctx.clip();
-      ctx.strokeStyle = "rgba(233, 69, 96, 0.3)";
-      ctx.lineWidth = 0.5;
-      const minX = Math.min(...hole.map((v) => v.x));
-      const minY = Math.min(...hole.map((v) => v.y));
-      const maxX = Math.max(...hole.map((v) => v.x));
-      const maxY = Math.max(...hole.map((v) => v.y));
-      const spacing = 5;
-      ctx.beginPath();
-      for (
-        let d = minX + minY - spacing;
-        d <= maxX + maxY + spacing;
-        d += spacing
-      ) {
-        ctx.moveTo(d - minY, minY);
-        ctx.lineTo(d - maxY, maxY);
-      }
-      ctx.stroke();
-      ctx.restore();
-
       // Hole boundary stroke
       ctx.beginPath();
       this.tracePath(hole);
@@ -205,8 +203,25 @@ export class Renderer {
     }
   }
 
-  private drawFace(face: Face): void {
+  private static FACE_COLORS = [
+    [255, 100, 100], // red
+    [100, 200, 255], // blue
+    [100, 255, 100], // green
+    [255, 200, 50],  // yellow
+    [200, 100, 255], // purple
+    [255, 150, 50],  // orange
+    [50, 255, 200],  // teal
+    [255, 100, 200], // pink
+    [150, 255, 50],  // lime
+    [100, 150, 255], // indigo
+    [255, 220, 100], // gold
+    [50, 200, 150],  // seafoam
+  ];
+
+  private drawFace(face: Face, index: number): void {
     const { ctx } = this;
+    const colors = Renderer.FACE_COLORS;
+    const [r, g, b] = colors[index % colors.length];
     ctx.beginPath();
     this.tracePath(face.contour);
     if (face.holes) {
@@ -214,9 +229,9 @@ export class Renderer {
         this.tracePath(hole);
       }
     }
-    ctx.fillStyle = "rgba(255, 240, 150, 0.15)";
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.25)`;
     ctx.fill("evenodd");
-    ctx.strokeStyle = "rgba(255, 165, 0, 0.6)";
+    ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.8)`;
     ctx.lineWidth = 0.5;
     ctx.stroke();
   }

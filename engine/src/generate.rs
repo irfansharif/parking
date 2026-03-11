@@ -20,7 +20,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         None => auto_generate(&input.boundary, &input.params),
     };
 
-    let (stalls, spine_islands, aisle_polygons, spines, faces, miter_fills) =
+    let (stalls, spine_islands, aisle_polygons, spines, faces, miter_fills, skeleton_debug) =
         generate_from_spines(&graph, &input.boundary, &input.params, &input.debug);
 
     let mut stalls = if input.debug.boundary_clipping {
@@ -75,5 +75,6 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         spines,
         faces,
         miter_fills,
+        skeleton_debug,
     }
 }

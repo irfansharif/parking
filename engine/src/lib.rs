@@ -4,6 +4,7 @@ pub mod aisle_graph;
 pub mod segment;
 pub mod island;
 pub mod clip;
+pub mod skeleton;
 pub mod face;
 pub mod generate;
 

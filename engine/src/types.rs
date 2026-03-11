@@ -161,6 +161,18 @@ pub struct ParkingLayout {
     pub faces: Vec<Face>,
     #[serde(default)]
     pub miter_fills: Vec<Vec<Vec2>>,
+    #[serde(default)]
+    pub skeleton_debug: Vec<SkeletonDebug>,
+}
+
+// ---------------------------------------------------------------------------
+// Skeleton debug output
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SkeletonDebug {
+    pub arcs: Vec<[Vec2; 2]>,
+    pub nodes: Vec<Vec2>,
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +302,10 @@ pub struct DebugToggles {
     // Boundary
     #[serde(default = "default_true")]
     pub boundary_clipping: bool,
+
+    // Skeleton debug visualization
+    #[serde(default)]
+    pub skeleton_debug: bool,
 }
 
 impl Default for DebugToggles {
@@ -310,6 +326,7 @@ impl Default for DebugToggles {
             endcap_islands: true,
             island_width_filter: true,
             boundary_clipping: true,
+            skeleton_debug: false,
         }
     }
 }

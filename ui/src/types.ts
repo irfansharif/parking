@@ -38,6 +38,7 @@ export interface ParkingLayout {
   spines: SpineLine[];
   faces: Face[];
   miter_fills: Vec2[][];
+  skeleton_debug: { arcs: [Vec2, Vec2][]; nodes: Vec2[] }[];
 }
 
 export interface AisleEdge {
@@ -93,6 +94,8 @@ export interface DebugToggles {
   island_width_filter: boolean;
   // Boundary
   boundary_clipping: boolean;
+  // Skeleton debug visualization
+  skeleton_debug: boolean;
 }
 
 export interface GenerateInput {

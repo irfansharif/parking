@@ -34,6 +34,7 @@ export interface LayerVisibility {
   spines: boolean;
   faces: boolean;
   miterFills: boolean;
+  skeletonDebug: boolean;
 }
 
 export interface AppState {
@@ -67,11 +68,17 @@ export class App {
       boundary: {
         outer: [
           { x: 0, y: 0 },
-          { x: 300, y: 0 },
-          { x: 300, y: 200 },
-          { x: 0, y: 200 },
+          { x: 750, y: 0 },
+          { x: 750, y: 500 },
+          { x: 0, y: 500 },
         ],
-        holes: [],
+        holes: [
+          [
+            { x: 275, y: 150 },
+            { x: 475, y: 150 },
+            { x: 375, y: 350 },
+          ],
+        ],
       },
       aisleGraph: null,
       params: {
@@ -102,6 +109,7 @@ export class App {
         endcap_islands: true,
         island_width_filter: true,
         boundary_clipping: true,
+        skeleton_debug: false,
       },
       layout: null,
       selectedVertex: null,
@@ -119,6 +127,7 @@ export class App {
         spines: true,
         faces: true,
         miterFills: false,
+        skeletonDebug: false,
       },
     };
   }

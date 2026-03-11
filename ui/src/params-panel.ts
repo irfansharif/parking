@@ -160,6 +160,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     { key: "spines", label: "Spines" },
     { key: "faces", label: "Faces" },
     { key: "miterFills", label: "Miter Fills" },
+    { key: "skeletonDebug", label: "Skeleton" },
   ];
 
   for (const def of LAYER_DEFS) {
@@ -172,6 +173,11 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     checkbox.checked = app.state.layers[def.key];
     checkbox.addEventListener("change", () => {
       app.state.layers[def.key] = checkbox.checked;
+      // Skeleton layer also controls the engine debug flag.
+      if (def.key === "skeletonDebug") {
+        app.state.debug.skeleton_debug = checkbox.checked;
+        app.generate();
+      }
       onUpdate();
     });
     label.appendChild(checkbox);
@@ -239,6 +245,12 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       label: "Boundary",
       toggles: [
         { key: "boundary_clipping", label: "Boundary Clipping" },
+      ],
+    },
+    {
+      label: "Debug",
+      toggles: [
+        { key: "skeleton_debug", label: "Skeleton Visualization" },
       ],
     },
   ];

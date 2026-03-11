@@ -1,5 +1,6 @@
 use crate::inset::signed_area;
 use crate::segment::fill_strip;
+use crate::skeleton;
 use crate::types::*;
 use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay_rule::OverlayRule;
@@ -327,11 +328,11 @@ fn compute_face_spines(
     all_spines
 }
 
-/// Straight-skeleton weighted inset to produce spine segments.
+/// Event-driven straight skeleton inset to produce spine segments.
 ///
-/// Offsets each edge by its distance, iteratively removing collapsed edges
-/// until the inset polygon is stable. Each surviving aisle-facing edge
-/// produces a spine clipped to the face interior.
+/// Computes the full straight skeleton for the polygon, then extracts the
+/// wavefront at the effective stall depth. Each surviving aisle-facing edge
+/// of the offset polygon becomes a spine, clipped to the face interior.
 fn skeleton_inset_spines(
     polygon: &[Vec2],
     distances: &[f64],
@@ -345,13 +346,32 @@ fn skeleton_inset_spines(
         return vec![];
     }
 
-    // Precompute edge directions and inward normals.
-    let mut edge_dirs: Vec<Vec2> = Vec::with_capacity(n);
+    // Determine the effective inset depth from the distances array.
+    // All aisle-facing edges use the same depth; pick the first nonzero one.
+    let effective_depth = distances
+        .iter()
+        .copied()
+        .find(|&d| d > 0.0)
+        .unwrap_or(0.0);
+    if effective_depth <= 0.0 {
+        return vec![];
+    }
+
+    // Compute the straight skeleton on the polygon.
+    let sk = skeleton::compute_skeleton(polygon);
+
+    // Get the offset polygon at the effective depth.
+    let (offset_pts, active_edges) = match skeleton::wavefront_at(&sk, effective_depth) {
+        Some(result) => result,
+        None => return vec![],
+    };
+
+    // Precompute inward normals for the original polygon edges (same as
+    // before, using the caller's sign convention).
     let mut normals: Vec<Vec2> = Vec::with_capacity(n);
     for i in 0..n {
         let j = (i + 1) % n;
         let e = polygon[j] - polygon[i];
-        edge_dirs.push(e);
         let len = e.length();
         if len < 1e-12 {
             normals.push(Vec2::new(0.0, 0.0));
@@ -360,87 +380,34 @@ fn skeleton_inset_spines(
         }
     }
 
-    let mut alive = vec![true; n];
-
-    // Compute miter vertices for the alive set.
-    let compute_miter = |alive: &[bool]| -> Vec<Vec2> {
-        let live: Vec<usize> = (0..n).filter(|i| alive[*i]).collect();
-        let mut result = vec![Vec2::new(0.0, 0.0); n];
-        for idx in 0..live.len() {
-            let i = live[idx];
-            let prev = live[if idx == 0 { live.len() - 1 } else { idx - 1 }];
-
-            let a = polygon[prev] + normals[prev] * distances[prev];
-            let da = edge_dirs[prev];
-            let b = polygon[i] + normals[i] * distances[i];
-            let db = edge_dirs[i];
-            let denom = da.cross(db);
-
-            if denom.abs() < 1e-12 {
-                // Parallel edges: place miter at the midpoint of the two
-                // offset lines (degenerate skeleton ridge).
-                result[i] = (a + b) * 0.5;
-            } else {
-                let t = (b - a).cross(db) / denom;
-                result[i] = a + da * t;
-            }
-        }
-        result
-    };
-
-    let mut miter = compute_miter(&alive);
-
-    // Iteratively process edge-collapse events. When an inset edge flips
-    // direction, remove only that edge (the vertex at its start), NOT both
-    // endpoints. This is the key difference from the old approach — it
-    // preserves neighboring edges through the collapse.
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let live: Vec<usize> = (0..n).filter(|i| alive[*i]).collect();
-        if live.len() < 3 {
-            return vec![];
-        }
-
-        for idx in 0..live.len() {
-            let i = live[idx];
-            let j = live[(idx + 1) % live.len()];
-            let new_dir = miter[j] - miter[i];
-            let orig_dir = edge_dirs[i];
-
-            // Use a small negative threshold instead of exactly 0 to avoid
-            // false collapses from floating-point imprecision. Scale by the
-            // original edge length so the threshold is meaningful.
-            if new_dir.dot(orig_dir) <= 0.0 {
-                alive[i] = false;
-                changed = true;
-                break;
-            }
-        }
-
-        if changed {
-            let live: Vec<usize> = (0..n).filter(|i| alive[*i]).collect();
-            if live.len() < 3 {
-                return vec![];
-            }
-            miter = compute_miter(&alive);
-        }
-    }
-
-    // Extract spines from surviving aisle-facing edges, clipped to face.
-    let live: Vec<usize> = (0..n).filter(|i| alive[*i]).collect();
+    // Each vertex i of the offset polygon sits between active_edges[i] and
+    // active_edges[(i+1) % m]. The offset edge from vertex i to vertex i+1
+    // corresponds to original edge active_edges[(i+1) % m].
+    //
+    // Wait — let's be precise about the mapping. The wavefront has m vertices.
+    // Vertex i is the intersection of offset lines for active_edges[i] and
+    // active_edges[(i+1) % m]. So the edge from vertex i to vertex (i+1) is
+    // along the offset of original edge active_edges[(i+1) % m].
+    //
+    // Actually, looking at wavefront_at_impl: vertex i = intersection of
+    // active_edges[i] and active_edges[(i+1) % m]. So the segment from
+    // vertex i to vertex (i+1) % m runs along the offset line of
+    // active_edges[(i+1) % m].
+    let m = active_edges.len();
     let mut spines = Vec::new();
 
-    for idx in 0..live.len() {
-        let i = live[idx];
-        if distances[i] == 0.0 || !aisle_facing[i] {
+    for idx in 0..m {
+        let next_idx = (idx + 1) % m;
+        let orig_edge = active_edges[next_idx];
+
+        // Only produce spines for aisle-facing edges with nonzero distance.
+        if orig_edge >= n || !aisle_facing[orig_edge] || distances[orig_edge] == 0.0 {
             continue;
         }
 
-        let j = live[(idx + 1) % live.len()];
-        let spine_start = miter[i];
-        let spine_end = miter[j];
-        let outward = Vec2::new(-normals[i].x, -normals[i].y);
+        let spine_start = offset_pts[idx];
+        let spine_end = offset_pts[next_idx];
+        let outward = Vec2::new(-normals[orig_edge].x, -normals[orig_edge].y);
 
         if !clip {
             if (spine_end - spine_start).length() > 1.0 {
@@ -453,16 +420,9 @@ fn skeleton_inset_spines(
             continue;
         }
 
-        // Clip both the spine and the "stall reach" line (spine offset by
-        // stall_depth in the outward direction) to the face interior. Stalls
-        // extend perpendicular from the spine by stall_depth, so the offset
-        // line must also be inside the face to avoid protrusion.
+        // Clip both the spine and the "stall reach" line to the face interior.
         let spine_clips = clip_segment_to_face(spine_start, spine_end, face_shape);
-        // Use a slightly reduced offset (0.5ft margin) so the offset line
-        // stays clearly inside the face rather than landing exactly on the
-        // boundary edge, which would fail the winding-number containment
-        // check due to floating-point.
-        let reach = (distances[i] - 0.5).max(0.0);
+        let reach = (distances[orig_edge] - 0.5).max(0.0);
         let offset_start = spine_start + outward * reach;
         let offset_end = spine_end + outward * reach;
         let offset_clips = clip_segment_to_face(offset_start, offset_end, face_shape);
@@ -1059,7 +1019,7 @@ pub fn generate_from_spines(
     boundary: &Polygon,
     params: &ParkingParams,
     debug: &DebugToggles,
-) -> (Vec<StallQuad>, Vec<Island>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>) {
+) -> (Vec<StallQuad>, Vec<Island>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>, Vec<SkeletonDebug>) {
     let stall_angle_rad = params.stall_angle_deg.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
@@ -1088,7 +1048,16 @@ pub fn generate_from_spines(
     // Collect spines from all faces, then merge collinear segments across
     // face boundaries so stalls flow continuously along shared aisle edges.
     let mut raw_spines = Vec::new();
+    let mut skeleton_debugs = Vec::new();
     for shape in faces.iter() {
+        // Optionally collect skeleton debug data for visualization.
+        if debug.skeleton_debug && !shape.is_empty() && shape[0].len() >= 3 {
+            let sk = skeleton::compute_skeleton(&shape[0]);
+            skeleton_debugs.push(SkeletonDebug {
+                arcs: sk.arcs.iter().map(|&(a, b)| [a, b]).collect(),
+                nodes: sk.nodes.clone(),
+            });
+        }
         let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, debug);
         let face_spines = if debug.spine_dedup {
             dedup_overlapping_spines(face_spines, 2.0)
@@ -1171,7 +1140,7 @@ pub fn generate_from_spines(
         })
         .collect();
 
-    (all_stalls, all_islands, aisle_polygons, spine_lines, face_list, miter_fills)
+    (all_stalls, all_islands, aisle_polygons, spine_lines, face_list, miter_fills, skeleton_debugs)
 }
 
 #[cfg(test)]
