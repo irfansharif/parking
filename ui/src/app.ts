@@ -95,7 +95,6 @@ export class App {
       },
       debug: {
         miter_fills: true,
-        inner_miter_fills: true,
         spike_removal: true,
         hole_filtering: true,
         face_extraction: true,
@@ -104,7 +103,7 @@ export class App {
         spine_clipping: true,
         spine_dedup: true,
         spine_merging: true,
-        short_spine_filter: true,
+        short_spine_filter: false,
         stall_face_clipping: true,
         endcap_islands: true,
         island_width_filter: true,

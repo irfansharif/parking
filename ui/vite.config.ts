@@ -8,7 +8,6 @@ export default defineConfig({
   },
   server: {
     port: 3000,
-    hmr: false,
-    watch: null,
+    hmr: true,
   },
 });

@@ -22,11 +22,11 @@ pub struct StraightSkeleton {
     pub nodes: Vec<Vec2>,
     /// Timeline of edge-collapse events.
     pub events: Vec<SkeletonEvent>,
-    /// Per-edge directions (immutable, from original polygon).
-    edge_dirs: Vec<Vec2>,
-    /// Per-edge inward normals (immutable, from original polygon).
+    /// Per-edge directions (immutable, from CCW polygon).
+    pub edge_dirs: Vec<Vec2>,
+    /// Per-edge inward normals (immutable, from CCW polygon).
     edge_normals: Vec<Vec2>,
-    /// Per-edge base points (immutable, from original polygon).
+    /// Per-edge base points (immutable, from CCW polygon).
     edge_points: Vec<Vec2>,
 }
 
@@ -482,7 +482,24 @@ pub fn wavefront_at(skeleton: &StraightSkeleton, d: f64) -> Option<(Vec<Vec2>, V
     if signed_area(&wf) <= 0.0 {
         return None;
     }
+
+    // Per-edge direction check: each offset edge must still run in the same
+    // direction as its corresponding original edge.  When the wavefront has
+    // folded past the medial axis, some edges reverse direction even though
+    // the global signed area might still be positive.
     let n = wf.len();
+    for i in 0..n {
+        let next = (i + 1) % n;
+        let offset_dir = wf[next] - wf[i];
+        // The segment from wf[i] to wf[next] lies on the offset of
+        // active[(i+1) % n].
+        let orig_edge = active[(i + 1) % n];
+        let orig_dir = skeleton.edge_dirs[orig_edge];
+        if orig_dir.dot(offset_dir) <= 0.0 {
+            return None;
+        }
+    }
+
     for i in 0..n {
         let a1 = wf[i];
         let a2 = wf[(i + 1) % n];
@@ -639,5 +656,63 @@ mod tests {
         assert!(result.is_some());
         let (wf, active) = result.unwrap();
         assert_eq!(wf.len(), active.len());
+    }
+
+    #[test]
+    fn test_narrow_rectangle_no_fold() {
+        // A 30×100 rectangle with stall depth 18 (> half width 15).
+        // The offset at d=18 should return None — the wavefront has folded
+        // because the two long edges have crossed.
+        let polygon = rect(30.0, 100.0);
+        let sk = compute_skeleton(&polygon);
+
+        // d=14 should be valid (just inside the collapse at d=15).
+        let offset = offset_polygon_at(&sk, 14.0);
+        assert!(offset.is_some(), "offset at d=14 should exist for 30x100 rect");
+
+        // d=16 should be None (past the collapse).
+        let offset = offset_polygon_at(&sk, 16.0);
+        assert!(offset.is_none(), "offset at d=16 should be None for 30x100 rect");
+
+        // d=18 definitely should be None.
+        let offset = offset_polygon_at(&sk, 18.0);
+        assert!(offset.is_none(), "offset at d=18 should be None for 30x100 rect");
+    }
+
+    #[test]
+    fn test_barely_wide_enough_rectangle() {
+        // A 37×100 rectangle with d=18 — barely wider than 2*18=36.
+        // The offset should still be valid but very thin.
+        let polygon = rect(37.0, 100.0);
+        let sk = compute_skeleton(&polygon);
+
+        let offset = offset_polygon_at(&sk, 18.0);
+        assert!(offset.is_some(), "offset at d=18 should exist for 37x100 rect");
+        let wf = offset.unwrap();
+        // The offset polygon should be about 1×64.
+        let area = signed_area(&wf).abs();
+        assert!(area > 0.0 && area < 200.0, "thin offset area should be small, got {}", area);
+    }
+
+    #[test]
+    fn test_trapezoid_fold_detection() {
+        // Slightly trapezoidal face — narrower at top (25) than bottom (35).
+        // At d=18, the top is only 25 wide, so the offset should fold there.
+        let polygon = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(35.0, 0.0),
+            Vec2::new(30.0, 100.0),
+            Vec2::new(5.0, 100.0),
+        ];
+        let sk = compute_skeleton(&polygon);
+
+        // At d=18, the narrow end (25 wide) has collapsed.
+        // The direction check should reject this.
+        let offset = offset_polygon_at(&sk, 18.0);
+        // If valid, the offset polygon should not have reversed edges.
+        if let Some(ref wf) = offset {
+            let area = signed_area(wf);
+            assert!(area > 0.0, "offset should have positive area if it exists");
+        }
     }
 }

@@ -201,7 +201,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       label: "Corridor Merging",
       toggles: [
         { key: "miter_fills", label: "Miter Fills" },
-        { key: "inner_miter_fills", label: "Inner Miter Fills", parent: "miter_fills" },
+
         { key: "spike_removal", label: "Spike Removal" },
         { key: "hole_filtering", label: "Hole Filtering" },
       ],
@@ -245,12 +245,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       label: "Boundary",
       toggles: [
         { key: "boundary_clipping", label: "Boundary Clipping" },
-      ],
-    },
-    {
-      label: "Debug",
-      toggles: [
-        { key: "skeleton_debug", label: "Skeleton Visualization" },
       ],
     },
   ];

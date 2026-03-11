@@ -286,7 +286,6 @@ fn compute_face_spines(
         return vec![];
     }
 
-    let outer_sign = if signed_area(&shape[0]) >= 0.0 { 1.0 } else { -1.0 };
     let mut all_spines = Vec::new();
 
     for (ci, contour) in shape.iter().enumerate() {
@@ -295,7 +294,16 @@ fn compute_face_spines(
             continue;
         }
 
-        let aisle_facing = classify_face_edges(contour, corridor_shapes, debug.edge_classification);
+        // Normalize to CCW so edge indices match the skeleton's internal
+        // ensure_ccw convention.  All downstream arrays (aisle_facing,
+        // distances, normals) are built from this CCW contour.
+        let contour = if signed_area(contour) < 0.0 {
+            contour.iter().rev().copied().collect::<Vec<_>>()
+        } else {
+            contour.clone()
+        };
+
+        let aisle_facing = classify_face_edges(&contour, corridor_shapes, debug.edge_classification);
         let ed = effective_depth - 0.05;
         let min_edge_len = effective_depth * 2.0;
         let is_hole = ci > 0;
@@ -321,7 +329,7 @@ fn compute_face_spines(
             })
             .collect();
 
-        let spines = skeleton_inset_spines(contour, &distances, &aisle_facing, outer_sign, shape, debug.spine_clipping);
+        let spines = skeleton_inset_spines(&contour, &distances, &aisle_facing, 1.0, shape, debug.spine_clipping);
         all_spines.extend(spines);
     }
 
@@ -561,8 +569,6 @@ fn generate_miter_fills(graph: &DriveAisleGraph, debug: &DebugToggles) -> Vec<Ve
                 if (miter - v).length() > max_w * 4.0 {
                     continue;
                 }
-            } else if !debug.inner_miter_fills {
-                continue;
             }
 
             let wedge = vec![v, p1, miter, p2];
