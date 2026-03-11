@@ -4,6 +4,7 @@ export default defineConfig({
   testDir: "./tests",
   testMatch: "runner.ts",
   snapshotPathTemplate: "{testDir}/golden/{arg}{ext}",
+  updateSnapshots: process.env.UPDATE_SNAPSHOTS ? "all" : "none",
   timeout: 30000,
   use: {
     baseURL: "http://localhost:4173",

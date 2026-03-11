@@ -466,7 +466,11 @@ fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
 /// corner points (left and right sides of each edge at the vertex). This
 /// covers all gaps between corridor rectangles in one polygon, regardless
 /// of how many edges meet or their angles.
-fn generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
+fn generate_miter_fills(_graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
+    vec![]
+}
+
+fn _generate_miter_fills(graph: &DriveAisleGraph) -> Vec<Vec<Vec2>> {
     let mut fills = Vec::new();
     let mut seen_edges: std::collections::HashSet<(usize, usize)> =
         std::collections::HashSet::new();

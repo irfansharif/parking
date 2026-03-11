@@ -32,6 +32,7 @@ export interface LayerVisibility {
   islands: boolean;
   spines: boolean;
   faces: boolean;
+  miterFills: boolean;
 }
 
 export interface AppState {
@@ -98,6 +99,7 @@ export class App {
         islands: true,
         spines: true,
         faces: true,
+        miterFills: false,
       },
     };
   }

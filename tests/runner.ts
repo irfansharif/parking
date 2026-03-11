@@ -2,8 +2,10 @@ import { test, expect } from "@playwright/test";
 import * as fs from "fs";
 import * as path from "path";
 import { parseTestFile, TestCase } from "./parser";
+import { rewriteExpected } from "./rewriter";
 
 const TESTDATA_DIR = path.join(__dirname, "testdata");
+const UPDATE = !!process.env.UPDATE_SNAPSHOTS;
 
 // Discover all .txt test files
 const testFiles = fs.readdirSync(TESTDATA_DIR).filter((f) => f.endsWith(".txt"));
@@ -16,11 +18,14 @@ for (const file of testFiles) {
       timeout: 10000,
     });
 
-    const contents = fs.readFileSync(path.join(TESTDATA_DIR, file), "utf-8");
+    const filePath = path.join(TESTDATA_DIR, file);
+    const contents = fs.readFileSync(filePath, "utf-8");
     const cases = parseTestFile(contents, file);
+    const actuals: Map<TestCase, string> = new Map();
 
     for (const tc of cases) {
       const actual = await executeCase(page, tc);
+      actuals.set(tc, actual);
 
       if (tc.command.startsWith("screenshot")) {
         const parts = tc.command.trim().split(/\s+/);
@@ -28,10 +33,15 @@ for (const file of testFiles) {
         await expect(page).toHaveScreenshot(goldenName, {
           maxDiffPixelRatio: 0.01,
         });
-      } else if (tc.expected) {
+      } else if (!UPDATE && tc.expected) {
         // Text comparison
         expect(actual.trim()).toBe(tc.expected.trim());
       }
+    }
+
+    if (UPDATE) {
+      const updated = rewriteExpected(contents, cases, actuals);
+      fs.writeFileSync(filePath, updated);
     }
   });
 }

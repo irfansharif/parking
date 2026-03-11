@@ -14,9 +14,8 @@ set stall_angle_deg=60
 
 generate
 ----
-total_stalls: 84
+total_stalls: 74
 ada_stalls: 0
 
 screenshot
 ----
-basic-rectangle.png

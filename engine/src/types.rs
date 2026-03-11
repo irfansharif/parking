@@ -159,6 +159,8 @@ pub struct ParkingLayout {
     pub spines: Vec<SpineLine>,
     #[serde(default)]
     pub faces: Vec<Face>,
+    #[serde(default)]
+    pub miter_fills: Vec<Vec<Vec2>>,
 }
 
 // ---------------------------------------------------------------------------

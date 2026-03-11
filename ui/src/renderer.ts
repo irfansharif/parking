@@ -43,6 +43,18 @@ export class Renderer {
         }
       }
 
+      // 2c. Miter fills (debug overlay)
+      if (state.layers.miterFills && state.layout.miter_fills) {
+        for (const fill of state.layout.miter_fills) {
+          this.drawPolygon(
+            fill,
+            "rgba(255, 100, 100, 0.3)",
+            "rgba(255, 80, 80, 0.7)",
+            0.5,
+          );
+        }
+      }
+
       // 3. Aisle corridors
       if (state.layers.aisles) {
         for (const poly of state.layout.aisle_polygons) {

@@ -37,6 +37,7 @@ export interface ParkingLayout {
   resolved_graph: DriveAisleGraph;
   spines: SpineLine[];
   faces: Face[];
+  miter_fills: Vec2[][];
 }
 
 export interface AisleEdge {

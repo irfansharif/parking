@@ -159,6 +159,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     { key: "islands", label: "Islands" },
     { key: "spines", label: "Spines" },
     { key: "faces", label: "Faces" },
+    { key: "miterFills", label: "Miter Fills" },
   ];
 
   for (const def of LAYER_DEFS) {

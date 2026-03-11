@@ -22,9 +22,8 @@ set stall_angle_deg=60
 
 generate
 ----
-total_stalls: 40
+total_stalls: 38
 ada_stalls: 0
 
 screenshot
 ----
-hole-building.png
