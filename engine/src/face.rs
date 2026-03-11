@@ -247,12 +247,9 @@ fn classify_face_edges(contour: &[Vec2], corridor_shapes: &[Vec<Vec<Vec2>>], cla
 
 /// Generate spine segments for a face shape (outer contour + holes).
 ///
-/// For each aisle-facing edge, shift it inward by `effective_depth` to
-/// produce an inset line. Adjacent inset lines meet at miter vertices.
-/// The segment from one miter vertex to the next, clipped to the face
-/// interior, is the spine for that edge. Boundary/hole edges stay put
-/// (distance = 0) and don't produce spines.
-/// Compute spines for a face using a straight-skeleton-style weighted inset.
+/// Each contour is processed independently. The outer contour's skeleton
+/// shrinks inward (positive offset); hole contours expand outward into the
+/// face (negative offset). All spines are clipped to the face interior.
 ///
 /// Each aisle-facing edge is offset inward by `effective_depth`; boundary
 /// edges stay put (distance 0). The inset polygon is computed with proper
@@ -286,40 +283,23 @@ fn compute_face_spines(
         return vec![];
     }
 
-    let mut all_spines = Vec::new();
-
-    for (ci, contour) in shape.iter().enumerate() {
-        let n = contour.len();
-        if n < 3 {
-            continue;
-        }
-
-        // Normalize to CCW so edge indices match the skeleton's internal
-        // ensure_ccw convention.  All downstream arrays (aisle_facing,
-        // distances, normals) are built from this CCW contour.
-        let contour = if signed_area(contour) < 0.0 {
-            contour.iter().rev().copied().collect::<Vec<_>>()
+    // For faces without holes, use the original per-contour skeleton path.
+    if shape.len() == 1 {
+        let contour = if signed_area(&shape[0]) < 0.0 {
+            shape[0].iter().rev().copied().collect::<Vec<_>>()
         } else {
-            contour.clone()
+            shape[0].clone()
         };
-
         let aisle_facing = classify_face_edges(&contour, corridor_shapes, debug.edge_classification);
         let ed = effective_depth - 0.05;
         let min_edge_len = effective_depth * 2.0;
-        let is_hole = ci > 0;
-
-        // Per-edge inset distances: ed for aisle-facing edges, 0 for boundary
-        // edges. For hole contours (corridor cutouts in boundary faces), all
-        // aisle-facing edges get uniform ed regardless of length; zeroing
-        // short connector edges between corridor segments creates
-        // mixed-distance transitions that blow up the miter computation.
-        let distances: Vec<f64> = (0..n)
+        let distances: Vec<f64> = (0..contour.len())
             .map(|i| {
                 if !aisle_facing[i] {
                     return 0.0;
                 }
-                if debug.short_edge_zeroing && !is_hole {
-                    let j = (i + 1) % n;
+                if debug.short_edge_zeroing {
+                    let j = (i + 1) % contour.len();
                     let edge_len = (contour[j] - contour[i]).length();
                     if edge_len < min_edge_len {
                         return 0.0;
@@ -328,10 +308,108 @@ fn compute_face_spines(
                 ed
             })
             .collect();
+        return skeleton_inset_spines(&contour, &distances, &aisle_facing, 1.0, shape, debug.spine_clipping);
+    }
 
-        let sign = if is_hole { -1.0 } else { 1.0 };
-        let spines = skeleton_inset_spines(&contour, &distances, &aisle_facing, sign, shape, debug.spine_clipping);
-        all_spines.extend(spines);
+    // --- Multi-contour path: outer CCW + holes CW ---
+    // Normalize winding: outer must be CCW, holes must be CW.
+    let mut contours: Vec<Vec<Vec2>> = Vec::with_capacity(shape.len());
+    let mut aisle_facing_flat: Vec<bool> = Vec::new();
+
+    for (ci, raw) in shape.iter().enumerate() {
+        if raw.len() < 3 {
+            continue;
+        }
+        let is_hole = ci > 0;
+        let contour = if is_hole {
+            // Holes must be CW (negative signed area).
+            if signed_area(raw) > 0.0 {
+                raw.iter().rev().copied().collect::<Vec<_>>()
+            } else {
+                raw.clone()
+            }
+        } else {
+            // Outer must be CCW (positive signed area).
+            if signed_area(raw) < 0.0 {
+                raw.iter().rev().copied().collect::<Vec<_>>()
+            } else {
+                raw.clone()
+            }
+        };
+        let af = classify_face_edges(&contour, corridor_shapes, debug.edge_classification);
+        aisle_facing_flat.extend(af);
+        contours.push(contour);
+    }
+
+    let sk = skeleton::compute_skeleton_multi(&contours);
+    let ed = effective_depth - 0.05;
+
+    // Get wavefront loops at the effective stall depth.
+    let wf_loops = skeleton::wavefront_loops_at(&sk, ed);
+
+    // Build inward normals for all edges (flat, matching skeleton edge layout).
+    // For outer CCW: (-dy, dx)/len points inward.
+    // For hole CW: (-dy, dx)/len points outward-from-hole = into face.
+    // In both cases the normal points into the face, so stall outward = -normal.
+
+    let mut all_spines = Vec::new();
+    for (wf_pts, active_edges) in &wf_loops {
+        let m = active_edges.len();
+        if m < 2 || wf_pts.len() != m {
+            continue;
+        }
+        for idx in 0..m {
+            let next_idx = (idx + 1) % m;
+            let orig_edge = active_edges[next_idx];
+            if orig_edge >= aisle_facing_flat.len() || !aisle_facing_flat[orig_edge] {
+                continue;
+            }
+
+            let spine_start = wf_pts[idx];
+            let spine_end = wf_pts[next_idx];
+            if (spine_end - spine_start).length() < 1.0 {
+                continue;
+            }
+
+            // Outward normal = opposite of the edge's inward normal.
+            let outward = Vec2::new(-sk.edge_normals[orig_edge].x, -sk.edge_normals[orig_edge].y);
+
+            if !debug.spine_clipping {
+                all_spines.push(SpineSegment {
+                    start: spine_start,
+                    end: spine_end,
+                    outward_normal: outward,
+                });
+                continue;
+            }
+
+            // Clip spine to face interior.
+            let spine_clips = clip_segment_to_face(spine_start, spine_end, shape);
+            let reach = (ed - 0.5).max(0.0);
+            let offset_start = spine_start + outward * reach;
+            let offset_end = spine_end + outward * reach;
+            let offset_clips = clip_segment_to_face(offset_start, offset_end, shape);
+
+            for (st0, st1) in &spine_clips {
+                for (ot0, ot1) in &offset_clips {
+                    let t0 = st0.max(*ot0);
+                    let t1 = st1.min(*ot1);
+                    if t1 - t0 < 1e-9 {
+                        continue;
+                    }
+                    let d = spine_end - spine_start;
+                    let s = spine_start + d * t0;
+                    let e = spine_start + d * t1;
+                    if (e - s).length() > 1.0 {
+                        all_spines.push(SpineSegment {
+                            start: s,
+                            end: e,
+                            outward_normal: outward,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     all_spines
@@ -1058,8 +1136,20 @@ pub fn generate_from_spines(
     let mut skeleton_debugs = Vec::new();
     for shape in faces.iter() {
         // Optionally collect skeleton debug data for visualization.
+        // Use multi-contour skeleton so arcs stay within the face.
         if debug.skeleton_debug && !shape.is_empty() && shape[0].len() >= 3 {
-            let sk = skeleton::compute_skeleton(&shape[0]);
+            // Normalize winding: outer CCW (positive signed_area), holes CW
+            // (negative signed_area) so skeleton normals point into the face.
+            let normed: Vec<Vec<Vec2>> = shape.iter().enumerate().filter_map(|(ci, c)| {
+                if c.len() < 3 { return None; }
+                let sa = signed_area(c);
+                Some(if (ci == 0 && sa < 0.0) || (ci > 0 && sa > 0.0) {
+                    c.iter().rev().copied().collect()
+                } else {
+                    c.clone()
+                })
+            }).collect();
+            let sk = skeleton::compute_skeleton_multi(&normed);
             skeleton_debugs.push(SkeletonDebug {
                 arcs: sk.arcs.iter().map(|&(a, b)| [a, b]).collect(),
                 nodes: sk.nodes.clone(),
@@ -1178,7 +1268,7 @@ mod tests {
         let params = ParkingParams::default();
         let graph = auto_generate(&boundary, &params);
 
-        let (stalls, islands, _, spines, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default());
+        let (stalls, islands, _, spines, _, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default());
         eprintln!("\nTotal stalls: {}", stalls.len());
         eprintln!("Total spines: {}", spines.len());
         eprintln!("Total islands: {}", islands.len());
@@ -1220,7 +1310,7 @@ mod tests {
         let dedup_corridors = deduplicate_corridors(&graph);
 
         eprintln!("\nMiter fills:");
-        let miter_fills = generate_miter_fills(&graph);
+        let miter_fills = generate_miter_fills(&graph, &DebugToggles::default());
         for (i, fill) in miter_fills.iter().enumerate() {
             let area = signed_area(fill).abs();
             eprintln!("  fill {}: area={:.1}, {} verts", i, area, fill.len());
@@ -1237,7 +1327,7 @@ mod tests {
             }
         }
 
-        let merged_corridors = merge_corridor_shapes(&dedup_corridors, &graph);
+        let merged_corridors = merge_corridor_shapes(&dedup_corridors, &graph, &DebugToggles::default());
 
         eprintln!("\nMerged corridors: {}", merged_corridors.len());
         for (ci, shape) in merged_corridors.iter().enumerate() {
@@ -1266,7 +1356,7 @@ mod tests {
                 }
             }
 
-            let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors);
+            let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &DebugToggles::default());
             eprintln!("  spines from face {}: {}", fi, face_spines.len());
             for (si, s) in face_spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -1321,7 +1411,7 @@ mod tests {
             edges: vec![edge_a.clone(), edge_b.clone()],
             perim_vertex_count: 3,
         };
-        let merged = merge_corridor_shapes(&[rect_a.clone(), rect_b.clone()], &graph);
+        let merged = merge_corridor_shapes(&[rect_a.clone(), rect_b.clone()], &graph, &DebugToggles::default());
 
         eprintln!("\nUnmerged: 2 rects × 4 verts = 8 verts");
         eprintln!("Merged: {} shape(s)", merged.len());
@@ -1380,7 +1470,7 @@ mod tests {
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &DebugToggles::default());
 
         eprintln!("\n=== Trapezoid face spine test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -1471,7 +1561,7 @@ mod tests {
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &DebugToggles::default());
 
         eprintln!("\n=== Pentagon face spine test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -1572,7 +1662,7 @@ mod tests {
         let effective_depth = params.stall_depth
             * params.stall_angle_deg.to_radians().sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &DebugToggles::default());
         let stalls = place_stalls_on_spines(&spines, &params);
 
         eprintln!("\n=== Narrow face test (30ft between aisles) ===");
@@ -1620,7 +1710,7 @@ mod tests {
         let effective_depth =
             params.stall_depth * params.stall_angle_deg.to_radians().sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &DebugToggles::default());
 
         eprintln!("\n=== Vertical spines + diagonal top test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -1691,6 +1781,7 @@ mod tests {
             },
             aisle_graph: None,
             params: ParkingParams::default(),
+            debug: DebugToggles::default(),
         };
 
         let layout = generate(input.clone());
@@ -1700,7 +1791,7 @@ mod tests {
         // Recompute corridor shapes for debug classification.
         let graph = auto_generate(&input.boundary, &input.params);
         let dedup_corridors = deduplicate_corridors(&graph);
-        let merged_corridors = merge_corridor_shapes(&dedup_corridors, &graph);
+        let merged_corridors = merge_corridor_shapes(&dedup_corridors, &graph, &DebugToggles::default());
 
         let effective_depth = input.params.stall_depth
             * input.params.stall_angle_deg.to_radians().sin();
@@ -1719,7 +1810,7 @@ mod tests {
                 eprintln!("    v{}: ({:.1}, {:.1})", vi, v.x, v.y);
             }
 
-            let aisle_facing = classify_face_edges(contour, &merged_corridors);
+            let aisle_facing = classify_face_edges(contour, &merged_corridors, true);
             let ed = effective_depth - 0.05;
             let min_edge_len = effective_depth * 2.0;
             for i in 0..contour.len() {
@@ -1737,7 +1828,7 @@ mod tests {
 
             for (hi, hole) in face.holes.iter().enumerate() {
                 eprintln!("    hole {}: {} verts", hi, hole.len());
-                let hole_af = classify_face_edges(hole, &merged_corridors);
+                let hole_af = classify_face_edges(hole, &merged_corridors, true);
                 for i in 0..hole.len() {
                     let j = (i + 1) % hole.len();
                     let elen = (hole[j] - hole[i]).length();
@@ -1747,7 +1838,7 @@ mod tests {
             }
             let mut shape = vec![contour.clone()];
             shape.extend(face.holes.iter().cloned());
-            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors);
+            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &DebugToggles::default());
             eprintln!("    spines: {}", spines.len());
             for (si, s) in spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -1777,6 +1868,7 @@ mod tests {
             },
             aisle_graph: None,
             params: ParkingParams::default(),
+            debug: DebugToggles::default(),
         };
 
         let layout = generate(input.clone());
@@ -1786,7 +1878,7 @@ mod tests {
         // Recompute corridor shapes for debug classification.
         let graph = auto_generate(&input.boundary, &input.params);
         let dedup_corridors = deduplicate_corridors(&graph);
-        let merged_corridors = merge_corridor_shapes(&dedup_corridors, &graph);
+        let merged_corridors = merge_corridor_shapes(&dedup_corridors, &graph, &DebugToggles::default());
 
         let effective_depth = input.params.stall_depth
             * input.params.stall_angle_deg.to_radians().sin();
@@ -1801,7 +1893,7 @@ mod tests {
             }
 
             // Classify edges for this face.
-            let aisle_facing = classify_face_edges(contour, &merged_corridors);
+            let aisle_facing = classify_face_edges(contour, &merged_corridors, true);
             let ed = effective_depth - 0.05;
             let min_edge_len = effective_depth * 2.0;
             for i in 0..contour.len() {
@@ -1829,7 +1921,7 @@ mod tests {
             // Compute spines for this face using full shape (contour + holes).
             let mut shape = vec![contour.clone()];
             shape.extend(face.holes.iter().cloned());
-            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors);
+            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &DebugToggles::default());
             eprintln!("    spines: {}", spines.len());
             for (si, s) in spines.iter().enumerate() {
                 let len = (s.end - s.start).length();

@@ -11,6 +11,8 @@ use crate::types::Vec2;
 pub struct SkeletonEvent {
     pub d: f64,
     pub active_edges: Vec<usize>,
+    /// Per-loop active edges (for multi-contour skeletons).
+    pub active_loops: Vec<Vec<usize>>,
 }
 
 /// Result of computing the event-driven straight skeleton of a polygon.
@@ -25,9 +27,9 @@ pub struct StraightSkeleton {
     /// Per-edge directions (immutable, from CCW polygon).
     pub edge_dirs: Vec<Vec2>,
     /// Per-edge inward normals (immutable, from CCW polygon).
-    edge_normals: Vec<Vec2>,
+    pub edge_normals: Vec<Vec2>,
     /// Per-edge base points (immutable, from CCW polygon).
-    edge_points: Vec<Vec2>,
+    pub edge_points: Vec<Vec2>,
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +170,7 @@ pub fn compute_skeleton(vertices: &[Vec2]) -> StraightSkeleton {
             events: vec![SkeletonEvent {
                 d: 0.0,
                 active_edges: vec![],
+                active_loops: vec![],
             }],
             edge_dirs: vec![],
             edge_normals: vec![],
@@ -205,6 +208,7 @@ pub fn compute_skeleton(vertices: &[Vec2]) -> StraightSkeleton {
     let mut event_timeline = vec![SkeletonEvent {
         d: 0.0,
         active_edges: active_edges.clone(),
+        active_loops: vec![active_edges.clone()],
     }];
 
     let initial_wf = wavefront_at_impl(
@@ -406,6 +410,7 @@ pub fn compute_skeleton(vertices: &[Vec2]) -> StraightSkeleton {
         event_timeline.push(SkeletonEvent {
             d: current_d,
             active_edges: active_edges.clone(),
+            active_loops: vec![active_edges.clone()],
         });
 
         // Check if the new wavefront has collapsed.
@@ -530,6 +535,400 @@ pub fn wavefront_at(skeleton: &StraightSkeleton, d: f64) -> Option<(Vec<Vec2>, V
 /// Convenience: get just the offset polygon at distance `d`.
 pub fn offset_polygon_at(skeleton: &StraightSkeleton, d: f64) -> Option<Vec<Vec2>> {
     wavefront_at(skeleton, d).map(|(wf, _)| wf)
+}
+
+// ---------------------------------------------------------------------------
+// Multi-contour straight skeleton
+// ---------------------------------------------------------------------------
+
+/// Compute the straight skeleton for a polygon with holes.
+///
+/// `contours[0]` is the outer boundary (CCW), `contours[1..]` are holes (CW).
+/// Normal direction `(-dy, dx)/len` gives inward normals for CCW (toward face
+/// center) and outward-from-polygon normals for CW (away from hole center,
+/// into the face). Both point into the face region, so the outer wavefront
+/// shrinks and hole wavefronts expand until they meet via split events.
+pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
+    if contours.is_empty() {
+        return empty_skeleton();
+    }
+    if contours.len() == 1 {
+        return compute_skeleton(&contours[0]);
+    }
+
+    // Build flat edge geometry arrays preserving per-contour winding.
+    let mut edge_dirs = Vec::new();
+    let mut edge_normals = Vec::new();
+    let mut edge_points = Vec::new();
+    let mut loops: Vec<Vec<usize>> = Vec::new();
+    let mut offset = 0;
+
+    for contour in contours {
+        let n = contour.len();
+        if n < 3 {
+            continue;
+        }
+        loops.push((offset..offset + n).collect());
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let dir = contour[j] - contour[i];
+            let len = dir.length();
+            edge_dirs.push(dir);
+            if len < 1e-12 {
+                edge_normals.push(Vec2::new(0.0, 0.0));
+            } else {
+                edge_normals.push(Vec2::new(-dir.y / len, dir.x / len));
+            }
+            edge_points.push(contour[i]);
+        }
+        offset += n;
+    }
+
+    if loops.is_empty() {
+        return empty_skeleton();
+    }
+
+    let mut arcs: Vec<(Vec2, Vec2)> = Vec::new();
+    let mut nodes: Vec<Vec2> = Vec::new();
+    let mut current_d = 0.0;
+
+    let mut prev_wfs: Vec<Option<Vec<Vec2>>> = loops
+        .iter()
+        .map(|lp| wavefront_at_impl(lp, 0.0, &edge_points, &edge_normals, &edge_dirs))
+        .collect();
+
+    let mut event_timeline = vec![SkeletonEvent {
+        d: 0.0,
+        active_edges: loops.iter().flat_map(|l| l.iter().copied()).collect(),
+        active_loops: loops.clone(),
+    }];
+
+    let mut safety = 0;
+
+    while safety < 500 {
+        safety += 1;
+
+        // Remove degenerate loops.
+        let mut i = 0;
+        while i < loops.len() {
+            if loops[i].len() < 3 {
+                loops.remove(i);
+                prev_wfs.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+
+        if loops.is_empty() {
+            break;
+        }
+
+        // --- Find earliest edge event across all loops ---
+        let mut best_edge: Option<(f64, Vec2, usize, usize)> = None;
+        for (li, lp) in loops.iter().enumerate() {
+            let m = lp.len();
+            if m < 3 {
+                continue;
+            }
+            for i in 0..m {
+                if let Some((d, pt)) = find_edge_event_time(
+                    lp,
+                    i,
+                    current_d,
+                    &edge_points,
+                    &edge_normals,
+                    &edge_dirs,
+                ) {
+                    if best_edge.is_none() || d < best_edge.unwrap().0 {
+                        best_edge = Some((d, pt, li, i));
+                    }
+                }
+            }
+        }
+
+        // --- Find earliest split event between loops ---
+        let mut best_split: Option<(f64, Vec2, usize, usize, usize, usize)> = None;
+        if loops.len() > 1 {
+            for li_a in 0..loops.len() {
+                let ma = loops[li_a].len();
+                for vi in 0..ma {
+                    let e_prev = loops[li_a][vi];
+                    let e_next = loops[li_a][(vi + 1) % ma];
+
+                    let v0 = match offset_vertex(
+                        &edge_points, &edge_normals, &edge_dirs, e_prev, e_next, 0.0,
+                    ) {
+                        Some(v) => v,
+                        None => continue,
+                    };
+                    let v1 = match offset_vertex(
+                        &edge_points, &edge_normals, &edge_dirs, e_prev, e_next, 1.0,
+                    ) {
+                        Some(v) => v,
+                        None => continue,
+                    };
+                    let v_vel = v1 - v0;
+
+                    for li_b in 0..loops.len() {
+                        if li_b == li_a {
+                            continue;
+                        }
+                        let mb = loops[li_b].len();
+                        for ei in 0..mb {
+                            let e_target = loops[li_b][ei];
+                            let dir = edge_dirs[e_target];
+
+                            let rel = v0 - edge_points[e_target];
+                            let vel = v_vel - edge_normals[e_target];
+                            let denom = vel.cross(dir);
+                            if denom.abs() < 1e-10 {
+                                continue;
+                            }
+                            let d = -rel.cross(dir) / denom;
+                            if d <= current_d + 1e-4 {
+                                continue;
+                            }
+                            if best_split.is_some() && d >= best_split.as_ref().unwrap().0 {
+                                continue;
+                            }
+
+                            let point = v0 + v_vel * d;
+
+                            // Segment check: point must lie on the finite edge.
+                            let e_pred = loops[li_b][(ei + mb - 1) % mb];
+                            let e_succ = loops[li_b][(ei + 1) % mb];
+                            let seg_s = match offset_vertex(
+                                &edge_points, &edge_normals, &edge_dirs, e_pred, e_target, d,
+                            ) {
+                                Some(v) => v,
+                                None => continue,
+                            };
+                            let seg_e = match offset_vertex(
+                                &edge_points, &edge_normals, &edge_dirs, e_target, e_succ, d,
+                            ) {
+                                Some(v) => v,
+                                None => continue,
+                            };
+                            let seg_d = seg_e - seg_s;
+                            let seg_len_sq = seg_d.dot(seg_d);
+                            if seg_len_sq < 1e-12 {
+                                continue;
+                            }
+                            let t = (point - seg_s).dot(seg_d) / seg_len_sq;
+                            if t < -0.01 || t > 1.01 {
+                                continue;
+                            }
+
+                            best_split = Some((d, point, li_a, vi, li_b, ei));
+                        }
+                    }
+                }
+            }
+        }
+
+        let edge_d = best_edge.map(|e| e.0).unwrap_or(f64::MAX);
+        let split_d = best_split.map(|e| e.0).unwrap_or(f64::MAX);
+
+        if edge_d == f64::MAX && split_d == f64::MAX {
+            // No events found — collapse remaining loops to centroids.
+            for (li, _lp) in loops.iter().enumerate() {
+                if let Some(ref wf) = prev_wfs[li] {
+                    let m = wf.len() as f64;
+                    let cx = wf.iter().map(|p| p.x).sum::<f64>() / m;
+                    let cy = wf.iter().map(|p| p.y).sum::<f64>() / m;
+                    let cp = Vec2::new(cx, cy);
+                    nodes.push(cp);
+                    for p in wf {
+                        arcs.push((*p, cp));
+                    }
+                }
+            }
+            break;
+        }
+
+        if edge_d <= split_d {
+            // --- Edge event: an edge collapses within a single loop ---
+            let (event_d, event_point, li, wf_idx) = best_edge.unwrap();
+            let lp = &loops[li];
+            let m = lp.len();
+
+            // Record arcs from prev wavefront to event wavefront.
+            let wf_at = wavefront_at_impl(lp, event_d, &edge_points, &edge_normals, &edge_dirs);
+            if let (Some(ref pw), Some(ref we)) = (&prev_wfs[li], &wf_at) {
+                if pw.len() == we.len() {
+                    for i in 0..pw.len() {
+                        if (pw[i] - we[i]).length() > 0.5 {
+                            arcs.push((pw[i], we[i]));
+                        }
+                    }
+                }
+            }
+            nodes.push(event_point);
+
+            if m == 3 {
+                // Triangle collapse: all vertices converge to one point.
+                let wf = wf_at.or_else(|| prev_wfs[li].clone());
+                if let Some(ref wf) = wf {
+                    for p in wf {
+                        arcs.push((*p, event_point));
+                    }
+                }
+                loops.remove(li);
+                prev_wfs.remove(li);
+            } else {
+                let remove_idx = (wf_idx + 1) % m;
+                loops[li].remove(remove_idx);
+                current_d = event_d;
+
+                prev_wfs[li] = wavefront_at_impl(
+                    &loops[li],
+                    current_d,
+                    &edge_points,
+                    &edge_normals,
+                    &edge_dirs,
+                )
+                .or_else(|| {
+                    wavefront_at_impl(
+                        &loops[li],
+                        current_d + 0.01,
+                        &edge_points,
+                        &edge_normals,
+                        &edge_dirs,
+                    )
+                });
+            }
+
+            event_timeline.push(SkeletonEvent {
+                d: if m == 3 { current_d } else { event_d },
+                active_edges: loops.iter().flat_map(|l| l.iter().copied()).collect(),
+                active_loops: loops.clone(),
+            });
+        } else {
+            // --- Split event: a vertex from one loop hits an edge of another ---
+            // The two wavefronts meet at event_point. Continuing with a
+            // merged single loop creates near-anti-parallel edges at the
+            // bridge junctions, causing degenerate bisectors. Instead,
+            // record arcs up to the split distance and terminate both loops.
+            let (event_d, event_point, li_a, _vi, li_b, _ei) = best_split.unwrap();
+
+            // Draw arcs from prev wavefront to wavefront at event_d for
+            // each loop. Only the involved vertex/edge meet at the split
+            // point; other vertices just reach their event_d positions.
+            for &li in &[li_a, li_b] {
+                let wf = wavefront_at_impl(
+                    &loops[li], event_d, &edge_points, &edge_normals, &edge_dirs,
+                );
+                if let (Some(ref pw), Some(ref we)) = (&prev_wfs[li], &wf) {
+                    if pw.len() == we.len() {
+                        for i in 0..pw.len() {
+                            if (pw[i] - we[i]).length() > 0.5 {
+                                arcs.push((pw[i], we[i]));
+                            }
+                        }
+                    }
+                }
+            }
+            nodes.push(event_point);
+
+            // Remove both loops; keep any remaining loops for further
+            // processing (e.g. if there are multiple holes).
+            let (first, second) = if li_a > li_b { (li_a, li_b) } else { (li_b, li_a) };
+            loops.remove(first);
+            prev_wfs.remove(first);
+            loops.remove(second);
+            prev_wfs.remove(second);
+            current_d = event_d;
+
+            event_timeline.push(SkeletonEvent {
+                d: current_d,
+                active_edges: loops.iter().flat_map(|l| l.iter().copied()).collect(),
+                active_loops: loops.clone(),
+            });
+        }
+    }
+
+    StraightSkeleton {
+        arcs,
+        nodes,
+        events: event_timeline,
+        edge_dirs,
+        edge_normals,
+        edge_points,
+    }
+}
+
+fn empty_skeleton() -> StraightSkeleton {
+    StraightSkeleton {
+        arcs: vec![],
+        nodes: vec![],
+        events: vec![SkeletonEvent {
+            d: 0.0,
+            active_edges: vec![],
+            active_loops: vec![],
+        }],
+        edge_dirs: vec![],
+        edge_normals: vec![],
+        edge_points: vec![],
+    }
+}
+
+/// Compute wavefronts for all active loops at distance `d`.
+///
+/// Returns one `(wavefront_polygon, active_edge_indices)` per active loop.
+pub fn wavefront_loops_at(
+    skeleton: &StraightSkeleton,
+    d: f64,
+) -> Vec<(Vec<Vec2>, Vec<usize>)> {
+    if skeleton.events.is_empty() {
+        return vec![];
+    }
+
+    let mut loops = &skeleton.events[0].active_loops;
+    for i in 1..skeleton.events.len() {
+        if skeleton.events[i].d <= d {
+            loops = &skeleton.events[i].active_loops;
+        } else {
+            break;
+        }
+    }
+
+    let mut result = Vec::new();
+    for lp in loops {
+        if lp.len() < 3 {
+            continue;
+        }
+        let wf = match wavefront_at_impl(
+            lp,
+            d,
+            &skeleton.edge_points,
+            &skeleton.edge_normals,
+            &skeleton.edge_dirs,
+        ) {
+            Some(w) => w,
+            None => continue,
+        };
+
+        // Direction check: each offset edge must still run in the same
+        // direction as its original edge.
+        let n = wf.len();
+        let mut valid = true;
+        for i in 0..n {
+            let next = (i + 1) % n;
+            let offset_dir = wf[next] - wf[i];
+            let orig_edge = lp[(i + 1) % n];
+            let orig_dir = skeleton.edge_dirs[orig_edge];
+            if orig_dir.dot(offset_dir) <= 0.0 {
+                valid = false;
+                break;
+            }
+        }
+        if !valid {
+            continue;
+        }
+
+        result.push((wf, lp.clone()));
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -714,5 +1113,186 @@ mod tests {
             let area = signed_area(wf);
             assert!(area > 0.0, "offset should have positive area if it exists");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-contour skeleton: triangle with hole
+    // -----------------------------------------------------------------------
+
+    /// Test if point is inside polygon (winding number).
+    fn point_in_polygon(p: Vec2, polygon: &[Vec2]) -> bool {
+        let n = polygon.len();
+        let mut winding = 0i32;
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let a = polygon[i];
+            let b = polygon[j];
+            if a.y <= p.y {
+                if b.y > p.y {
+                    let cross = (b.x - a.x) * (p.y - a.y) - (p.x - a.x) * (b.y - a.y);
+                    if cross > 0.0 {
+                        winding += 1;
+                    }
+                }
+            } else if b.y <= p.y {
+                let cross = (b.x - a.x) * (p.y - a.y) - (p.x - a.x) * (b.y - a.y);
+                if cross < 0.0 {
+                    winding -= 1;
+                }
+            }
+        }
+        winding != 0
+    }
+
+    /// Test if point is inside face (inside outer, outside all holes).
+    fn point_in_face(p: Vec2, shape: &[Vec<Vec2>]) -> bool {
+        if shape.is_empty() || !point_in_polygon(p, &shape[0]) {
+            return false;
+        }
+        for hole in &shape[1..] {
+            if point_in_polygon(p, hole) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Minimum distance from point to polygon boundary.
+    fn dist_to_boundary(p: Vec2, polygon: &[Vec2]) -> f64 {
+        let n = polygon.len();
+        let mut min_dist = f64::MAX;
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let a = polygon[i];
+            let b = polygon[j];
+            let ab = b - a;
+            let len_sq = ab.dot(ab);
+            if len_sq < 1e-12 {
+                min_dist = min_dist.min((p - a).length());
+                continue;
+            }
+            let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
+            let closest = a + ab * t;
+            min_dist = min_dist.min((p - closest).length());
+        }
+        min_dist
+    }
+
+    #[test]
+    fn test_triangle_with_hole_skeleton() {
+        // Large outer triangle (CCW, positive signed area).
+        let outer = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(300.0, 0.0),
+            Vec2::new(150.0, 260.0),
+        ];
+        assert!(signed_area(&outer) > 0.0, "outer must be CCW");
+
+        // Smaller inner triangle (CW, negative signed area) — the hole.
+        let hole = vec![
+            Vec2::new(150.0, 180.0),
+            Vec2::new(200.0, 60.0),
+            Vec2::new(100.0, 60.0),
+        ];
+        assert!(signed_area(&hole) < 0.0, "hole must be CW");
+
+        let shape = vec![outer.clone(), hole.clone()];
+
+        // Compute multi-contour skeleton.
+        let sk = compute_skeleton_multi(&shape);
+
+        // ---- Visualization (printed as snapshot) ----
+        eprintln!("=== Triangle with hole: multi-contour skeleton ===");
+        eprintln!("Outer (CCW): {:?}", outer);
+        eprintln!("Hole  (CW):  {:?}", hole);
+        eprintln!("Arcs: {}", sk.arcs.len());
+        for (i, &(a, b)) in sk.arcs.iter().enumerate() {
+            eprintln!("  arc[{:2}]: ({:7.1}, {:7.1}) -> ({:7.1}, {:7.1})", i, a.x, a.y, b.x, b.y);
+        }
+        eprintln!("Nodes: {}", sk.nodes.len());
+        for (i, n) in sk.nodes.iter().enumerate() {
+            eprintln!("  node[{:2}]: ({:7.1}, {:7.1})", i, n.x, n.y);
+        }
+        eprintln!("Events: {}", sk.events.len());
+        for (i, ev) in sk.events.iter().enumerate() {
+            eprintln!("  event[{}]: d={:.2}, loops={}, edges={}",
+                i, ev.d, ev.active_loops.len(), ev.active_edges.len());
+        }
+
+        // ---- Assertions ----
+        assert!(!sk.arcs.is_empty(), "skeleton should have arcs");
+        assert!(!sk.nodes.is_empty(), "skeleton should have nodes");
+
+        // Every skeleton node must be inside the face (inside outer, outside hole).
+        let mut bad_nodes = Vec::new();
+        for (i, node) in sk.nodes.iter().enumerate() {
+            if !point_in_face(*node, &shape) {
+                let d_outer = dist_to_boundary(*node, &outer);
+                let d_hole = dist_to_boundary(*node, &hole);
+                bad_nodes.push((i, *node, d_outer, d_hole));
+            }
+        }
+        if !bad_nodes.is_empty() {
+            eprintln!("\nBAD NODES (outside face):");
+            for &(i, p, d_outer, d_hole) in &bad_nodes {
+                let in_outer = point_in_polygon(p, &outer);
+                let in_hole = point_in_polygon(p, &hole);
+                eprintln!("  node[{}]: ({:.1}, {:.1}) in_outer={} in_hole={} d_outer={:.1} d_hole={:.1}",
+                    i, p.x, p.y, in_outer, in_hole, d_outer, d_hole);
+            }
+        }
+        assert!(bad_nodes.is_empty(),
+            "{} skeleton nodes are outside the face", bad_nodes.len());
+
+        // Every arc endpoint must be inside the face (with small tolerance
+        // for points on the boundary).
+        let tol = 2.0;
+        let mut bad_arcs = Vec::new();
+        for (i, &(a, b)) in sk.arcs.iter().enumerate() {
+            for &pt in &[a, b] {
+                if !point_in_face(pt, &shape) {
+                    let d_outer = dist_to_boundary(pt, &outer);
+                    let d_hole = dist_to_boundary(pt, &hole);
+                    // Allow points very close to a boundary edge.
+                    if d_outer > tol && d_hole > tol {
+                        bad_arcs.push((i, pt, d_outer, d_hole));
+                    }
+                }
+            }
+        }
+        if !bad_arcs.is_empty() {
+            eprintln!("\nBAD ARC ENDPOINTS (outside face, beyond tolerance):");
+            for &(i, p, d_outer, d_hole) in &bad_arcs {
+                let in_outer = point_in_polygon(p, &outer);
+                let in_hole = point_in_polygon(p, &hole);
+                eprintln!("  arc[{}] pt ({:.1}, {:.1}) in_outer={} in_hole={} d_outer={:.1} d_hole={:.1}",
+                    i, p.x, p.y, in_outer, in_hole, d_outer, d_hole);
+            }
+        }
+        assert!(bad_arcs.is_empty(),
+            "{} arc endpoints are outside the face (beyond {:.0}ft tolerance)", bad_arcs.len(), tol);
+
+        // Midpoints of arcs should also be inside the face (catches arcs
+        // that start/end on the boundary but cut through the hole).
+        let mut bad_mids = Vec::new();
+        for (i, &(a, b)) in sk.arcs.iter().enumerate() {
+            let mid = (a + b) * 0.5;
+            if !point_in_face(mid, &shape) {
+                let d_outer = dist_to_boundary(mid, &outer);
+                let d_hole = dist_to_boundary(mid, &hole);
+                if d_outer > tol && d_hole > tol {
+                    bad_mids.push((i, mid, d_outer, d_hole));
+                }
+            }
+        }
+        if !bad_mids.is_empty() {
+            eprintln!("\nBAD ARC MIDPOINTS (outside face):");
+            for &(i, p, d_outer, d_hole) in &bad_mids {
+                eprintln!("  arc[{}] mid ({:.1}, {:.1}) d_outer={:.1} d_hole={:.1}",
+                    i, p.x, p.y, d_outer, d_hole);
+            }
+        }
+        assert!(bad_mids.is_empty(),
+            "{} arc midpoints are outside the face", bad_mids.len());
     }
 }
