@@ -586,24 +586,40 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
                 // The wavefront polygon splits into two independent regions.
                 let li = li_a;
 
-                // Draw arcs from prev wavefront to wavefront at event_d.
-                let wf = wavefront_at_impl(
-                    &loops[li], event_d, &edge_points, &edge_normals, &edge_dirs,
-                );
-                if let (Some(ref pw), Some(ref we)) = (&prev_wfs[li], &wf) {
-                    if pw.len() == we.len() {
-                        for i in 0..pw.len() {
-                            if (pw[i] - we[i]).length() > 0.5 {
-                                arcs.push((pw[i], we[i]));
+                // Split the loop into two independent sub-loops.
+                let (loop_a, loop_b) = split_loop_edges(&loops[li], vi, ei);
+
+                // Draw arcs per sub-loop. The full pre-split wavefront at
+                // event_d is self-intersecting (that's what caused the split),
+                // so we use each sub-loop's own wavefront which stays within
+                // its valid region.
+                let orig = &loops[li];
+                let m = orig.len();
+                for sub in [&loop_a, &loop_b] {
+                    let sw = wavefront_at_impl(
+                        sub, event_d, &edge_points, &edge_normals, &edge_dirs,
+                    );
+                    if let (Some(ref pw), Some(ref sw)) = (&prev_wfs[li], &sw) {
+                        let sl = sub.len();
+                        for j in 0..sl {
+                            // Find the corresponding prev_wf vertex: the one
+                            // at the same edge junction in the original loop.
+                            let e1 = sub[j];
+                            let e2 = sub[(j + 1) % sl];
+                            let prev_idx = (0..m).find(|&k| {
+                                orig[k] == e1 && orig[(k + 1) % m] == e2
+                            });
+                            if let Some(k) = prev_idx {
+                                if (pw[k] - sw[j]).length() > 0.5 {
+                                    arcs.push((pw[k], sw[j]));
+                                }
                             }
                         }
                     }
                 }
+
                 nodes.push(event_point);
                 split_nodes.push(event_point);
-
-                // Split the loop into two independent sub-loops.
-                let (loop_a, loop_b) = split_loop_edges(&loops[li], vi, ei);
 
                 // Replace the original loop with loop_a.
                 loops[li] = loop_a;

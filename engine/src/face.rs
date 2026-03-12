@@ -979,9 +979,16 @@ pub fn generate_from_spines(
             let sk = skeleton::compute_skeleton_multi(&normalized);
             let sources: Vec<Vec2> = normalized.iter().flat_map(|c| c.iter().copied()).collect();
             skeleton_debugs.push(SkeletonDebug {
-                arcs: sk.arcs.iter().map(|&(a, b)| [a, b]).collect(),
-                nodes: sk.nodes.clone(),
-                split_nodes: sk.split_nodes.clone(),
+                arcs: sk.arcs.iter()
+                    .filter(|&&(a, b)| point_in_face(a, shape) && point_in_face(b, shape))
+                    .map(|&(a, b)| [a, b])
+                    .collect(),
+                nodes: sk.nodes.iter().copied()
+                    .filter(|n| point_in_face(*n, shape))
+                    .collect(),
+                split_nodes: sk.split_nodes.iter().copied()
+                    .filter(|n| point_in_face(*n, shape))
+                    .collect(),
                 sources,
             });
         }
