@@ -81,6 +81,15 @@ export class Renderer {
               : "rgba(255, 221, 87, 0.85)";
             this.ctx.fill();
           }
+          // Draw split event nodes as squares.
+          const splitColor = state.layers.faceColors
+            ? `rgba(${r}, ${g}, ${b}, 0.9)`
+            : "rgba(255, 100, 200, 0.9)";
+          for (const node of sk.split_nodes ?? []) {
+            const s = 3.5;
+            this.ctx.fillStyle = splitColor;
+            this.ctx.fillRect(node.x - s, node.y - s, s * 2, s * 2);
+          }
           // Draw skeleton source vertices (polygon corners) as ring dots.
           const srcColor = state.layers.faceColors
             ? `rgba(${r}, ${g}, ${b}, 0.9)`

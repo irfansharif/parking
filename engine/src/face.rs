@@ -981,6 +981,7 @@ pub fn generate_from_spines(
             skeleton_debugs.push(SkeletonDebug {
                 arcs: sk.arcs.iter().map(|&(a, b)| [a, b]).collect(),
                 nodes: sk.nodes.clone(),
+                split_nodes: sk.split_nodes.clone(),
                 sources,
             });
         }

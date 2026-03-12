@@ -22,6 +22,8 @@ pub struct StraightSkeleton {
     pub arcs: Vec<(Vec2, Vec2)>,
     /// Event points where topology changes occurred.
     pub nodes: Vec<Vec2>,
+    /// Split event points (subset of nodes where the wavefront split).
+    pub split_nodes: Vec<Vec2>,
     /// Timeline of edge-collapse events.
     pub events: Vec<SkeletonEvent>,
     /// Per-edge directions (immutable, from CCW polygon).
@@ -335,6 +337,7 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
 
     let mut arcs: Vec<(Vec2, Vec2)> = Vec::new();
     let mut nodes: Vec<Vec2> = Vec::new();
+    let mut split_nodes: Vec<Vec2> = Vec::new();
     let mut current_d = 0.0;
 
     let mut prev_wfs: Vec<Option<Vec<Vec2>>> = loops
@@ -424,7 +427,12 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
                     let mb = loops[li_b].len();
                     for ei in 0..mb {
                         if li_a == li_b {
-                            // Intra-loop: skip edges adjacent to vertex vi.
+                            // Intra-loop: only reflex vertices produce splits.
+                            // For CCW winding, reflex = cross(incoming, outgoing) < 0.
+                            if edge_dirs[e_prev].cross(edge_dirs[e_next]) >= 0.0 {
+                                continue;
+                            }
+                            // Skip edges adjacent to vertex vi.
                             if ei == vi || ei == (vi + 1) % ma {
                                 continue;
                             }
@@ -541,6 +549,7 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
                 }
                 loops.remove(li);
                 prev_wfs.remove(li);
+                current_d = event_d;
             } else {
                 let remove_idx = (wf_idx + 1) % m;
                 loops[li].remove(remove_idx);
@@ -591,6 +600,7 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
                     }
                 }
                 nodes.push(event_point);
+                split_nodes.push(event_point);
 
                 // Split the loop into two independent sub-loops.
                 let (loop_a, loop_b) = split_loop_edges(&loops[li], vi, ei);
@@ -634,6 +644,7 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
                     }
                 }
                 nodes.push(event_point);
+                split_nodes.push(event_point);
 
                 // Remove both loops; keep any remaining loops for further
                 // processing (e.g. if there are multiple holes).
@@ -656,6 +667,7 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
     StraightSkeleton {
         arcs,
         nodes,
+        split_nodes,
         events: event_timeline,
         edge_dirs,
         edge_normals,
@@ -667,6 +679,7 @@ fn empty_skeleton() -> StraightSkeleton {
     StraightSkeleton {
         arcs: vec![],
         nodes: vec![],
+        split_nodes: vec![],
         events: vec![SkeletonEvent {
             d: 0.0,
             active_edges: vec![],
