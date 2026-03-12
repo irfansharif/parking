@@ -57,21 +57,39 @@ export class Renderer {
 
       // 2d. Skeleton debug (arcs + nodes)
       if (state.layers.skeletonDebug && state.layout.skeleton_debug) {
-        for (const sk of state.layout.skeleton_debug) {
-          // Draw skeleton arcs as thin cyan lines.
+        const colors = Renderer.FACE_COLORS;
+        for (let si = 0; si < state.layout.skeleton_debug.length; si++) {
+          const sk = state.layout.skeleton_debug[si];
+          let [r, g, b] = state.layers.faceColors
+            ? colors[si % colors.length]
+            : [78, 205, 196];
+          // Draw skeleton arcs.
           for (const arc of sk.arcs) {
             this.ctx.beginPath();
             this.ctx.moveTo(arc[0].x, arc[0].y);
             this.ctx.lineTo(arc[1].x, arc[1].y);
-            this.ctx.strokeStyle = "rgba(78, 205, 196, 0.7)";
+            this.ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.7)`;
             this.ctx.lineWidth = 1;
             this.ctx.stroke();
           }
-          // Draw skeleton nodes as yellow dots.
+          // Draw skeleton nodes (edge-collapse points).
           for (const node of sk.nodes) {
             this.ctx.beginPath();
             this.ctx.arc(node.x, node.y, 2.5, 0, Math.PI * 2);
-            this.ctx.fillStyle = "rgba(255, 221, 87, 0.85)";
+            this.ctx.fillStyle = state.layers.faceColors
+              ? `rgba(${r}, ${g}, ${b}, 0.6)`
+              : "rgba(255, 221, 87, 0.85)";
+            this.ctx.fill();
+          }
+          // Draw skeleton source vertices (polygon corners) as ring dots.
+          const srcColor = state.layers.faceColors
+            ? `rgba(${r}, ${g}, ${b}, 0.9)`
+            : "rgba(255, 80, 80, 0.9)";
+          for (const src of sk.sources) {
+            this.ctx.beginPath();
+            this.ctx.arc(src.x, src.y, 3.5, 0, Math.PI * 2);
+            this.ctx.arc(src.x, src.y, 1.5, 0, Math.PI * 2, true);
+            this.ctx.fillStyle = srcColor;
             this.ctx.fill();
           }
         }

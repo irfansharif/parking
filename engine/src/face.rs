@@ -975,10 +975,13 @@ pub fn generate_from_spines(
         // Optionally collect skeleton debug data for visualization.
         // Use multi-contour skeleton so arcs stay within the face.
         if debug.skeleton_debug && !shape.is_empty() && shape[0].len() >= 3 {
-            let sk = skeleton::compute_skeleton_multi(&normalize_face_winding(shape));
+            let normalized = normalize_face_winding(shape);
+            let sk = skeleton::compute_skeleton_multi(&normalized);
+            let sources: Vec<Vec2> = normalized.iter().flat_map(|c| c.iter().copied()).collect();
             skeleton_debugs.push(SkeletonDebug {
                 arcs: sk.arcs.iter().map(|&(a, b)| [a, b]).collect(),
                 nodes: sk.nodes.clone(),
+                sources,
             });
         }
         let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, debug);

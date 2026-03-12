@@ -173,6 +173,8 @@ pub struct ParkingLayout {
 pub struct SkeletonDebug {
     pub arcs: Vec<[Vec2; 2]>,
     pub nodes: Vec<Vec2>,
+    /// Original polygon vertices from which skeleton arcs originate.
+    pub sources: Vec<Vec2>,
 }
 
 // ---------------------------------------------------------------------------

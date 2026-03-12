@@ -109,7 +109,7 @@ export class App {
         endcap_islands: true,
         island_width_filter: true,
         boundary_clipping: true,
-        skeleton_debug: false,
+        skeleton_debug: true,
       },
       layout: null,
       selectedVertex: null,
@@ -121,14 +121,14 @@ export class App {
       pendingHole: [],
       layers: {
         stalls: true,
-        aisles: true,
+        aisles: false,
         vertices: true,
-        islands: true,
+        islands: false,
         spines: true,
         faces: true,
-        faceColors: false,
+        faceColors: true,
         miterFills: false,
-        skeletonDebug: false,
+        skeletonDebug: true,
       },
     };
   }

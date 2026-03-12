@@ -38,7 +38,7 @@ export interface ParkingLayout {
   spines: SpineLine[];
   faces: Face[];
   miter_fills: Vec2[][];
-  skeleton_debug: { arcs: [Vec2, Vec2][]; nodes: Vec2[] }[];
+  skeleton_debug: { arcs: [Vec2, Vec2][]; nodes: Vec2[]; sources: Vec2[] }[];
 }
 
 export interface AisleEdge {
