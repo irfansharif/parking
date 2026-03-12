@@ -39,7 +39,7 @@ export class Renderer {
       // 2b. Positive-space faces (debug overlay)
       if (state.layers.faces && state.layout.faces) {
         for (let i = 0; i < state.layout.faces.length; i++) {
-          this.drawFace(state.layout.faces[i], i);
+          this.drawFace(state.layout.faces[i], i, state.layers.faceColors);
         }
       }
 
@@ -218,10 +218,15 @@ export class Renderer {
     [50, 200, 150],  // seafoam
   ];
 
-  private drawFace(face: Face, index: number): void {
+  private drawFace(face: Face, index: number, perFaceColors: boolean): void {
     const { ctx } = this;
-    const colors = Renderer.FACE_COLORS;
-    const [r, g, b] = colors[index % colors.length];
+    let r: number, g: number, b: number;
+    if (perFaceColors) {
+      const colors = Renderer.FACE_COLORS;
+      [r, g, b] = colors[index % colors.length];
+    } else {
+      [r, g, b] = [200, 200, 220];
+    }
     ctx.beginPath();
     this.tracePath(face.contour);
     if (face.holes) {

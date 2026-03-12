@@ -16,11 +16,11 @@ export function setupInteraction(
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
 
-    // Middle button or Ctrl+left for pan (always available)
-    if (e.button === 1 || (e.button === 0 && e.ctrlKey)) {
+    // Right-click to pan.
+    if (e.button === 2) {
+      e.preventDefault();
       isPanning = true;
       panStart = { x: sx, y: sy };
-      e.preventDefault();
       return;
     }
 
@@ -85,6 +85,9 @@ export function setupInteraction(
       app.state.isDragging = true;
     } else {
       app.state.selectedVertex = null;
+      // No vertex hit — start canvas pan.
+      isPanning = true;
+      panStart = { x: sx, y: sy };
     }
     renderer.render(app.state);
   });
@@ -154,25 +157,41 @@ export function setupInteraction(
     app.state.isDragging = false;
   });
 
+  // Smooth zoom: accumulate wheel deltas and animate towards the target zoom.
+  let targetZoom = app.state.camera.zoom;
+  let zoomAnchor: Vec2 = { x: 0, y: 0 };
+  let zoomRAF: number | null = null;
+
+  function animateZoom() {
+    const cam = app.state.camera;
+    const diff = targetZoom - cam.zoom;
+    if (Math.abs(diff) < 0.001) {
+      cam.zoom = targetZoom;
+      zoomRAF = null;
+    } else {
+      const newZoom = cam.zoom + diff * 0.25;
+      cam.offsetX = zoomAnchor.x - (zoomAnchor.x - cam.offsetX) * (newZoom / cam.zoom);
+      cam.offsetY = zoomAnchor.y - (zoomAnchor.y - cam.offsetY) * (newZoom / cam.zoom);
+      cam.zoom = newZoom;
+      zoomRAF = requestAnimationFrame(animateZoom);
+    }
+    renderer.render(app.state);
+  }
+
   canvas.addEventListener(
     "wheel",
     (e) => {
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
+      zoomAnchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
 
-      const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-      const oldZoom = app.state.camera.zoom;
-      const newZoom = Math.max(0.5, Math.min(20, oldZoom * zoomFactor));
+      // Scale proportionally to delta for smooth trackpad support.
+      const delta = -e.deltaY * 0.002;
+      targetZoom = Math.max(0.5, Math.min(20, targetZoom * (1 + delta)));
 
-      app.state.camera.offsetX =
-        sx - (sx - app.state.camera.offsetX) * (newZoom / oldZoom);
-      app.state.camera.offsetY =
-        sy - (sy - app.state.camera.offsetY) * (newZoom / oldZoom);
-      app.state.camera.zoom = newZoom;
-
-      renderer.render(app.state);
+      if (!zoomRAF) {
+        zoomRAF = requestAnimationFrame(animateZoom);
+      }
     },
     { passive: false },
   );
@@ -230,38 +249,9 @@ export function setupInteraction(
     }
   });
 
-  // Right-click to delete vertex (boundary outer, hole, or aisle)
+  // Suppress browser context menu on canvas.
   canvas.addEventListener("contextmenu", (e) => {
     e.preventDefault();
-    if (app.state.editMode !== "select") return;
-
-    const rect = canvas.getBoundingClientRect();
-    const sx = e.clientX - rect.left;
-    const sy = e.clientY - rect.top;
-
-    const allVerts2 = app.getAllVertices();
-    const perimCount2 = app.getEffectiveAisleGraph()?.perim_vertex_count ?? 0;
-    for (const v of allVerts2) {
-      if (v.ref.type === "aisle" && v.ref.index < perimCount2) continue;
-      const screenV = renderer.worldToScreen(
-        v.pos.x,
-        v.pos.y,
-        app.state.camera,
-      );
-      const dx = screenV.x - sx;
-      const dy = screenV.y - sy;
-      if (Math.sqrt(dx * dx + dy * dy) < HIT_RADIUS) {
-        if (v.ref.type === "boundary-outer") {
-          app.deleteBoundaryVertex(v.ref.index);
-        } else if (v.ref.type === "boundary-hole" && v.ref.holeIndex !== undefined) {
-          app.deleteHoleVertex(v.ref.holeIndex, v.ref.index);
-        } else if (v.ref.type === "aisle") {
-          app.deleteAisleVertex(v.ref.index);
-        }
-        renderer.render(app.state);
-        break;
-      }
-    }
   });
 
   // Keyboard shortcuts
@@ -329,7 +319,7 @@ export function updateModeHint(app: App): void {
   const hint = document.getElementById("mode-hint");
   if (!hint) return;
   const hints: Record<string, string> = {
-    select: "Click to select/drag vertices. Double-click edge to insert vertex. Right-click vertex to delete. Delete key removes selected vertex.",
+    select: "Click to select/drag vertices. Double-click edge to insert vertex. Delete key removes selected vertex. Right-drag to pan.",
     "add-aisle-vertex": "Click to place aisle vertices. Press Esc to return to select mode.",
     "add-aisle-edge": "Click two aisle vertices to connect them. Press Esc to cancel.",
     "add-hole": "Click to place hole vertices. Press Esc to finish the hole (needs 3+ vertices).",

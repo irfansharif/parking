@@ -27,6 +27,27 @@ async function main() {
     renderer.render(app.state);
   });
 
+  // Fit the default boundary in the canvas with some padding.
+  {
+    const container = canvas.parentElement!;
+    const cw = container.clientWidth;
+    const ch = container.clientHeight;
+    const b = app.state.boundary.outer;
+    const xs = b.map((v) => v.x);
+    const ys = b.map((v) => v.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const bw = maxX - minX;
+    const bh = maxY - minY;
+    const padding = 100; // screen pixels
+    const zoom = Math.min((cw - padding * 2) / bw, (ch - padding * 2) / bh);
+    app.state.camera.zoom = zoom;
+    app.state.camera.offsetX = (cw - bw * zoom) / 2 - minX * zoom;
+    app.state.camera.offsetY = (ch - bh * zoom) / 2 - minY * zoom;
+  }
+
   // Initial generate
   app.generate();
 

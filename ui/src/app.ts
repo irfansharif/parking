@@ -33,6 +33,7 @@ export interface LayerVisibility {
   islands: boolean;
   spines: boolean;
   faces: boolean;
+  faceColors: boolean;
   miterFills: boolean;
   skeletonDebug: boolean;
 }
@@ -115,7 +116,7 @@ export class App {
       hoveredVertex: null,
       isDragging: false,
       dragAnchor: null,
-      camera: { offsetX: 50, offsetY: 50, zoom: 3.0 },
+      camera: { offsetX: 30, offsetY: 60, zoom: 1.3 },
       editMode: "select",
       pendingHole: [],
       layers: {
@@ -125,6 +126,7 @@ export class App {
         islands: true,
         spines: true,
         faces: true,
+        faceColors: false,
         miterFills: false,
         skeletonDebug: false,
       },

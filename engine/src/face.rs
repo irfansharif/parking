@@ -245,21 +245,28 @@ fn classify_face_edges(contour: &[Vec2], corridor_shapes: &[Vec<Vec<Vec2>>], cla
     aisle_facing
 }
 
+/// Normalize winding for multi-contour skeleton input.
+/// Outer contour (index 0) → CCW (positive signed area).
+/// Hole contours (index 1+) → CW (negative signed area).
+fn normalize_face_winding(shape: &[Vec<Vec2>]) -> Vec<Vec<Vec2>> {
+    shape.iter().enumerate().filter_map(|(ci, c)| {
+        if c.len() < 3 { return None; }
+        let sa = signed_area(c);
+        let needs_reverse = (ci == 0 && sa < 0.0) || (ci > 0 && sa > 0.0);
+        Some(if needs_reverse {
+            c.iter().rev().copied().collect()
+        } else {
+            c.clone()
+        })
+    }).collect()
+}
+
 /// Generate spine segments for a face shape (outer contour + holes).
 ///
-/// Each contour is processed independently. The outer contour's skeleton
-/// shrinks inward (positive offset); hole contours expand outward into the
-/// face (negative offset). All spines are clipped to the face interior.
-///
-/// Each aisle-facing edge is offset inward by `effective_depth`; boundary
-/// edges stay put (distance 0). The inset polygon is computed with proper
-/// edge-collapse handling: when an edge shrinks to zero, only that edge is
-/// removed (not both neighbors), preserving adjacent spines. The surviving
-/// edges that map to aisle-facing original edges become spines.
-///
-/// This partitions the face interior among its edges — two opposing aisle
-/// edges each get half the face width, and edges at different angles get
-/// non-overlapping regions bounded by the skeleton ridges (miter points).
+/// Computes the multi-contour straight skeleton (outer CCW + holes CW),
+/// extracts wavefront loops at `effective_depth`, and emits a spine for
+/// each surviving aisle-facing edge. Spines are optionally clipped to
+/// the face interior.
 fn compute_face_spines(
     shape: &[Vec<Vec2>],
     effective_depth: f64,
@@ -270,9 +277,7 @@ fn compute_face_spines(
         return vec![];
     }
 
-    // Skip faces that are too narrow to hold a stall strip. Approximate
-    // minimum width as 4 * area / perimeter; faces narrower than the
-    // effective stall depth are corner artifacts from miter fills.
+    // Skip faces that are too narrow to hold a stall strip.
     let outer = &shape[0];
     let area = signed_area(outer).abs();
     let perimeter: f64 = outer.iter().enumerate().map(|(i, v)| {
@@ -283,74 +288,30 @@ fn compute_face_spines(
         return vec![];
     }
 
-    // For faces without holes, use the original per-contour skeleton path.
-    if shape.len() == 1 {
-        let contour = if signed_area(&shape[0]) < 0.0 {
-            shape[0].iter().rev().copied().collect::<Vec<_>>()
-        } else {
-            shape[0].clone()
-        };
-        let aisle_facing = classify_face_edges(&contour, corridor_shapes, debug.edge_classification);
-        let ed = effective_depth - 0.05;
-        let min_edge_len = effective_depth * 2.0;
-        let distances: Vec<f64> = (0..contour.len())
-            .map(|i| {
-                if !aisle_facing[i] {
-                    return 0.0;
-                }
-                if debug.short_edge_zeroing {
-                    let j = (i + 1) % contour.len();
-                    let edge_len = (contour[j] - contour[i]).length();
-                    if edge_len < min_edge_len {
-                        return 0.0;
-                    }
-                }
-                ed
-            })
-            .collect();
-        return skeleton_inset_spines(&contour, &distances, &aisle_facing, 1.0, shape, debug.spine_clipping);
-    }
+    let contours = normalize_face_winding(shape);
+    let ed = effective_depth - 0.05;
+    let min_edge_len = effective_depth * 2.0;
 
-    // --- Multi-contour path: outer CCW + holes CW ---
-    // Normalize winding: outer must be CCW, holes must be CW.
-    let mut contours: Vec<Vec<Vec2>> = Vec::with_capacity(shape.len());
+    // Classify edges and build flat aisle-facing array matching skeleton
+    // edge layout. Apply short-edge-zeroing for outer contour edges.
     let mut aisle_facing_flat: Vec<bool> = Vec::new();
-
-    for (ci, raw) in shape.iter().enumerate() {
-        if raw.len() < 3 {
-            continue;
-        }
+    for (ci, contour) in contours.iter().enumerate() {
+        let af = classify_face_edges(contour, corridor_shapes, debug.edge_classification);
         let is_hole = ci > 0;
-        let contour = if is_hole {
-            // Holes must be CW (negative signed area).
-            if signed_area(raw) > 0.0 {
-                raw.iter().rev().copied().collect::<Vec<_>>()
-            } else {
-                raw.clone()
+        for (i, &facing) in af.iter().enumerate() {
+            let mut keep = facing;
+            if keep && debug.short_edge_zeroing && !is_hole {
+                let j = (i + 1) % contour.len();
+                if (contour[j] - contour[i]).length() < min_edge_len {
+                    keep = false;
+                }
             }
-        } else {
-            // Outer must be CCW (positive signed area).
-            if signed_area(raw) < 0.0 {
-                raw.iter().rev().copied().collect::<Vec<_>>()
-            } else {
-                raw.clone()
-            }
-        };
-        let af = classify_face_edges(&contour, corridor_shapes, debug.edge_classification);
-        aisle_facing_flat.extend(af);
-        contours.push(contour);
+            aisle_facing_flat.push(keep);
+        }
     }
 
     let sk = skeleton::compute_skeleton_multi(&contours);
-    let ed = effective_depth - 0.05;
-
-    // Get wavefront loops at the effective stall depth.
     let wf_loops = skeleton::wavefront_loops_at(&sk, ed);
-
-    // Build inward normals for all edges (flat, matching skeleton edge layout).
-    // For outer CCW: (-dy, dx)/len points inward.
-    // For hole CW: (-dy, dx)/len points outward-from-hole = into face.
-    // In both cases the normal points into the face, so stall outward = -normal.
 
     let mut all_spines = Vec::new();
     for (wf_pts, active_edges) in &wf_loops {
@@ -383,7 +344,7 @@ fn compute_face_spines(
                 continue;
             }
 
-            // Clip spine to face interior.
+            // Clip spine and stall-reach line to face interior.
             let spine_clips = clip_segment_to_face(spine_start, spine_end, shape);
             let reach = (ed - 0.5).max(0.0);
             let offset_start = spine_start + outward * reach;
@@ -413,130 +374,6 @@ fn compute_face_spines(
     }
 
     all_spines
-}
-
-/// Event-driven straight skeleton inset to produce spine segments.
-///
-/// Computes the full straight skeleton for the polygon, then extracts the
-/// wavefront at the effective stall depth. Each surviving aisle-facing edge
-/// of the offset polygon becomes a spine, clipped to the face interior.
-fn skeleton_inset_spines(
-    polygon: &[Vec2],
-    distances: &[f64],
-    aisle_facing: &[bool],
-    sign: f64,
-    face_shape: &[Vec<Vec2>],
-    clip: bool,
-) -> Vec<SpineSegment> {
-    let n = polygon.len();
-    if n < 3 {
-        return vec![];
-    }
-
-    // Determine the effective inset depth from the distances array.
-    // All aisle-facing edges use the same depth; pick the first nonzero one.
-    let effective_depth = distances
-        .iter()
-        .copied()
-        .find(|&d| d > 0.0)
-        .unwrap_or(0.0);
-    if effective_depth <= 0.0 {
-        return vec![];
-    }
-
-    // Compute the straight skeleton on the polygon.
-    let sk = skeleton::compute_skeleton(polygon);
-
-    // Get the offset polygon at the effective depth.
-    let (offset_pts, active_edges) = match skeleton::wavefront_at(&sk, effective_depth * sign) {
-        Some(result) => result,
-        None => return vec![],
-    };
-
-    // Precompute inward normals for the original polygon edges (same as
-    // before, using the caller's sign convention).
-    let mut normals: Vec<Vec2> = Vec::with_capacity(n);
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let e = polygon[j] - polygon[i];
-        let len = e.length();
-        if len < 1e-12 {
-            normals.push(Vec2::new(0.0, 0.0));
-        } else {
-            normals.push(Vec2::new(-e.y * sign / len, e.x * sign / len));
-        }
-    }
-
-    // Each vertex i of the offset polygon sits between active_edges[i] and
-    // active_edges[(i+1) % m]. The offset edge from vertex i to vertex i+1
-    // corresponds to original edge active_edges[(i+1) % m].
-    //
-    // Wait — let's be precise about the mapping. The wavefront has m vertices.
-    // Vertex i is the intersection of offset lines for active_edges[i] and
-    // active_edges[(i+1) % m]. So the edge from vertex i to vertex (i+1) is
-    // along the offset of original edge active_edges[(i+1) % m].
-    //
-    // Actually, looking at wavefront_at_impl: vertex i = intersection of
-    // active_edges[i] and active_edges[(i+1) % m]. So the segment from
-    // vertex i to vertex (i+1) % m runs along the offset line of
-    // active_edges[(i+1) % m].
-    let m = active_edges.len();
-    let mut spines = Vec::new();
-
-    for idx in 0..m {
-        let next_idx = (idx + 1) % m;
-        let orig_edge = active_edges[next_idx];
-
-        // Only produce spines for aisle-facing edges with nonzero distance.
-        if orig_edge >= n || !aisle_facing[orig_edge] || distances[orig_edge] == 0.0 {
-            continue;
-        }
-
-        let spine_start = offset_pts[idx];
-        let spine_end = offset_pts[next_idx];
-        let outward = Vec2::new(-normals[orig_edge].x, -normals[orig_edge].y);
-
-        if !clip {
-            if (spine_end - spine_start).length() > 1.0 {
-                spines.push(SpineSegment {
-                    start: spine_start,
-                    end: spine_end,
-                    outward_normal: outward,
-                });
-            }
-            continue;
-        }
-
-        // Clip both the spine and the "stall reach" line to the face interior.
-        let spine_clips = clip_segment_to_face(spine_start, spine_end, face_shape);
-        let reach = (distances[orig_edge] - 0.5).max(0.0);
-        let offset_start = spine_start + outward * reach;
-        let offset_end = spine_end + outward * reach;
-        let offset_clips = clip_segment_to_face(offset_start, offset_end, face_shape);
-
-        // Intersect the two sets of t-parameter intervals.
-        for (st0, st1) in &spine_clips {
-            for (ot0, ot1) in &offset_clips {
-                let t0 = st0.max(*ot0);
-                let t1 = st1.min(*ot1);
-                if t1 - t0 < 1e-9 {
-                    continue;
-                }
-                let d = spine_end - spine_start;
-                let s = spine_start + d * t0;
-                let e = spine_start + d * t1;
-                if (e - s).length() > 1.0 {
-                    spines.push(SpineSegment {
-                        start: s,
-                        end: e,
-                        outward_normal: outward,
-                    });
-                }
-            }
-        }
-    }
-
-    spines
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,18 +975,7 @@ pub fn generate_from_spines(
         // Optionally collect skeleton debug data for visualization.
         // Use multi-contour skeleton so arcs stay within the face.
         if debug.skeleton_debug && !shape.is_empty() && shape[0].len() >= 3 {
-            // Normalize winding: outer CCW (positive signed_area), holes CW
-            // (negative signed_area) so skeleton normals point into the face.
-            let normed: Vec<Vec<Vec2>> = shape.iter().enumerate().filter_map(|(ci, c)| {
-                if c.len() < 3 { return None; }
-                let sa = signed_area(c);
-                Some(if (ci == 0 && sa < 0.0) || (ci > 0 && sa > 0.0) {
-                    c.iter().rev().copied().collect()
-                } else {
-                    c.clone()
-                })
-            }).collect();
-            let sk = skeleton::compute_skeleton_multi(&normed);
+            let sk = skeleton::compute_skeleton_multi(&normalize_face_winding(shape));
             skeleton_debugs.push(SkeletonDebug {
                 arcs: sk.arcs.iter().map(|&(a, b)| [a, b]).collect(),
                 nodes: sk.nodes.clone(),

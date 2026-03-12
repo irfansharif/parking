@@ -159,6 +159,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     { key: "islands", label: "Islands" },
     { key: "spines", label: "Spines" },
     { key: "faces", label: "Faces" },
+    { key: "faceColors", label: "Face Colors" },
     { key: "miterFills", label: "Miter Fills" },
     { key: "skeletonDebug", label: "Skeleton" },
   ];
