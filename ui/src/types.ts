@@ -80,7 +80,6 @@ export interface DebugToggles {
   face_extraction: boolean;
   // Spine generation
   edge_classification: boolean;
-  short_edge_zeroing: boolean;
   spine_clipping: boolean;
   // Spine post-processing
   spine_dedup: boolean;

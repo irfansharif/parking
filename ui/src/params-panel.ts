@@ -217,7 +217,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       label: "Spine Generation",
       toggles: [
         { key: "edge_classification", label: "Edge Classification" },
-        { key: "short_edge_zeroing", label: "Short Edge Zeroing" },
         { key: "spine_clipping", label: "Spine Clipping" },
       ],
     },

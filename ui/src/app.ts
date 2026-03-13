@@ -100,7 +100,6 @@ export class App {
         hole_filtering: true,
         face_extraction: true,
         edge_classification: true,
-        short_edge_zeroing: true,
         spine_clipping: true,
         spine_dedup: true,
         spine_merging: true,

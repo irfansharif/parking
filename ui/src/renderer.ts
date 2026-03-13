@@ -90,17 +90,8 @@ export class Renderer {
             this.ctx.fillStyle = splitColor;
             this.ctx.fillRect(node.x - s, node.y - s, s * 2, s * 2);
           }
-          // Draw skeleton source vertices (polygon corners) as ring dots.
-          const srcColor = state.layers.faceColors
-            ? `rgba(${r}, ${g}, ${b}, 0.9)`
-            : "rgba(255, 80, 80, 0.9)";
-          for (const src of sk.sources) {
-            this.ctx.beginPath();
-            this.ctx.arc(src.x, src.y, 3.5, 0, Math.PI * 2);
-            this.ctx.arc(src.x, src.y, 1.5, 0, Math.PI * 2, true);
-            this.ctx.fillStyle = srcColor;
-            this.ctx.fill();
-          }
+          // Skeleton source vertices (polygon corners) are drawn later
+          // (step 6b) so they render on top of boundary vertex markers.
         }
       }
 
@@ -141,6 +132,26 @@ export class Renderer {
     // 6. Vertex network overlay
     if (state.layers.vertices) {
       this.drawVertexNetwork(state);
+    }
+
+    // 6b. Skeleton source vertices drawn after vertex network so they
+    //     aren't hidden by boundary vertex markers at the same position.
+    if (state.layers.skeletonDebug && state.layout?.skeleton_debug) {
+      const colors = Renderer.FACE_COLORS;
+      for (let si = 0; si < state.layout.skeleton_debug.length; si++) {
+        const sk = state.layout.skeleton_debug[si];
+        const [r, g, b] = state.layers.faceColors
+          ? colors[si % colors.length]
+          : [255, 80, 80];
+        const srcColor = `rgba(${r}, ${g}, ${b}, 0.9)`;
+        for (const src of sk.sources) {
+          this.ctx.beginPath();
+          this.ctx.arc(src.x, src.y, 3.5, 0, Math.PI * 2);
+          this.ctx.arc(src.x, src.y, 1.5, 0, Math.PI * 2, true);
+          this.ctx.fillStyle = srcColor;
+          this.ctx.fill();
+        }
+      }
     }
 
     // 7. Pending hole preview

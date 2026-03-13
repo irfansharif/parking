@@ -150,6 +150,26 @@ fn point_in_face(p: Vec2, shape: &[Vec<Vec2>]) -> bool {
     true
 }
 
+/// Like `point_in_face` but also accepts points within `tol` of any face
+/// boundary edge. Needed for skeleton debug filtering where source vertices
+/// lie exactly on the face boundary (winding-number test treats them as
+/// outside).
+fn point_in_or_on_face(p: Vec2, shape: &[Vec<Vec2>], tol: f64) -> bool {
+    if point_in_face(p, shape) {
+        return true;
+    }
+    for contour in shape {
+        let n = contour.len();
+        for i in 0..n {
+            let j = (i + 1) % n;
+            if point_to_segment_dist(p, contour[i], contour[j]) < tol {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Clip line segment `a→b` to the interior of a face shape (outer contour
 /// minus holes).  Returns parameter intervals `[(t0,t1), …]` where
 /// `a + t*(b-a)` is inside.
@@ -290,27 +310,25 @@ fn compute_face_spines(
 
     let contours = normalize_face_winding(shape);
     let ed = effective_depth - 0.05;
-    let min_edge_len = effective_depth * 2.0;
-
     // Classify edges and build flat aisle-facing array matching skeleton
-    // edge layout. Apply short-edge-zeroing for outer contour edges.
+    // edge layout.
     let mut aisle_facing_flat: Vec<bool> = Vec::new();
-    for (ci, contour) in contours.iter().enumerate() {
+    for contour in contours.iter() {
         let af = classify_face_edges(contour, corridor_shapes, debug.edge_classification);
-        let is_hole = ci > 0;
-        for (i, &facing) in af.iter().enumerate() {
-            let mut keep = facing;
-            if keep && debug.short_edge_zeroing && !is_hole {
-                let j = (i + 1) % contour.len();
-                if (contour[j] - contour[i]).length() < min_edge_len {
-                    keep = false;
-                }
-            }
-            aisle_facing_flat.push(keep);
+        for &facing in af.iter() {
+            aisle_facing_flat.push(facing);
         }
     }
 
-    let sk = skeleton::compute_skeleton_multi(&contours);
+    // Edge weights for the weighted skeleton: aisle-facing edges shrink at
+    // normal speed (1.0), non-aisle-facing edges (boundary walls) stay fixed
+    // (0.0). This lets one-sided perimeter faces produce spines even when
+    // the face is narrower than 2× effective_depth.
+    let edge_weights: Vec<f64> = aisle_facing_flat
+        .iter()
+        .map(|&af| if af { 1.0 } else { 0.0 })
+        .collect();
+    let sk = skeleton::compute_skeleton_multi(&contours, &edge_weights);
     let wf_loops = skeleton::wavefront_loops_at(&sk, ed);
 
     let mut all_spines = Vec::new();
@@ -976,18 +994,29 @@ pub fn generate_from_spines(
         // Use multi-contour skeleton so arcs stay within the face.
         if debug.skeleton_debug && !shape.is_empty() && shape[0].len() >= 3 {
             let normalized = normalize_face_winding(shape);
-            let sk = skeleton::compute_skeleton_multi(&normalized);
+            // Build edge weights matching the spine computation: aisle-facing
+            // edges shrink (1.0), boundary edges stay fixed (0.0).
+            let debug_weights: Vec<f64> = normalized.iter().flat_map(|contour| {
+                let af = classify_face_edges(contour, &merged_corridors, debug.edge_classification);
+                af.into_iter().map(|facing| {
+                    if facing { 1.0 } else { 0.0 }
+                })
+            }).collect();
+            let sk = skeleton::compute_skeleton_multi(&normalized, &debug_weights);
             let sources: Vec<Vec2> = normalized.iter().flat_map(|c| c.iter().copied()).collect();
             skeleton_debugs.push(SkeletonDebug {
                 arcs: sk.arcs.iter()
-                    .filter(|&&(a, b)| point_in_face(a, shape) && point_in_face(b, shape))
+                    .filter(|&&(a, b)| {
+                        point_in_or_on_face(a, shape, 0.5)
+                            && point_in_or_on_face(b, shape, 0.5)
+                    })
                     .map(|&(a, b)| [a, b])
                     .collect(),
                 nodes: sk.nodes.iter().copied()
-                    .filter(|n| point_in_face(*n, shape))
+                    .filter(|n| point_in_or_on_face(*n, shape, 0.5))
                     .collect(),
                 split_nodes: sk.split_nodes.iter().copied()
-                    .filter(|n| point_in_face(*n, shape))
+                    .filter(|n| point_in_or_on_face(*n, shape, 0.5))
                     .collect(),
                 sources,
             });

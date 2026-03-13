@@ -279,8 +279,6 @@ pub struct DebugToggles {
     #[serde(default = "default_true")]
     pub edge_classification: bool,
     #[serde(default = "default_true")]
-    pub short_edge_zeroing: bool,
-    #[serde(default = "default_true")]
     pub spine_clipping: bool,
 
     // Spine post-processing
@@ -318,7 +316,6 @@ impl Default for DebugToggles {
             hole_filtering: true,
             face_extraction: true,
             edge_classification: true,
-            short_edge_zeroing: true,
             spine_clipping: true,
             spine_dedup: true,
             spine_merging: true,
