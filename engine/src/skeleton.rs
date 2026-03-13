@@ -32,6 +32,10 @@ pub struct StraightSkeleton {
     pub edge_normals: Vec<Vec2>,
     /// Per-edge base points (immutable, from CCW polygon).
     pub edge_points: Vec<Vec2>,
+    /// Per-edge weights for the weighted straight skeleton. Weight 1.0 means
+    /// the edge shrinks at normal speed; weight 0.0 means it stays fixed
+    /// (e.g. a boundary wall in a one-sided perimeter face).
+    pub edge_weights: Vec<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -63,14 +67,17 @@ fn ensure_ccw(pts: &[Vec2]) -> Vec<Vec2> {
 // ---------------------------------------------------------------------------
 
 /// Compute the offset line for edge `e_idx` at distance `d`.
+/// The edge weight scales how far the edge moves: weight 1.0 = normal,
+/// weight 0.0 = stationary (boundary wall).
 fn get_offset_line(
     edge_points: &[Vec2],
     edge_normals: &[Vec2],
     edge_dirs: &[Vec2],
+    edge_weights: &[f64],
     e_idx: usize,
     d: f64,
 ) -> (Vec2, Vec2) {
-    let point = edge_points[e_idx] + edge_normals[e_idx] * d;
+    let point = edge_points[e_idx] + edge_normals[e_idx] * d * edge_weights[e_idx];
     let dir = edge_dirs[e_idx];
     (point, dir)
 }
@@ -81,12 +88,13 @@ fn offset_vertex(
     edge_points: &[Vec2],
     edge_normals: &[Vec2],
     edge_dirs: &[Vec2],
+    edge_weights: &[f64],
     e1: usize,
     e2: usize,
     d: f64,
 ) -> Option<Vec2> {
-    let (p1, d1) = get_offset_line(edge_points, edge_normals, edge_dirs, e1, d);
-    let (p2, d2) = get_offset_line(edge_points, edge_normals, edge_dirs, e2, d);
+    let (p1, d1) = get_offset_line(edge_points, edge_normals, edge_dirs, edge_weights, e1, d);
+    let (p2, d2) = get_offset_line(edge_points, edge_normals, edge_dirs, edge_weights, e2, d);
     line_intersect(p1, d1, p2, d2)
 }
 
@@ -97,6 +105,7 @@ fn wavefront_at_impl(
     edge_points: &[Vec2],
     edge_normals: &[Vec2],
     edge_dirs: &[Vec2],
+    edge_weights: &[f64],
 ) -> Option<Vec<Vec2>> {
     let mut pts = Vec::with_capacity(edges.len());
     for i in 0..edges.len() {
@@ -104,6 +113,7 @@ fn wavefront_at_impl(
             edge_points,
             edge_normals,
             edge_dirs,
+            edge_weights,
             edges[i],
             edges[(i + 1) % edges.len()],
             d,
@@ -123,16 +133,17 @@ fn find_edge_event_time(
     edge_points: &[Vec2],
     edge_normals: &[Vec2],
     edge_dirs: &[Vec2],
+    edge_weights: &[f64],
 ) -> Option<(f64, Vec2)> {
     let m = edges.len();
     let e_a = edges[wf_idx];
     let e_b = edges[(wf_idx + 1) % m];
     let e_c = edges[(wf_idx + 2) % m];
 
-    let v1_0 = offset_vertex(edge_points, edge_normals, edge_dirs, e_a, e_b, 0.0)?;
-    let v1_1 = offset_vertex(edge_points, edge_normals, edge_dirs, e_a, e_b, 1.0)?;
-    let v2_0 = offset_vertex(edge_points, edge_normals, edge_dirs, e_b, e_c, 0.0)?;
-    let v2_1 = offset_vertex(edge_points, edge_normals, edge_dirs, e_b, e_c, 1.0)?;
+    let v1_0 = offset_vertex(edge_points, edge_normals, edge_dirs, edge_weights, e_a, e_b, 0.0)?;
+    let v1_1 = offset_vertex(edge_points, edge_normals, edge_dirs, edge_weights, e_a, e_b, 1.0)?;
+    let v2_0 = offset_vertex(edge_points, edge_normals, edge_dirs, edge_weights, e_b, e_c, 0.0)?;
+    let v2_1 = offset_vertex(edge_points, edge_normals, edge_dirs, edge_weights, e_b, e_c, 1.0)?;
 
     let vel1 = v1_1 - v1_0;
     let vel2 = v2_1 - v2_0;
@@ -155,7 +166,17 @@ fn find_edge_event_time(
         return None;
     }
 
-    let point = v1_0 + vel1 * d;
+    // Verify both vertices actually converge to the same point.
+    // The single-component solve above finds when they match in one axis;
+    // if they don't also match in the other axis, the vertices pass each
+    // other without colliding (no true edge event).
+    let p1 = v1_0 + vel1 * d;
+    let p2 = v2_0 + vel2 * d;
+    if (p1 - p2).length() > 1e-2 {
+        return None;
+    }
+
+    let point = p1;
     Some((d, point))
 }
 
@@ -169,7 +190,8 @@ pub fn compute_skeleton(vertices: &[Vec2]) -> StraightSkeleton {
         return empty_skeleton();
     }
     let ccw = ensure_ccw(vertices);
-    compute_skeleton_multi(&[ccw])
+    let n = ccw.len();
+    compute_skeleton_multi(&[ccw], &vec![1.0; n])
 }
 
 /// Compute the wavefront polygon at offset distance `d` using the skeleton's
@@ -199,6 +221,7 @@ pub fn wavefront_at(skeleton: &StraightSkeleton, d: f64) -> Option<(Vec<Vec2>, V
         &skeleton.edge_points,
         &skeleton.edge_normals,
         &skeleton.edge_dirs,
+        &skeleton.edge_weights,
     )?;
 
     // Validate: positive area and no self-intersections.
@@ -298,7 +321,11 @@ fn split_loop_edges(loop_edges: &[usize], vi: usize, ej: usize) -> (Vec<usize>, 
 /// center) and outward-from-polygon normals for CW (away from hole center,
 /// into the face). Both point into the face region, so the outer wavefront
 /// shrinks and hole wavefronts expand until they meet via split events.
-pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
+///
+/// `weights` gives a per-edge weight (flat across all contours, matching the
+/// order edges are appended: contours[0] edges, then contours[1], …).
+/// Weight 1.0 = normal shrinkage, 0.0 = stationary (boundary wall).
+pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> StraightSkeleton {
     if contours.is_empty() {
         return empty_skeleton();
     }
@@ -335,6 +362,12 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
         return empty_skeleton();
     }
 
+    // Build edge_weights matching the flat edge layout. If the caller
+    // provided fewer weights than edges, default missing ones to 1.0.
+    let edge_weights: Vec<f64> = (0..edge_points.len())
+        .map(|i| if i < weights.len() { weights[i] } else { 1.0 })
+        .collect();
+
     let mut arcs: Vec<(Vec2, Vec2)> = Vec::new();
     let mut nodes: Vec<Vec2> = Vec::new();
     let mut split_nodes: Vec<Vec2> = Vec::new();
@@ -342,7 +375,7 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
 
     let mut prev_wfs: Vec<Option<Vec<Vec2>>> = loops
         .iter()
-        .map(|lp| wavefront_at_impl(lp, 0.0, &edge_points, &edge_normals, &edge_dirs))
+        .map(|lp| wavefront_at_impl(lp, 0.0, &edge_points, &edge_normals, &edge_dirs, &edge_weights))
         .collect();
 
     let mut event_timeline = vec![SkeletonEvent {
@@ -372,7 +405,11 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
         }
 
         // --- Find earliest edge event across all loops ---
+        // Collect ALL events at the earliest time (within tolerance) so
+        // simultaneous collapses (e.g. both short edges of a rectangle)
+        // are handled in a single iteration.
         let mut best_edge: Option<(f64, Vec2, usize, usize)> = None;
+        let mut all_edge_events: Vec<(f64, Vec2, usize, usize)> = Vec::new();
         for (li, lp) in loops.iter().enumerate() {
             let m = lp.len();
             if m < 3 {
@@ -386,7 +423,9 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
                     &edge_points,
                     &edge_normals,
                     &edge_dirs,
+                    &edge_weights,
                 ) {
+                    all_edge_events.push((d, pt, li, i));
                     if best_edge.is_none() || d < best_edge.unwrap().0 {
                         best_edge = Some((d, pt, li, i));
                     }
@@ -410,13 +449,13 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
                 let e_next = loops[li_a][(vi + 1) % ma];
 
                 let v0 = match offset_vertex(
-                    &edge_points, &edge_normals, &edge_dirs, e_prev, e_next, 0.0,
+                    &edge_points, &edge_normals, &edge_dirs, &edge_weights, e_prev, e_next, 0.0,
                 ) {
                     Some(v) => v,
                     None => continue,
                 };
                 let v1 = match offset_vertex(
-                    &edge_points, &edge_normals, &edge_dirs, e_prev, e_next, 1.0,
+                    &edge_points, &edge_normals, &edge_dirs, &edge_weights, e_prev, e_next, 1.0,
                 ) {
                     Some(v) => v,
                     None => continue,
@@ -454,7 +493,7 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
                         let dir = edge_dirs[e_target];
 
                         let rel = v0 - edge_points[e_target];
-                        let vel = v_vel - edge_normals[e_target];
+                        let vel = v_vel - edge_normals[e_target] * edge_weights[e_target];
                         let denom = vel.cross(dir);
                         if denom.abs() < 1e-10 {
                             continue;
@@ -473,13 +512,13 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
                         let e_pred = loops[li_b][(ei + mb - 1) % mb];
                         let e_succ = loops[li_b][(ei + 1) % mb];
                         let seg_s = match offset_vertex(
-                            &edge_points, &edge_normals, &edge_dirs, e_pred, e_target, d,
+                            &edge_points, &edge_normals, &edge_dirs, &edge_weights, e_pred, e_target, d,
                         ) {
                             Some(v) => v,
                             None => continue,
                         };
                         let seg_e = match offset_vertex(
-                            &edge_points, &edge_normals, &edge_dirs, e_target, e_succ, d,
+                            &edge_points, &edge_normals, &edge_dirs, &edge_weights, e_target, e_succ, d,
                         ) {
                             Some(v) => v,
                             None => continue,
@@ -521,58 +560,124 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
         }
 
         if edge_d <= split_d {
-            // --- Edge event: an edge collapses within a single loop ---
-            let (event_d, event_point, li, wf_idx) = best_edge.unwrap();
-            let lp = &loops[li];
-            let m = lp.len();
+            // --- Edge event(s): one or more edges collapse simultaneously ---
+            let event_d = best_edge.unwrap().0;
+            let eps = 1e-3;
 
-            // Record arcs from prev wavefront to event wavefront.
-            let wf_at = wavefront_at_impl(lp, event_d, &edge_points, &edge_normals, &edge_dirs);
-            if let (Some(ref pw), Some(ref we)) = (&prev_wfs[li], &wf_at) {
-                if pw.len() == we.len() {
-                    for i in 0..pw.len() {
-                        if (pw[i] - we[i]).length() > 0.5 {
-                            arcs.push((pw[i], we[i]));
+            // Collect all edge events at this time, grouped by loop index.
+            // Each entry is (wf_idx, event_point) for edges collapsing in that loop.
+            let mut events_by_loop: std::collections::BTreeMap<usize, Vec<(usize, Vec2)>> =
+                std::collections::BTreeMap::new();
+            for &(d, pt, li, wf_idx) in &all_edge_events {
+                if (d - event_d).abs() < eps {
+                    events_by_loop.entry(li).or_default().push((wf_idx, pt));
+                }
+            }
+
+            // Process each affected loop.
+            // Work in reverse loop-index order so removals don't shift indices.
+            let affected: Vec<usize> = events_by_loop.keys().copied().rev().collect();
+            for li in affected {
+                let evts = &events_by_loop[&li];
+                let lp = &loops[li];
+                let m = lp.len();
+
+                // Record arcs from prev wavefront to event wavefront.
+                let wf_at = wavefront_at_impl(
+                    lp, event_d, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
+                );
+                if let (Some(ref pw), Some(ref we)) = (&prev_wfs[li], &wf_at) {
+                    if pw.len() == we.len() {
+                        for i in 0..pw.len() {
+                            if (pw[i] - we[i]).length() > 0.5 {
+                                arcs.push((pw[i], we[i]));
+                            }
                         }
                     }
                 }
-            }
-            nodes.push(event_point);
 
-            if m == 3 {
-                // Triangle collapse: all vertices converge to one point.
-                let wf = wf_at.or_else(|| prev_wfs[li].clone());
-                if let Some(ref wf) = wf {
-                    for p in wf {
-                        arcs.push((*p, event_point));
-                    }
+                // Record event nodes.
+                for &(_, pt) in evts {
+                    nodes.push(pt);
                 }
-                loops.remove(li);
-                prev_wfs.remove(li);
-                current_d = event_d;
-            } else {
-                let remove_idx = (wf_idx + 1) % m;
-                loops[li].remove(remove_idx);
-                current_d = event_d;
 
-                prev_wfs[li] = wavefront_at_impl(
-                    &loops[li],
-                    current_d,
-                    &edge_points,
-                    &edge_normals,
-                    &edge_dirs,
-                )
-                .or_else(|| {
-                    wavefront_at_impl(
+                // Collect edge indices to remove (the edge at (wf_idx+1)%m for
+                // each event). Use a set to avoid duplicates.
+                let mut remove_set: Vec<usize> = evts
+                    .iter()
+                    .map(|&(wf_idx, _)| (wf_idx + 1) % m)
+                    .collect();
+                remove_set.sort_unstable();
+                remove_set.dedup();
+
+                let remaining = m - remove_set.len();
+
+                if remaining < 3 {
+                    // The loop collapses entirely (or to a degenerate < 3 edges).
+                    // Draw medial axis arcs between distinct event points.
+                    if let Some(ref we) = wf_at {
+                        // Find unique wavefront vertices at the event time.
+                        let mut unique_pts: Vec<Vec2> = Vec::new();
+                        for &p in we {
+                            if !unique_pts.iter().any(|u| (*u - p).length() < 1.0) {
+                                unique_pts.push(p);
+                            }
+                        }
+                        // Connect consecutive unique points (medial axis).
+                        // Don't wrap around — these are open chains, not cycles.
+                        for i in 0..unique_pts.len().saturating_sub(1) {
+                            let j = i + 1;
+                            if (unique_pts[i] - unique_pts[j]).length() > 1.0 {
+                                arcs.push((unique_pts[i], unique_pts[j]));
+                            }
+                        }
+                    }
+                    // Also handle triangle-collapse-like final arcs.
+                    if remaining <= 0 {
+                        let fallback_wf = wf_at.as_ref().or(prev_wfs[li].as_ref());
+                        if let Some(wf) = fallback_wf {
+                            // For complete collapse, draw arcs from wavefront to centroid.
+                            let centroid = Vec2::new(
+                                wf.iter().map(|p| p.x).sum::<f64>() / wf.len() as f64,
+                                wf.iter().map(|p| p.y).sum::<f64>() / wf.len() as f64,
+                            );
+                            for p in wf {
+                                if (*p - centroid).length() > 0.5 {
+                                    arcs.push((*p, centroid));
+                                }
+                            }
+                        }
+                    }
+                    loops.remove(li);
+                    prev_wfs.remove(li);
+                } else {
+                    // Remove collapsing edges in reverse order to preserve indices.
+                    for &idx in remove_set.iter().rev() {
+                        loops[li].remove(idx);
+                    }
+
+                    prev_wfs[li] = wavefront_at_impl(
                         &loops[li],
-                        current_d + 0.01,
+                        event_d,
                         &edge_points,
                         &edge_normals,
                         &edge_dirs,
+                        &edge_weights,
                     )
-                });
+                    .or_else(|| {
+                        wavefront_at_impl(
+                            &loops[li],
+                            event_d + 0.01,
+                            &edge_points,
+                            &edge_normals,
+                            &edge_dirs,
+                            &edge_weights,
+                        )
+                    });
+                }
             }
 
+            current_d = event_d;
             event_timeline.push(SkeletonEvent {
                 d: event_d,
                 active_edges: loops.iter().flat_map(|l| l.iter().copied()).collect(),
@@ -597,7 +702,7 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
                 let m = orig.len();
                 for sub in [&loop_a, &loop_b] {
                     let sw = wavefront_at_impl(
-                        sub, event_d, &edge_points, &edge_normals, &edge_dirs,
+                        sub, event_d, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
                     );
                     if let (Some(ref pw), Some(ref sw)) = (&prev_wfs[li], &sw) {
                         let sl = sub.len();
@@ -624,16 +729,16 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
                 // Replace the original loop with loop_a.
                 loops[li] = loop_a;
                 prev_wfs[li] = wavefront_at_impl(
-                    &loops[li], event_d, &edge_points, &edge_normals, &edge_dirs,
+                    &loops[li], event_d, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
                 ).or_else(|| wavefront_at_impl(
-                    &loops[li], event_d + 0.01, &edge_points, &edge_normals, &edge_dirs,
+                    &loops[li], event_d + 0.01, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
                 ));
 
                 // Insert loop_b right after.
                 let wf_b = wavefront_at_impl(
-                    &loop_b, event_d, &edge_points, &edge_normals, &edge_dirs,
+                    &loop_b, event_d, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
                 ).or_else(|| wavefront_at_impl(
-                    &loop_b, event_d + 0.01, &edge_points, &edge_normals, &edge_dirs,
+                    &loop_b, event_d + 0.01, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
                 ));
                 loops.insert(li + 1, loop_b);
                 prev_wfs.insert(li + 1, wf_b);
@@ -647,7 +752,7 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
                 // record arcs up to the split distance and terminate both loops.
                 for &li in &[li_a, li_b] {
                     let wf = wavefront_at_impl(
-                        &loops[li], event_d, &edge_points, &edge_normals, &edge_dirs,
+                        &loops[li], event_d, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
                     );
                     if let (Some(ref pw), Some(ref we)) = (&prev_wfs[li], &wf) {
                         if pw.len() == we.len() {
@@ -688,6 +793,7 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>]) -> StraightSkeleton {
         edge_dirs,
         edge_normals,
         edge_points,
+        edge_weights,
     }
 }
 
@@ -704,6 +810,7 @@ fn empty_skeleton() -> StraightSkeleton {
         edge_dirs: vec![],
         edge_normals: vec![],
         edge_points: vec![],
+        edge_weights: vec![],
     }
 }
 
@@ -738,6 +845,7 @@ pub fn wavefront_loops_at(
             &skeleton.edge_points,
             &skeleton.edge_normals,
             &skeleton.edge_dirs,
+            &skeleton.edge_weights,
         ) {
             Some(w) => w,
             None => continue,
@@ -1032,9 +1140,10 @@ mod tests {
         assert!(signed_area(&hole) < 0.0, "hole must be CW");
 
         let shape = vec![outer.clone(), hole.clone()];
+        let total_edges = outer.len() + hole.len();
 
         // Compute multi-contour skeleton.
-        let sk = compute_skeleton_multi(&shape);
+        let sk = compute_skeleton_multi(&shape, &vec![1.0; total_edges]);
 
         // ---- Visualization (printed as snapshot) ----
         eprintln!("=== Triangle with hole: multi-contour skeleton ===");
@@ -1129,5 +1238,282 @@ mod tests {
         }
         assert!(bad_mids.is_empty(),
             "{} arc midpoints are outside the face", bad_mids.len());
+    }
+
+    /// Check that weighted rectangle skeletons don't produce crossing arcs.
+    /// This reproduces the "X pattern" bug where skeleton lines from opposite
+    /// corners cross past each other instead of meeting at edge events.
+    #[test]
+    fn test_weighted_rectangle_no_crossing_arcs() {
+        // Test several weight configurations for a tall rectangle.
+        let w = 60.0;
+        let h = 100.0;
+        let polygon = rect(w, h);
+        let n = polygon.len();
+
+        let configs: Vec<(&str, Vec<f64>)> = vec![
+            ("all 1.0", vec![1.0; n]),
+            ("top/bottom aisle", vec![1.0, 0.0, 1.0, 0.0]),
+            ("left/right aisle", vec![0.0, 1.0, 0.0, 1.0]),
+            ("one-sided top", vec![0.0, 0.0, 1.0, 0.0]),
+            ("one-sided bottom", vec![1.0, 0.0, 0.0, 0.0]),
+        ];
+
+        for (label, weights) in &configs {
+            let sk = compute_skeleton_multi(&[polygon.clone()], weights);
+
+            eprintln!("\n=== {} ({}x{}) ===", label, w, h);
+            eprintln!("  arcs: {}", sk.arcs.len());
+            for (i, &(a, b)) in sk.arcs.iter().enumerate() {
+                eprintln!("    arc[{}]: ({:.1},{:.1}) -> ({:.1},{:.1})", i, a.x, a.y, b.x, b.y);
+            }
+            eprintln!("  nodes: {}", sk.nodes.len());
+            for (i, n) in sk.nodes.iter().enumerate() {
+                eprintln!("    node[{}]: ({:.1},{:.1})", i, n.x, n.y);
+            }
+            eprintln!("  events: {}", sk.events.len());
+            for (i, ev) in sk.events.iter().enumerate() {
+                eprintln!("    event[{}]: d={:.2}, active={:?}", i, ev.d, ev.active_edges);
+            }
+
+            // Check for crossing arcs: no two arcs should intersect
+            // (other than at shared endpoints).
+            let mut crossings = Vec::new();
+            for i in 0..sk.arcs.len() {
+                let (a1, a2) = sk.arcs[i];
+                for j in (i + 1)..sk.arcs.len() {
+                    let (b1, b2) = sk.arcs[j];
+                    // Skip arcs that share an endpoint.
+                    if (a1 - b1).length() < 1e-3
+                        || (a1 - b2).length() < 1e-3
+                        || (a2 - b1).length() < 1e-3
+                        || (a2 - b2).length() < 1e-3
+                    {
+                        continue;
+                    }
+                    let d1 = a2 - a1;
+                    let d2 = b2 - b1;
+                    let denom = d1.cross(d2);
+                    if denom.abs() < 1e-10 {
+                        continue;
+                    }
+                    let diff = b1 - a1;
+                    let t = diff.cross(d2) / denom;
+                    let u = diff.cross(d1) / denom;
+                    if t > 0.01 && t < 0.99 && u > 0.01 && u < 0.99 {
+                        crossings.push((i, j, t, u));
+                    }
+                }
+            }
+            if !crossings.is_empty() {
+                for &(i, j, t, u) in &crossings {
+                    let (a1, a2) = sk.arcs[i];
+                    let (b1, b2) = sk.arcs[j];
+                    eprintln!(
+                        "  CROSSING: arc[{}] ({:.1},{:.1})->({:.1},{:.1}) x arc[{}] ({:.1},{:.1})->({:.1},{:.1}) at t={:.3}, u={:.3}",
+                        i, a1.x, a1.y, a2.x, a2.y,
+                        j, b1.x, b1.y, b2.x, b2.y,
+                        t, u
+                    );
+                }
+            }
+            assert!(
+                crossings.is_empty(),
+                "[{}] {} crossing arc pairs found",
+                label,
+                crossings.len()
+            );
+        }
+    }
+
+    /// Test with actual face geometry from layout (trapezoids from angled aisles).
+    #[test]
+    fn test_actual_face_geometry_skeleton() {
+        // Face 1 from test_attempt_debug: a trapezoid between two aisles.
+        // Original (CW): (42,46.7), (42,158), (123,158), (123,55.4)
+        // After CCW normalization: reversed.
+        let face1 = vec![
+            Vec2::new(123.0, 55.4),
+            Vec2::new(123.0, 158.0),
+            Vec2::new(42.0, 158.0),
+            Vec2::new(42.0, 46.7),
+        ];
+        assert!(signed_area(&face1) > 0.0, "face1 must be CCW");
+
+        // Face 2: narrower trapezoid.
+        let face2 = vec![
+            Vec2::new(183.0, 61.9),
+            Vec2::new(183.0, 158.0),
+            Vec2::new(147.0, 158.0),
+            Vec2::new(147.0, 58.0),
+        ];
+        assert!(signed_area(&face2) > 0.0, "face2 must be CCW");
+
+        let configs: Vec<(&str, Vec<Vec2>, Vec<f64>)> = vec![
+            ("face1 all-1", face1.clone(), vec![1.0; 4]),
+            ("face1 LR-aisle", face1.clone(), vec![0.0, 1.0, 0.0, 1.0]),
+            ("face1 TB-aisle", face1.clone(), vec![1.0, 0.0, 1.0, 0.0]),
+            ("face2 all-1", face2.clone(), vec![1.0; 4]),
+            ("face2 LR-aisle", face2.clone(), vec![0.0, 1.0, 0.0, 1.0]),
+        ];
+
+        for (label, polygon, weights) in &configs {
+            let sk = compute_skeleton_multi(&[polygon.clone()], weights);
+
+            eprintln!("\n=== {} ===", label);
+            for (i, v) in polygon.iter().enumerate() {
+                eprintln!("  v{}: ({:.1},{:.1})", i, v.x, v.y);
+            }
+            eprintln!("  weights: {:?}", weights);
+            eprintln!("  arcs: {}", sk.arcs.len());
+            for (i, &(a, b)) in sk.arcs.iter().enumerate() {
+                eprintln!("    arc[{}]: ({:.1},{:.1}) -> ({:.1},{:.1})", i, a.x, a.y, b.x, b.y);
+            }
+            eprintln!("  nodes: {}", sk.nodes.len());
+            for (i, n) in sk.nodes.iter().enumerate() {
+                eprintln!("    node[{}]: ({:.1},{:.1})", i, n.x, n.y);
+            }
+
+            // Check for crossing arcs.
+            let mut crossings = Vec::new();
+            for i in 0..sk.arcs.len() {
+                let (a1, a2) = sk.arcs[i];
+                for j in (i + 1)..sk.arcs.len() {
+                    let (b1, b2) = sk.arcs[j];
+                    if (a1 - b1).length() < 1e-3
+                        || (a1 - b2).length() < 1e-3
+                        || (a2 - b1).length() < 1e-3
+                        || (a2 - b2).length() < 1e-3
+                    {
+                        continue;
+                    }
+                    let d1 = a2 - a1;
+                    let d2 = b2 - b1;
+                    let denom = d1.cross(d2);
+                    if denom.abs() < 1e-10 {
+                        continue;
+                    }
+                    let diff = b1 - a1;
+                    let t = diff.cross(d2) / denom;
+                    let u = diff.cross(d1) / denom;
+                    if t > 0.01 && t < 0.99 && u > 0.01 && u < 0.99 {
+                        crossings.push((i, j, t, u));
+                    }
+                }
+            }
+            if !crossings.is_empty() {
+                for &(i, j, t, u) in &crossings {
+                    let (a1, a2) = sk.arcs[i];
+                    let (b1, b2) = sk.arcs[j];
+                    eprintln!(
+                        "  CROSSING: arc[{}] ({:.1},{:.1})->({:.1},{:.1}) x arc[{}] ({:.1},{:.1})->({:.1},{:.1}) t={:.3} u={:.3}",
+                        i, a1.x, a1.y, a2.x, a2.y,
+                        j, b1.x, b1.y, b2.x, b2.y,
+                        t, u
+                    );
+                }
+                panic!("[{}] {} crossing arc pairs found", label, crossings.len());
+            }
+        }
+    }
+
+    /// Test with a slightly perturbed rectangle (simulating boolean overlay output).
+    #[test]
+    fn test_perturbed_rectangle_skeleton() {
+        // Simulate a face polygon from boolean overlay — vertices slightly off
+        // from a perfect rectangle.
+        let configs: Vec<(&str, Vec<Vec2>, Vec<f64>)> = vec![
+            (
+                "perturbed rect, all 1.0",
+                vec![
+                    Vec2::new(0.01, -0.005),
+                    Vec2::new(59.99, 0.003),
+                    Vec2::new(60.01, 99.997),
+                    Vec2::new(-0.01, 100.005),
+                ],
+                vec![1.0, 1.0, 1.0, 1.0],
+            ),
+            (
+                "perturbed rect, top/bottom aisle",
+                vec![
+                    Vec2::new(0.01, -0.005),
+                    Vec2::new(59.99, 0.003),
+                    Vec2::new(60.01, 99.997),
+                    Vec2::new(-0.01, 100.005),
+                ],
+                vec![1.0, 0.0, 1.0, 0.0],
+            ),
+            (
+                "perturbed rect, left/right aisle",
+                vec![
+                    Vec2::new(0.01, -0.005),
+                    Vec2::new(59.99, 0.003),
+                    Vec2::new(60.01, 99.997),
+                    Vec2::new(-0.01, 100.005),
+                ],
+                vec![0.0, 1.0, 0.0, 1.0],
+            ),
+        ];
+
+        for (label, polygon, weights) in &configs {
+            let ccw = ensure_ccw(polygon);
+            let sk = compute_skeleton_multi(&[ccw], weights);
+
+            eprintln!("\n=== {} ===", label);
+            eprintln!("  arcs: {}", sk.arcs.len());
+            for (i, &(a, b)) in sk.arcs.iter().enumerate() {
+                eprintln!("    arc[{}]: ({:.3},{:.3}) -> ({:.3},{:.3})", i, a.x, a.y, b.x, b.y);
+            }
+            eprintln!("  nodes: {}", sk.nodes.len());
+            for (i, n) in sk.nodes.iter().enumerate() {
+                eprintln!("    node[{}]: ({:.3},{:.3})", i, n.x, n.y);
+            }
+
+            // Check for crossing arcs.
+            let mut crossings = Vec::new();
+            for i in 0..sk.arcs.len() {
+                let (a1, a2) = sk.arcs[i];
+                for j in (i + 1)..sk.arcs.len() {
+                    let (b1, b2) = sk.arcs[j];
+                    if (a1 - b1).length() < 1e-3
+                        || (a1 - b2).length() < 1e-3
+                        || (a2 - b1).length() < 1e-3
+                        || (a2 - b2).length() < 1e-3
+                    {
+                        continue;
+                    }
+                    let d1 = a2 - a1;
+                    let d2 = b2 - b1;
+                    let denom = d1.cross(d2);
+                    if denom.abs() < 1e-10 {
+                        continue;
+                    }
+                    let diff = b1 - a1;
+                    let t = diff.cross(d2) / denom;
+                    let u = diff.cross(d1) / denom;
+                    if t > 0.01 && t < 0.99 && u > 0.01 && u < 0.99 {
+                        crossings.push((i, j, t, u));
+                    }
+                }
+            }
+            if !crossings.is_empty() {
+                for &(i, j, t, u) in &crossings {
+                    let (a1, a2) = sk.arcs[i];
+                    let (b1, b2) = sk.arcs[j];
+                    eprintln!(
+                        "  CROSSING: arc[{}] ({:.1},{:.1})->({:.1},{:.1}) x arc[{}] ({:.1},{:.1})->({:.1},{:.1}) t={:.3} u={:.3}",
+                        i, a1.x, a1.y, a2.x, a2.y,
+                        j, b1.x, b1.y, b2.x, b2.y,
+                        t, u
+                    );
+                }
+            }
+            assert!(
+                crossings.is_empty(),
+                "[{}] {} crossing arc pairs found",
+                label,
+                crossings.len()
+            );
+        }
     }
 }
