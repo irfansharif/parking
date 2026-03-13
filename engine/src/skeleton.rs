@@ -368,15 +368,8 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> Straig
         .map(|i| if i < weights.len() { weights[i] } else { 1.0 })
         .collect();
 
-    let mut arcs: Vec<(Vec2, Vec2)> = Vec::new();
-    let mut nodes: Vec<Vec2> = Vec::new();
     let mut split_nodes: Vec<Vec2> = Vec::new();
     let mut current_d = 0.0;
-
-    let mut prev_wfs: Vec<Option<Vec<Vec2>>> = loops
-        .iter()
-        .map(|lp| wavefront_at_impl(lp, 0.0, &edge_points, &edge_normals, &edge_dirs, &edge_weights))
-        .collect();
 
     let mut event_timeline = vec![SkeletonEvent {
         d: 0.0,
@@ -394,7 +387,6 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> Straig
         while i < loops.len() {
             if loops[i].len() < 3 {
                 loops.remove(i);
-                prev_wfs.remove(i);
             } else {
                 i += 1;
             }
@@ -405,9 +397,6 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> Straig
         }
 
         // --- Find earliest edge event across all loops ---
-        // Collect ALL events at the earliest time (within tolerance) so
-        // simultaneous collapses (e.g. both short edges of a rectangle)
-        // are handled in a single iteration.
         let mut best_edge: Option<(f64, Vec2, usize, usize)> = None;
         let mut all_edge_events: Vec<(f64, Vec2, usize, usize)> = Vec::new();
         for (li, lp) in loops.iter().enumerate() {
@@ -434,10 +423,6 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> Straig
         }
 
         // --- Find earliest split event (inter-loop and intra-loop) ---
-        // Inter-loop: vertex from one loop hits edge of another (e.g. outer
-        //   wavefront meets hole wavefront).
-        // Intra-loop: reflex vertex hits a non-adjacent edge within the same
-        //   loop, splitting it into two independent sub-polygons.
         let mut best_split: Option<(f64, Vec2, usize, usize, usize, usize)> = None;
         for li_a in 0..loops.len() {
             let ma = loops[li_a].len();
@@ -466,16 +451,12 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> Straig
                     let mb = loops[li_b].len();
                     for ei in 0..mb {
                         if li_a == li_b {
-                            // Intra-loop: only reflex vertices produce splits.
-                            // For CCW winding, reflex = cross(incoming, outgoing) < 0.
                             if edge_dirs[e_prev].cross(edge_dirs[e_next]) >= 0.0 {
                                 continue;
                             }
-                            // Skip edges adjacent to vertex vi.
                             if ei == vi || ei == (vi + 1) % ma {
                                 continue;
                             }
-                            // Both resulting sub-loops must have >= 3 edges.
                             let start = (vi + 1) % ma;
                             let size_a = ((ei as isize - start as isize)
                                 .rem_euclid(ma as isize))
@@ -508,7 +489,6 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> Straig
 
                         let point = v0 + v_vel * d;
 
-                        // Segment check: point must lie on the finite edge.
                         let e_pred = loops[li_b][(ei + mb - 1) % mb];
                         let e_succ = loops[li_b][(ei + 1) % mb];
                         let seg_s = match offset_vertex(
@@ -543,29 +523,14 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> Straig
         let split_d = best_split.map(|e| e.0).unwrap_or(f64::MAX);
 
         if edge_d == f64::MAX && split_d == f64::MAX {
-            // No events found — collapse remaining loops to centroids.
-            for (li, _lp) in loops.iter().enumerate() {
-                if let Some(ref wf) = prev_wfs[li] {
-                    let m = wf.len() as f64;
-                    let cx = wf.iter().map(|p| p.x).sum::<f64>() / m;
-                    let cy = wf.iter().map(|p| p.y).sum::<f64>() / m;
-                    let cp = Vec2::new(cx, cy);
-                    nodes.push(cp);
-                    for p in wf {
-                        arcs.push((*p, cp));
-                    }
-                }
-            }
             break;
         }
 
         if edge_d <= split_d {
-            // --- Edge event(s): one or more edges collapse simultaneously ---
+            // --- Edge event(s): topology updates only ---
             let event_d = best_edge.unwrap().0;
             let eps = 1e-3;
 
-            // Collect all edge events at this time, grouped by loop index.
-            // Each entry is (wf_idx, event_point) for edges collapsing in that loop.
             let mut events_by_loop: std::collections::BTreeMap<usize, Vec<(usize, Vec2)>> =
                 std::collections::BTreeMap::new();
             for &(d, pt, li, wf_idx) in &all_edge_events {
@@ -574,35 +539,12 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> Straig
                 }
             }
 
-            // Process each affected loop.
-            // Work in reverse loop-index order so removals don't shift indices.
             let affected: Vec<usize> = events_by_loop.keys().copied().rev().collect();
             for li in affected {
                 let evts = &events_by_loop[&li];
                 let lp = &loops[li];
                 let m = lp.len();
 
-                // Record arcs from prev wavefront to event wavefront.
-                let wf_at = wavefront_at_impl(
-                    lp, event_d, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
-                );
-                if let (Some(ref pw), Some(ref we)) = (&prev_wfs[li], &wf_at) {
-                    if pw.len() == we.len() {
-                        for i in 0..pw.len() {
-                            if (pw[i] - we[i]).length() > 0.5 {
-                                arcs.push((pw[i], we[i]));
-                            }
-                        }
-                    }
-                }
-
-                // Record event nodes.
-                for &(_, pt) in evts {
-                    nodes.push(pt);
-                }
-
-                // Collect edge indices to remove (the edge at (wf_idx+1)%m for
-                // each event). Use a set to avoid duplicates.
                 let mut remove_set: Vec<usize> = evts
                     .iter()
                     .map(|&(wf_idx, _)| (wf_idx + 1) % m)
@@ -613,67 +555,11 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> Straig
                 let remaining = m - remove_set.len();
 
                 if remaining < 3 {
-                    // The loop collapses entirely (or to a degenerate < 3 edges).
-                    // Draw medial axis arcs between distinct event points.
-                    if let Some(ref we) = wf_at {
-                        // Find unique wavefront vertices at the event time.
-                        let mut unique_pts: Vec<Vec2> = Vec::new();
-                        for &p in we {
-                            if !unique_pts.iter().any(|u| (*u - p).length() < 1.0) {
-                                unique_pts.push(p);
-                            }
-                        }
-                        // Connect consecutive unique points (medial axis).
-                        // Don't wrap around — these are open chains, not cycles.
-                        for i in 0..unique_pts.len().saturating_sub(1) {
-                            let j = i + 1;
-                            if (unique_pts[i] - unique_pts[j]).length() > 1.0 {
-                                arcs.push((unique_pts[i], unique_pts[j]));
-                            }
-                        }
-                    }
-                    // Also handle triangle-collapse-like final arcs.
-                    if remaining <= 0 {
-                        let fallback_wf = wf_at.as_ref().or(prev_wfs[li].as_ref());
-                        if let Some(wf) = fallback_wf {
-                            // For complete collapse, draw arcs from wavefront to centroid.
-                            let centroid = Vec2::new(
-                                wf.iter().map(|p| p.x).sum::<f64>() / wf.len() as f64,
-                                wf.iter().map(|p| p.y).sum::<f64>() / wf.len() as f64,
-                            );
-                            for p in wf {
-                                if (*p - centroid).length() > 0.5 {
-                                    arcs.push((*p, centroid));
-                                }
-                            }
-                        }
-                    }
                     loops.remove(li);
-                    prev_wfs.remove(li);
                 } else {
-                    // Remove collapsing edges in reverse order to preserve indices.
                     for &idx in remove_set.iter().rev() {
                         loops[li].remove(idx);
                     }
-
-                    prev_wfs[li] = wavefront_at_impl(
-                        &loops[li],
-                        event_d,
-                        &edge_points,
-                        &edge_normals,
-                        &edge_dirs,
-                        &edge_weights,
-                    )
-                    .or_else(|| {
-                        wavefront_at_impl(
-                            &loops[li],
-                            event_d + 0.01,
-                            &edge_points,
-                            &edge_normals,
-                            &edge_dirs,
-                            &edge_weights,
-                        )
-                    });
                 }
             }
 
@@ -687,93 +573,23 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> Straig
             let (event_d, event_point, li_a, vi, li_b, ei) = best_split.unwrap();
 
             if li_a == li_b {
-                // --- Intra-loop split: reflex vertex hits non-adjacent edge ---
-                // The wavefront polygon splits into two independent regions.
+                // --- Intra-loop split: topology update only ---
                 let li = li_a;
-
-                // Split the loop into two independent sub-loops.
                 let (loop_a, loop_b) = split_loop_edges(&loops[li], vi, ei);
 
-                // Draw arcs per sub-loop. The full pre-split wavefront at
-                // event_d is self-intersecting (that's what caused the split),
-                // so we use each sub-loop's own wavefront which stays within
-                // its valid region.
-                let orig = &loops[li];
-                let m = orig.len();
-                for sub in [&loop_a, &loop_b] {
-                    let sw = wavefront_at_impl(
-                        sub, event_d, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
-                    );
-                    if let (Some(ref pw), Some(ref sw)) = (&prev_wfs[li], &sw) {
-                        let sl = sub.len();
-                        for j in 0..sl {
-                            // Find the corresponding prev_wf vertex: the one
-                            // at the same edge junction in the original loop.
-                            let e1 = sub[j];
-                            let e2 = sub[(j + 1) % sl];
-                            let prev_idx = (0..m).find(|&k| {
-                                orig[k] == e1 && orig[(k + 1) % m] == e2
-                            });
-                            if let Some(k) = prev_idx {
-                                if (pw[k] - sw[j]).length() > 0.5 {
-                                    arcs.push((pw[k], sw[j]));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                nodes.push(event_point);
                 split_nodes.push(event_point);
 
-                // Replace the original loop with loop_a.
                 loops[li] = loop_a;
-                prev_wfs[li] = wavefront_at_impl(
-                    &loops[li], event_d, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
-                ).or_else(|| wavefront_at_impl(
-                    &loops[li], event_d + 0.01, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
-                ));
-
-                // Insert loop_b right after.
-                let wf_b = wavefront_at_impl(
-                    &loop_b, event_d, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
-                ).or_else(|| wavefront_at_impl(
-                    &loop_b, event_d + 0.01, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
-                ));
                 loops.insert(li + 1, loop_b);
-                prev_wfs.insert(li + 1, wf_b);
 
                 current_d = event_d;
             } else {
-                // --- Inter-loop split: vertex from one loop hits edge of another ---
-                // The two wavefronts meet at event_point. Continuing with a
-                // merged single loop creates near-anti-parallel edges at the
-                // bridge junctions, causing degenerate bisectors. Instead,
-                // record arcs up to the split distance and terminate both loops.
-                for &li in &[li_a, li_b] {
-                    let wf = wavefront_at_impl(
-                        &loops[li], event_d, &edge_points, &edge_normals, &edge_dirs, &edge_weights,
-                    );
-                    if let (Some(ref pw), Some(ref we)) = (&prev_wfs[li], &wf) {
-                        if pw.len() == we.len() {
-                            for i in 0..pw.len() {
-                                if (pw[i] - we[i]).length() > 0.5 {
-                                    arcs.push((pw[i], we[i]));
-                                }
-                            }
-                        }
-                    }
-                }
-                nodes.push(event_point);
+                // --- Inter-loop split: terminate both loops ---
                 split_nodes.push(event_point);
 
-                // Remove both loops; keep any remaining loops for further
-                // processing (e.g. if there are multiple holes).
                 let (first, second) = if li_a > li_b { (li_a, li_b) } else { (li_b, li_a) };
                 loops.remove(first);
-                prev_wfs.remove(first);
                 loops.remove(second);
-                prev_wfs.remove(second);
                 current_d = event_d;
             }
 
@@ -785,6 +601,17 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> Straig
         }
     }
 
+    // Reconstruct arcs and nodes from the event timeline by evaluating
+    // wavefronts at consecutive event distances — the same mechanism
+    // used by wavefront_loops_at / spine computation.
+    let (arcs, nodes) = reconstruct_arcs_and_nodes(
+        &event_timeline,
+        &edge_points,
+        &edge_normals,
+        &edge_dirs,
+        &edge_weights,
+    );
+
     StraightSkeleton {
         arcs,
         nodes,
@@ -795,6 +622,146 @@ pub fn compute_skeleton_multi(contours: &[Vec<Vec2>], weights: &[f64]) -> Straig
         edge_points,
         edge_weights,
     }
+}
+
+/// Reconstruct skeleton arcs and nodes by walking the event timeline and
+/// evaluating wavefronts at consecutive event distances.
+///
+/// For each pair of consecutive events, we compute wavefronts at both
+/// distances using the pre-event active loops. Corresponding vertices
+/// that moved are connected as arcs. At event times where vertices
+/// converge, the convergence points become nodes.
+fn reconstruct_arcs_and_nodes(
+    events: &[SkeletonEvent],
+    edge_points: &[Vec2],
+    edge_normals: &[Vec2],
+    edge_dirs: &[Vec2],
+    edge_weights: &[f64],
+) -> (Vec<(Vec2, Vec2)>, Vec<Vec2>) {
+    let mut arcs: Vec<(Vec2, Vec2)> = Vec::new();
+    let mut nodes: Vec<Vec2> = Vec::new();
+
+    if events.is_empty() {
+        return (arcs, nodes);
+    }
+
+    for i in 0..events.len() - 1 {
+        let d_start = events[i].d;
+        let d_end = events[i + 1].d;
+        let pre_loops = &events[i].active_loops;
+        let post_loops = &events[i + 1].active_loops;
+
+        for lp in pre_loops {
+            if lp.len() < 3 {
+                continue;
+            }
+
+            let wf_start = match wavefront_at_impl(
+                lp, d_start, edge_points, edge_normals, edge_dirs, edge_weights,
+            ) {
+                Some(w) => w,
+                None => continue,
+            };
+            let wf_end = match wavefront_at_impl(
+                lp, d_end, edge_points, edge_normals, edge_dirs, edge_weights,
+            ) {
+                Some(w) => w,
+                None => continue,
+            };
+
+            if wf_start.len() != wf_end.len() || wf_start.len() != lp.len() {
+                continue;
+            }
+
+            // Draw arcs between corresponding wavefront vertices.
+            for j in 0..wf_start.len() {
+                if (wf_start[j] - wf_end[j]).length() > 0.5 {
+                    arcs.push((wf_start[j], wf_end[j]));
+                }
+            }
+
+            // Check if this loop survived into the post-event topology.
+            // If not, the loop collapsed at d_end — find convergence points.
+            let loop_survived = post_loops.iter().any(|post_lp| {
+                // A loop survives if the post-event loops contain a subset
+                // of this loop's edges (some edges were removed but >=3 remain).
+                lp.iter().any(|e| post_lp.contains(e))
+            });
+
+            if !loop_survived {
+                // Loop collapsed entirely. Find convergence points (nodes)
+                // and medial axis arcs between them.
+                let mut unique_pts: Vec<Vec2> = Vec::new();
+                for &p in &wf_end {
+                    if !unique_pts.iter().any(|u| (*u - p).length() < 1.0) {
+                        unique_pts.push(p);
+                    }
+                }
+
+                // Each unique convergence point is a skeleton node.
+                for &p in &unique_pts {
+                    nodes.push(p);
+                }
+
+                // Medial axis arcs between distinct convergence points.
+                for j in 0..unique_pts.len().saturating_sub(1) {
+                    let k = j + 1;
+                    if (unique_pts[j] - unique_pts[k]).length() > 1.0 {
+                        arcs.push((unique_pts[j], unique_pts[k]));
+                    }
+                }
+            } else {
+                // Loop survived but may have lost edges. Find vertices that
+                // converged (multiple wavefront vertices mapping to the same
+                // point at d_end) — these are edge-event nodes.
+                let mut convergence: Vec<(Vec2, usize)> = Vec::new();
+                'outer: for j in 0..wf_end.len() {
+                    for (cp, count) in convergence.iter_mut() {
+                        if (*cp - wf_end[j]).length() < 1.0 {
+                            *count += 1;
+                            continue 'outer;
+                        }
+                    }
+                    convergence.push((wf_end[j], 1));
+                }
+                for (pt, count) in convergence {
+                    if count >= 2 {
+                        nodes.push(pt);
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle loops that are still active after the last event (no more
+    // events found — they collapse to centroids or vanish at infinity).
+    if let Some(last_event) = events.last() {
+        for lp in &last_event.active_loops {
+            if lp.len() < 3 {
+                continue;
+            }
+            // Compute wavefront at the last event distance.
+            let wf = match wavefront_at_impl(
+                lp, last_event.d, edge_points, edge_normals, edge_dirs, edge_weights,
+            ) {
+                Some(w) => w,
+                None => continue,
+            };
+
+            let m = wf.len() as f64;
+            let cx = wf.iter().map(|p| p.x).sum::<f64>() / m;
+            let cy = wf.iter().map(|p| p.y).sum::<f64>() / m;
+            let centroid = Vec2::new(cx, cy);
+            nodes.push(centroid);
+            for p in &wf {
+                if (*p - centroid).length() > 0.5 {
+                    arcs.push((*p, centroid));
+                }
+            }
+        }
+    }
+
+    (arcs, nodes)
 }
 
 fn empty_skeleton() -> StraightSkeleton {
