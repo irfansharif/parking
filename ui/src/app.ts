@@ -30,7 +30,6 @@ export interface LayerVisibility {
   stalls: boolean;
   aisles: boolean;
   vertices: boolean;
-  islands: boolean;
   spines: boolean;
   faces: boolean;
   faceColors: boolean;
@@ -89,9 +88,6 @@ export class App {
         stall_angle_deg: 90,
         aisle_angle_deg: 90,
         aisle_offset: 0,
-        max_run: 0,
-        island_width: 4,
-        ada_count: 0,
         site_offset: 0,
       },
       debug: {
@@ -105,10 +101,8 @@ export class App {
         spine_merging: true,
         short_spine_filter: false,
         stall_face_clipping: true,
-        endcap_islands: true,
-        island_width_filter: true,
         boundary_clipping: true,
-        skeleton_debug: true,
+        skeleton_debug: false,
       },
       layout: null,
       selectedVertex: null,
@@ -122,12 +116,11 @@ export class App {
         stalls: true,
         aisles: false,
         vertices: true,
-        islands: false,
         spines: true,
         faces: true,
-        faceColors: true,
+        faceColors: false,
         miterFills: false,
-        skeletonDebug: true,
+        skeletonDebug: false,
       },
     };
   }

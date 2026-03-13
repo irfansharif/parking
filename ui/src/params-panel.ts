@@ -34,64 +34,37 @@ const PARAM_DEFS: ParamDef[] = [
     key: "stall_width",
     label: "Stall Width",
     min: 7,
-    max: 12,
+    max: 40,
     step: 0.5,
     unit: "ft",
-    type: "number",
+    type: "range",
   },
   {
     key: "stall_depth",
     label: "Stall Depth",
-    min: 15,
-    max: 22,
+    min: 8,
+    max: 30,
     step: 0.5,
     unit: "ft",
-    type: "number",
+    type: "range",
   },
   {
     key: "aisle_width",
     label: "Aisle Width",
-    min: 12,
-    max: 30,
-    step: 1,
-    unit: "ft",
-    type: "number",
-  },
-  {
-    key: "max_run",
-    label: "Max Run (island interval)",
-    min: 0,
-    max: 20,
-    step: 1,
-    unit: "stalls",
-    type: "number",
-  },
-  {
-    key: "island_width",
-    label: "Island Width",
-    min: 2,
-    max: 8,
+    min: 8,
+    max: 50,
     step: 0.5,
     unit: "ft",
-    type: "number",
-  },
-  {
-    key: "ada_count",
-    label: "ADA Stalls",
-    min: 0,
-    max: 20,
-    step: 1,
-    unit: "",
-    type: "number",
+    type: "range",
   },
   {
     key: "site_offset",
     label: "Site Offset",
     min: 0,
-    max: 20,
-    step: 1,
+    max: 50,
+    step: 0.5,
     unit: "ft",
-    type: "number",
+    type: "range",
   },
 ];
 
@@ -156,7 +129,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     { key: "stalls", label: "Stalls" },
     { key: "aisles", label: "Drive Aisles" },
     { key: "vertices", label: "Vertices" },
-    { key: "islands", label: "Islands" },
     { key: "spines", label: "Spines" },
     { key: "faces", label: "Faces" },
     { key: "faceColors", label: "Face Colors" },
@@ -232,13 +204,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       label: "Stall Placement",
       toggles: [
         { key: "stall_face_clipping", label: "Stall-to-Face Clipping" },
-      ],
-    },
-    {
-      label: "Islands",
-      toggles: [
-        { key: "endcap_islands", label: "Endcap Islands" },
-        { key: "island_width_filter", label: "Island Width Filter", parent: "endcap_islands" },
       ],
     },
     {
@@ -355,8 +320,6 @@ function updateMetrics(container: HTMLElement, app: App): void {
 
   const metrics = [
     { label: "Total Stalls", value: layout.metrics.total_stalls },
-    { label: "ADA Stalls", value: layout.metrics.ada_stalls },
-    { label: "Islands", value: layout.islands.length },
   ];
 
   for (const m of metrics) {

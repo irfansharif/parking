@@ -5,17 +5,11 @@ export interface Vec2 {
 
 export interface StallQuad {
   corners: [Vec2, Vec2, Vec2, Vec2];
-  kind: "Standard" | "Ada" | "Compact" | "Ev";
-}
-
-export interface Island {
-  polygon: Vec2[];
-  kind: "MaxRun" | "EndCap" | "Corner" | "AislePadding";
+  kind: "Standard" | "Compact" | "Ev";
 }
 
 export interface Metrics {
   total_stalls: number;
-  ada_stalls: number;
 }
 
 export interface SpineLine {
@@ -32,7 +26,6 @@ export interface Face {
 export interface ParkingLayout {
   aisle_polygons: Vec2[][];
   stalls: StallQuad[];
-  islands: Island[];
   metrics: Metrics;
   resolved_graph: DriveAisleGraph;
   spines: SpineLine[];
@@ -65,9 +58,6 @@ export interface ParkingParams {
   stall_angle_deg: number;
   aisle_angle_deg: number;
   aisle_offset: number;
-  max_run: number;
-  island_width: number;
-  ada_count: number;
   site_offset: number;
 }
 
@@ -87,9 +77,6 @@ export interface DebugToggles {
   short_spine_filter: boolean;
   // Stall placement
   stall_face_clipping: boolean;
-  // Islands
-  endcap_islands: boolean;
-  island_width_filter: boolean;
   // Boundary
   boundary_clipping: boolean;
   // Skeleton debug visualization

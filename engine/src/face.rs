@@ -806,54 +806,6 @@ fn place_stalls_on_spines(spines: &[SpineSegment], params: &ParkingParams) -> Ve
     stalls
 }
 
-/// Compute endcap islands for a face by subtracting placed stalls from
-/// the face polygon. The remaining fragments (filtered by area) are the
-/// leftover regions at strip ends, corners, and narrow zones.
-fn endcap_islands_for_face(
-    shape: &[Vec<Vec2>],
-    stalls: &[StallQuad],
-    min_area: f64,
-) -> Vec<Island> {
-    if shape.is_empty() || shape[0].is_empty() || stalls.is_empty() {
-        return vec![];
-    }
-
-    // Subject: full face shape (outer contour + hole contours).
-    let subj: Vec<Vec<[f64; 2]>> = shape
-        .iter()
-        .map(|contour| contour.iter().map(|v| [v.x, v.y]).collect())
-        .collect();
-
-    // Clips: each stall quad.
-    let clips: Vec<Vec<[f64; 2]>> = stalls
-        .iter()
-        .map(|s| s.corners.iter().map(|v| [v.x, v.y]).collect())
-        .collect();
-
-    let result = subj.overlay(&clips, OverlayRule::Difference, FillRule::EvenOdd);
-
-    let mut islands = Vec::new();
-    for fragment in result {
-        // Only keep simple-polygon fragments (no holes). Multi-contour
-        // results are structural margins (e.g., boundary-to-stall gaps),
-        // not endcap islands.
-        if fragment.len() != 1 {
-            continue;
-        }
-        let polygon: Vec<Vec2> = fragment[0]
-            .iter()
-            .map(|p| Vec2::new(p[0], p[1]))
-            .collect();
-        if signed_area(&polygon).abs() >= min_area {
-            islands.push(Island {
-                polygon,
-                kind: IslandKind::EndCap,
-            });
-        }
-    }
-    islands
-}
-
 /// Deduplicate overlapping collinear spines. When two spines have the same
 /// direction and outward normal and overlap along their length, trim the
 /// shorter one to only its non-overlapping portion. This prevents
@@ -953,13 +905,13 @@ fn dedup_overlapping_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<Sp
 }
 
 /// Generate stalls from positive-space face extraction + per-edge spine shifting.
-/// Returns (stalls, islands, corridor_polygons, spine_lines, faces, miter_fills).
+/// Returns (stalls, corridor_polygons, spine_lines, faces, miter_fills, skeleton_debugs).
 pub fn generate_from_spines(
     graph: &DriveAisleGraph,
     boundary: &Polygon,
     params: &ParkingParams,
     debug: &DebugToggles,
-) -> (Vec<StallQuad>, Vec<Island>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>, Vec<SkeletonDebug>) {
+) -> (Vec<StallQuad>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>, Vec<SkeletonDebug>) {
     let stall_angle_rad = params.stall_angle_deg.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
@@ -1058,33 +1010,6 @@ pub fn generate_from_spines(
 
 
 
-    // Compute endcap islands per face (face minus stalls placed in that face).
-    let mut all_islands = Vec::new();
-    let min_island_area = 10.0;
-    // Minimum island width: filter thin slivers between close parallel spines.
-    let min_island_width = params.stall_width;
-
-    if debug.endcap_islands {
-        for shape in &faces {
-            let islands = endcap_islands_for_face(shape, &all_stalls, min_island_area);
-            for island in islands {
-                if !debug.island_width_filter {
-                    all_islands.push(island);
-                    continue;
-                }
-                // Approximate minimum width: 4 * area / perimeter.
-                let area = signed_area(&island.polygon).abs();
-                let perimeter: f64 = island.polygon.iter().enumerate().map(|(i, v)| {
-                    let next = &island.polygon[(i + 1) % island.polygon.len()];
-                    (*next - *v).length()
-                }).sum();
-                if perimeter > 0.0 && 4.0 * area / perimeter >= min_island_width {
-                    all_islands.push(island);
-                }
-            }
-        }
-    }
-
     let spine_lines: Vec<SpineLine> = all_spines
         .iter()
         .map(|s| SpineLine {
@@ -1103,7 +1028,7 @@ pub fn generate_from_spines(
         })
         .collect();
 
-    (all_stalls, all_islands, aisle_polygons, spine_lines, face_list, miter_fills, skeleton_debugs)
+    (all_stalls, aisle_polygons, spine_lines, face_list, miter_fills, skeleton_debugs)
 }
 
 #[cfg(test)]
@@ -1134,14 +1059,9 @@ mod tests {
         let params = ParkingParams::default();
         let graph = auto_generate(&boundary, &params);
 
-        let (stalls, islands, _, spines, _, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default());
+        let (stalls, _, spines, _, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default());
         eprintln!("\nTotal stalls: {}", stalls.len());
         eprintln!("Total spines: {}", spines.len());
-        eprintln!("Total islands: {}", islands.len());
-        for (i, isl) in islands.iter().enumerate() {
-            let isl_area = signed_area(&isl.polygon).abs();
-            eprintln!("  island {}: area={:.0} kind={:?}", i, isl_area, isl.kind);
-        }
         assert!(stalls.len() > 50);
     }
 

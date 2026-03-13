@@ -92,7 +92,7 @@ export function createCommandAPI(app: App): CommandAPI {
           app.generate();
           const m = app.state.layout?.metrics;
           if (!m) return "error: generate failed";
-          return `total_stalls: ${m.total_stalls}\nada_stalls: ${m.ada_stalls}`;
+          return `total_stalls: ${m.total_stalls}`;
         }
 
         case "state": {

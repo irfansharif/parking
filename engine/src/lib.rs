@@ -2,7 +2,6 @@ pub mod types;
 pub mod inset;
 pub mod aisle_graph;
 pub mod segment;
-pub mod island;
 pub mod clip;
 pub mod skeleton;
 pub mod face;
@@ -79,15 +78,6 @@ fn format_fixture(input: &GenerateInput) -> String {
     }
     if (p.aisle_offset - defaults.aisle_offset).abs() > 1e-6 {
         param_lines.push(format!("set aisle_offset={}", fmt_coord(p.aisle_offset)));
-    }
-    if p.max_run != defaults.max_run {
-        param_lines.push(format!("set max_run={}", p.max_run));
-    }
-    if (p.island_width - defaults.island_width).abs() > 1e-6 {
-        param_lines.push(format!("set island_width={}", fmt_coord(p.island_width)));
-    }
-    if p.ada_count != defaults.ada_count {
-        param_lines.push(format!("set ada_count={}", p.ada_count));
     }
     if (p.site_offset - defaults.site_offset).abs() > 1e-6 {
         param_lines.push(format!("set site_offset={}", fmt_coord(p.site_offset)));

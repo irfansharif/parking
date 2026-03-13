@@ -98,7 +98,6 @@ pub struct Obb {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum StallKind {
     Standard,
-    Ada,
     Compact,
     Ev,
 }
@@ -107,24 +106,6 @@ pub enum StallKind {
 pub struct StallQuad {
     pub corners: [Vec2; 4],
     pub kind: StallKind,
-}
-
-// ---------------------------------------------------------------------------
-// Islands
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum IslandKind {
-    MaxRun,
-    EndCap,
-    Corner,
-    AislePadding,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Island {
-    pub polygon: Vec<Vec2>,
-    pub kind: IslandKind,
 }
 
 // ---------------------------------------------------------------------------
@@ -145,14 +126,12 @@ pub struct Face {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Metrics {
     pub total_stalls: usize,
-    pub ada_stalls: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParkingLayout {
     pub aisle_polygons: Vec<Vec<Vec2>>,
     pub stalls: Vec<StallQuad>,
-    pub islands: Vec<Island>,
     pub metrics: Metrics,
     pub resolved_graph: DriveAisleGraph,
     #[serde(default)]
@@ -191,9 +170,6 @@ pub struct ParkingParams {
     pub stall_angle_deg: f64,
     pub aisle_angle_deg: f64,
     pub aisle_offset: f64,
-    pub max_run: usize,
-    pub island_width: f64,
-    pub ada_count: usize,
     pub site_offset: f64,
 }
 
@@ -206,9 +182,6 @@ impl Default for ParkingParams {
             stall_angle_deg: 90.0,
             aisle_angle_deg: 90.0,
             aisle_offset: 0.0,
-            max_run: 0,
-            island_width: 4.0,
-            ada_count: 0,
             site_offset: 0.0,
         }
     }
@@ -293,12 +266,6 @@ pub struct DebugToggles {
     #[serde(default = "default_true")]
     pub stall_face_clipping: bool,
 
-    // Islands
-    #[serde(default = "default_true")]
-    pub endcap_islands: bool,
-    #[serde(default = "default_true")]
-    pub island_width_filter: bool,
-
     // Boundary
     #[serde(default = "default_true")]
     pub boundary_clipping: bool,
@@ -321,8 +288,6 @@ impl Default for DebugToggles {
             spine_merging: true,
             short_spine_filter: true,
             stall_face_clipping: true,
-            endcap_islands: true,
-            island_width_filter: true,
             boundary_clipping: true,
             skeleton_debug: false,
         }

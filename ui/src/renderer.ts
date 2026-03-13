@@ -1,5 +1,5 @@
 import { AppState, Camera, VertexRef } from "./app";
-import { Vec2, StallQuad, Island, DriveAisleGraph, SpineLine, Face } from "./types";
+import { Vec2, StallQuad, DriveAisleGraph, SpineLine, Face } from "./types";
 
 export class Renderer {
   private canvas: HTMLCanvasElement;
@@ -121,12 +121,6 @@ export class Renderer {
         }
       }
 
-      // 5. Islands
-      if (state.layers.islands) {
-        for (const island of state.layout.islands) {
-          this.drawIsland(island);
-        }
-      }
     }
 
     // 6. Vertex network overlay
@@ -286,10 +280,6 @@ export class Renderer {
         fill: "rgba(200, 200, 220, 0.4)",
         stroke: "rgba(180, 180, 200, 0.7)",
       },
-      Ada: {
-        fill: "rgba(60, 120, 220, 0.5)",
-        stroke: "rgba(80, 140, 240, 0.8)",
-      },
       Compact: {
         fill: "rgba(200, 200, 150, 0.4)",
         stroke: "rgba(180, 180, 130, 0.7)",
@@ -310,17 +300,6 @@ export class Renderer {
     ctx.fill();
     ctx.strokeStyle = c.stroke;
     ctx.lineWidth = 0.3;
-    ctx.stroke();
-  }
-
-  private drawIsland(island: Island): void {
-    const { ctx } = this;
-    ctx.beginPath();
-    this.tracePath(island.polygon);
-    ctx.fillStyle = "rgba(60, 160, 80, 0.5)";
-    ctx.fill();
-    ctx.strokeStyle = "rgba(40, 140, 60, 0.8)";
-    ctx.lineWidth = 0.5;
     ctx.stroke();
   }
 
