@@ -92,6 +92,33 @@ fn segments_intersect(p0: Vec2, p1: Vec2, q0: Vec2, q1: Vec2) -> bool {
 }
 
 
+/// Remove both stalls in any pair that geometrically overlap.
+/// Uses a small inward shrink to avoid false positives from stalls that
+/// merely share an edge (adjacent stalls along the same spine).
+pub fn remove_conflicting_stalls(stalls: Vec<StallQuad>) -> Vec<StallQuad> {
+    let shrunk: Vec<Vec<Vec2>> = stalls
+        .iter()
+        .map(|s| shrink_polygon(&s.corners, 0.1))
+        .collect();
+
+    let mut conflicted = vec![false; stalls.len()];
+    for i in 0..stalls.len() {
+        for j in (i + 1)..stalls.len() {
+            if polygons_overlap(&shrunk[i], &shrunk[j]) {
+                conflicted[i] = true;
+                conflicted[j] = true;
+            }
+        }
+    }
+
+    stalls
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !conflicted[*i])
+        .map(|(_, s)| s)
+        .collect()
+}
+
 /// Ray-casting point-in-polygon test.
 pub fn point_in_polygon(point: &Vec2, polygon: &[Vec2]) -> bool {
     let n = polygon.len();

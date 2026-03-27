@@ -1,5 +1,5 @@
 use crate::aisle_graph::{auto_generate, merge_with_auto};
-use crate::clip::clip_stalls_to_boundary;
+use crate::clip::{clip_stalls_to_boundary, remove_conflicting_stalls};
 use crate::face::generate_from_spines;
 use crate::types::*;
 
@@ -17,6 +17,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     } else {
         stalls
     };
+    let stalls = remove_conflicting_stalls(stalls);
 
     let total = stalls.len();
 
