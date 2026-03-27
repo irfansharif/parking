@@ -1,6 +1,7 @@
 import { App, VertexRef } from "./app";
 import { Renderer } from "./renderer";
 import { Vec2 } from "./types";
+import { computeSnap, emptySnapState } from "./snap";
 
 export function setupInteraction(
   canvas: HTMLCanvasElement,
@@ -30,7 +31,8 @@ export function setupInteraction(
     const mode = app.state.editMode;
 
     if (mode === "add-aisle-vertex") {
-      const idx = app.addAisleVertex(worldPos);
+      const { pos } = computeSnap(worldPos, app.getAllVertices(), null, app.state.camera.zoom, emptySnapState());
+      const idx = app.addAisleVertex(pos);
       app.state.selectedVertex = { type: "aisle", index: idx };
       renderer.render(app.state);
       return;
@@ -53,7 +55,8 @@ export function setupInteraction(
     }
 
     if (mode === "add-hole") {
-      app.state.pendingHole.push(worldPos);
+      const { pos } = computeSnap(worldPos, app.getAllVertices(), null, app.state.camera.zoom, emptySnapState());
+      app.state.pendingHole.push(pos);
       renderer.render(app.state);
       return;
     }
@@ -106,8 +109,11 @@ export function setupInteraction(
     }
 
     if (app.state.isDragging && app.state.selectedVertex) {
-      const worldPos = renderer.screenToWorld(sx, sy, app.state.camera);
-      app.moveVertex(app.state.selectedVertex, worldPos);
+      const rawPos = renderer.screenToWorld(sx, sy, app.state.camera);
+      const { pos, guides, nextSnapState } = computeSnap(rawPos, app.getAllVertices(), app.state.selectedVertex, app.state.camera.zoom, app.state.snapState);
+      app.state.snapGuides = guides;
+      app.state.snapState = nextSnapState;
+      app.moveVertex(app.state.selectedVertex, pos);
       return;
     }
 
@@ -143,6 +149,8 @@ export function setupInteraction(
   });
 
   canvas.addEventListener("mouseup", () => {
+    app.state.snapGuides = [];
+    app.state.snapState = emptySnapState();
     if (isPanning) {
       isPanning = false;
       return;

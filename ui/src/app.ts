@@ -7,6 +7,7 @@ import {
   GenerateInput,
   DebugToggles,
 } from "./types";
+import { SnapGuide, SnapState, emptySnapState } from "./snap";
 
 export interface Camera {
   offsetX: number;
@@ -52,6 +53,8 @@ export interface AppState {
   // For add-hole mode: vertices being placed
   pendingHole: Vec2[];
   layers: LayerVisibility;
+  snapGuides: SnapGuide[];
+  snapState: SnapState;
 }
 
 export type GenerateFn = (input: string) => string;
@@ -112,6 +115,8 @@ export class App {
       camera: { offsetX: 30, offsetY: 60, zoom: 1.3 },
       editMode: "select",
       pendingHole: [],
+      snapGuides: [],
+      snapState: emptySnapState(),
       layers: {
         stalls: true,
         aisles: false,

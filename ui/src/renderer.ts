@@ -1,5 +1,6 @@
 import { AppState, Camera, VertexRef } from "./app";
 import { Vec2, StallQuad, DriveAisleGraph, SpineLine, Face } from "./types";
+import { SnapGuide } from "./snap";
 
 export class Renderer {
   private canvas: HTMLCanvasElement;
@@ -31,6 +32,11 @@ export class Renderer {
 
     // 1. Grid
     this.drawGrid(cam, w, h);
+
+    // 1b. Snap guides
+    if (state.snapGuides && state.snapGuides.length > 0) {
+      this.drawSnapGuides(state.snapGuides, cam, w, h);
+    }
 
     // 2. Boundary polygon
     this.drawBoundary(state);
@@ -199,6 +205,36 @@ export class Renderer {
       ctx.lineTo(worldRight, y);
     }
     ctx.stroke();
+  }
+
+  private drawSnapGuides(guides: SnapGuide[], cam: Camera, w: number, h: number): void {
+    const { ctx } = this;
+    const worldLeft = -cam.offsetX / cam.zoom;
+    const worldTop = -cam.offsetY / cam.zoom;
+    const worldRight = (w - cam.offsetX) / cam.zoom;
+    const worldBottom = (h - cam.offsetY) / cam.zoom;
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(100, 200, 255, 0.7)";
+    ctx.lineWidth = 1 / cam.zoom;
+    ctx.setLineDash([6 / cam.zoom, 4 / cam.zoom]);
+
+    for (const guide of guides) {
+      ctx.beginPath();
+      if (guide.axis === "x") {
+        // Vertical line — cursor X aligns to another vertex's X.
+        ctx.moveTo(guide.worldCoord, worldTop);
+        ctx.lineTo(guide.worldCoord, worldBottom);
+      } else {
+        // Horizontal line — cursor Y aligns to another vertex's Y.
+        ctx.moveTo(worldLeft, guide.worldCoord);
+        ctx.lineTo(worldRight, guide.worldCoord);
+      }
+      ctx.stroke();
+    }
+
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   private drawBoundary(state: AppState): void {
