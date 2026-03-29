@@ -36,6 +36,7 @@ export interface LayerVisibility {
   faceColors: boolean;
   miterFills: boolean;
   skeletonDebug: boolean;
+  islands: boolean;
 }
 
 export interface AppState {
@@ -95,7 +96,7 @@ export class App {
       },
       debug: {
         miter_fills: true,
-        spike_removal: true,
+        spike_removal: false,
         hole_filtering: true,
         face_extraction: true,
         edge_classification: true,
@@ -126,6 +127,7 @@ export class App {
         faceColors: false,
         miterFills: false,
         skeletonDebug: false,
+        islands: true,
       },
     };
   }

@@ -134,6 +134,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     { key: "faceColors", label: "Face Colors" },
     { key: "miterFills", label: "Miter Fills" },
     { key: "skeletonDebug", label: "Skeleton" },
+    { key: "islands", label: "Islands" },
   ];
 
   for (const def of LAYER_DEFS) {

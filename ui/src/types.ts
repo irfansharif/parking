@@ -23,6 +23,11 @@ export interface Face {
   holes?: Vec2[][];
 }
 
+export interface Island {
+  contour: Vec2[];
+  face_idx: number;
+}
+
 export interface ParkingLayout {
   aisle_polygons: Vec2[][];
   stalls: StallQuad[];
@@ -32,6 +37,7 @@ export interface ParkingLayout {
   faces: Face[];
   miter_fills: Vec2[][];
   skeleton_debug: { arcs: [Vec2, Vec2][]; nodes: Vec2[]; split_nodes: Vec2[]; sources: Vec2[] }[];
+  islands: Island[];
 }
 
 export interface AisleEdge {

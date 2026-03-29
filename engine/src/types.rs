@@ -120,6 +120,16 @@ pub struct Face {
 }
 
 // ---------------------------------------------------------------------------
+// Islands (landscape gaps between/at-ends-of stall rows)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Island {
+    pub contour: Vec<Vec2>,
+    pub face_idx: usize,
+}
+
+// ---------------------------------------------------------------------------
 // Layout output
 // ---------------------------------------------------------------------------
 
@@ -142,6 +152,8 @@ pub struct ParkingLayout {
     pub miter_fills: Vec<Vec<Vec2>>,
     #[serde(default)]
     pub skeleton_debug: Vec<SkeletonDebug>,
+    #[serde(default)]
+    pub islands: Vec<Island>,
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +229,7 @@ pub struct SpineSegment {
     pub start: Vec2,
     pub end: Vec2,
     pub outward_normal: Vec2,
+    pub face_idx: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -279,7 +292,7 @@ impl Default for DebugToggles {
     fn default() -> Self {
         Self {
             miter_fills: true,
-            spike_removal: true,
+            spike_removal: false,
             hole_filtering: true,
             face_extraction: true,
             edge_classification: true,
