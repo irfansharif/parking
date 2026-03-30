@@ -120,24 +120,31 @@ export class Renderer {
         }
       }
 
-      // 4. Stalls
-      if (state.layers.stalls) {
-        for (const stall of state.layout.stalls) {
-          this.drawStall(stall);
-        }
-      }
-
-      // 5. Islands
+      // 4. Islands (before stalls so stalls paint over island fill)
       if (state.layers.islands && state.layout.islands) {
         for (const island of state.layout.islands) {
           const [fr, fg, fb] = Renderer.FACE_COLORS[island.face_idx % Renderer.FACE_COLORS.length];
           const [r, g, b] = [Math.round(fr * 0.45), Math.round(fg * 0.45), Math.round(fb * 0.45)];
-          this.drawPolygon(
-            island.contour,
-            `rgba(${r}, ${g}, ${b}, 0.6)`,
-            `rgba(${r}, ${g}, ${b}, 0.9)`,
-            0.5,
-          );
+          const { ctx } = this;
+          ctx.beginPath();
+          this.tracePath(island.contour);
+          if (island.holes) {
+            for (const hole of island.holes) {
+              this.tracePath(hole);
+            }
+          }
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.6)`;
+          ctx.fill("evenodd");
+          ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+        }
+      }
+
+      // 5. Stalls
+      if (state.layers.stalls) {
+        for (const stall of state.layout.stalls) {
+          this.drawStall(stall);
         }
       }
 
