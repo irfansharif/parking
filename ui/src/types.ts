@@ -25,7 +25,6 @@ export interface Face {
 
 export interface Island {
   contour: Vec2[];
-  holes?: Vec2[][];
   face_idx: number;
 }
 

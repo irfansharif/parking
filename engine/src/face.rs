@@ -917,20 +917,20 @@ fn dedup_overlapping_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<Sp
     result
 }
 
-/// Compute landscape island polygons per face.
+/// Compute landscape island polygons.
 ///
-/// For each face, build a multi-contour subject (outer CCW + holes CW), subtract
-/// the face's stall quads, and collect residual polygons. Multi-contour residuals
-/// (rings around structural holes) are emitted as Islands with holes for evenodd
-/// rendering. No-stall faces that are too narrow for spines become islands directly.
+/// For every face, subtract stall quads from the face's positive space
+/// (outer CCW + holes CW). Only simple (single-contour) results are kept
+/// — multi-contour rings from faces with structural holes are dropped.
+/// For faces with holes, ALL stalls are subtracted (not just face-tagged)
+/// to fully break the ring where possible.
 fn compute_islands(
     faces: &[Vec<Vec<Vec2>>],
     tagged_stalls: &[(StallQuad, usize)],
-    faces_with_spines: &std::collections::HashSet<usize>,
+    all_stalls: &[StallQuad],
     min_area: f64,
-    round_radius: f64,
 ) -> Vec<crate::types::Island> {
-    use crate::inset::{inset_polygon, signed_area};
+    use crate::inset::signed_area;
 
     let to_path = |pts: &[Vec2]| -> Vec<[f64; 2]> {
         pts.iter().map(|v| [v.x, v.y]).collect()
@@ -943,15 +943,15 @@ fn compute_islands(
         c.iter().map(|p| Vec2::new(p[0], p[1])).collect()
     };
 
+    // Pre-compute stall paths for both face-tagged and all-stalls cases.
+    let all_stall_paths: Vec<Vec<[f64; 2]>> = all_stalls.iter()
+        .map(|s| to_path(&s.corners))
+        .collect();
+
     let mut islands = Vec::new();
 
     for (face_idx, shape) in faces.iter().enumerate() {
         if shape.is_empty() || shape[0].len() < 3 { continue; }
-
-        let face_stalls: Vec<&StallQuad> = tagged_stalls.iter()
-            .filter(|(_, fi)| *fi == face_idx)
-            .map(|(s, _)| s)
-            .collect();
 
         // Build multi-contour subject: outer CCW + holes CW.
         let mut subj: Vec<Vec<[f64; 2]>> = vec![to_path(&ensure_ccw(&shape[0]))];
@@ -961,52 +961,67 @@ fn compute_islands(
             subj.push(h);
         }
 
-        // Collect result shapes as (outer, holes) pairs.
-        type Shape = (Vec<Vec2>, Vec<Vec<Vec2>>);
-        let results: Vec<Shape> = if face_stalls.is_empty() {
-            // No stalls. Skip faces that had spine candidates (wide enough
-            // for stalls) or faces with inner holes (structural boundaries
-            // whose interior is occupied by corridors/sub-faces).
-            if faces_with_spines.contains(&face_idx) || shape.len() > 1 {
-                continue;
-            }
-            vec![(ensure_ccw(&shape[0]), vec![])]
+        // Choose which stalls to subtract:
+        // - Faces with holes: ALL stalls, to fully break the ring.
+        // - Simple faces: only face-tagged stalls (cheaper, ring can't form).
+        let clip: Vec<Vec<[f64; 2]>> = if shape.len() > 1 {
+            all_stall_paths.clone()
         } else {
-            let clip: Vec<Vec<[f64; 2]>> = face_stalls.iter()
-                .map(|s| to_path(&s.corners))
-                .collect();
-            let raw = subj.overlay(&clip, OverlayRule::Difference, FillRule::NonZero);
-            raw.into_iter().filter_map(|sc| {
-                if sc.is_empty() { return None; }
-                let outer = to_vec2(&sc[0]);
-                let holes: Vec<Vec<Vec2>> = sc[1..].iter().map(|h| to_vec2(h)).collect();
-                Some((outer, holes))
-            }).collect()
+            tagged_stalls.iter()
+                .filter(|(_, fi)| *fi == face_idx)
+                .map(|(s, _)| to_path(&s.corners))
+                .collect()
         };
 
-        for (outer, holes) in results {
-            // Net area = outer minus holes.
-            let outer_area = signed_area(&outer).abs();
-            let hole_area: f64 = holes.iter().map(|h| signed_area(h).abs()).sum();
-            if outer_area - hole_area < min_area { continue; }
+        if clip.is_empty() {
+            // No stalls to subtract. For simple faces, the entire face
+            // becomes an island (it's too narrow or too short for stalls).
+            // Faces with holes are handled via the boolean path below.
+            if shape.len() > 1 { continue; }
+            let contour = ensure_ccw(&shape[0]);
+            if signed_area(&contour).abs() >= min_area {
+                islands.push(crate::types::Island { contour, face_idx });
+            }
+            continue;
+        }
 
-            let outer = ensure_ccw(&outer);
+        let raw = subj.overlay(&clip, OverlayRule::Difference, FillRule::NonZero);
 
-            // Round corners via inset. Clamp radius so small islands don't collapse.
-            let (xmn, xmx) = outer.iter().fold((f64::INFINITY, f64::NEG_INFINITY),
-                |(mn, mx), v| (mn.min(v.x), mx.max(v.x)));
-            let (ymn, ymx) = outer.iter().fold((f64::INFINITY, f64::NEG_INFINITY),
-                |(mn, mx), v| (mn.min(v.y), mx.max(v.y)));
-            let bb_min = (xmx - xmn).min(ymx - ymn);
-            let r = round_radius.min(bb_min / 2.0 - 0.1);
+        #[cfg(test)]
+        if face_idx == 0 || shape.len() > 1 {
+            eprintln!("[diff] face {}: {} subj paths, {} clip stalls → {} result shapes",
+                face_idx, subj.len(), clip.len(), raw.len());
+            for (si, sc) in raw.iter().enumerate() {
+                let a = if !sc.is_empty() { signed_area_f64(&sc[0]).abs() } else { 0.0 };
+                eprintln!("  shape {}: {} contours, outer_area={:.0}", si, sc.len(), a);
+            }
+        }
 
-            let contour = if r <= 0.0 { outer }
-            else {
-                let rounded = inset_polygon(&outer, r);
-                if rounded.len() >= 3 { rounded } else { outer }
-            };
-
-            islands.push(crate::types::Island { contour, holes, face_idx });
+        for sc in raw {
+            if sc.len() == 1 {
+                // Simple result — emit directly.
+                let contour = ensure_ccw(&to_vec2(&sc[0]));
+                if signed_area(&contour).abs() < min_area { continue; }
+                islands.push(crate::types::Island { contour, face_idx });
+            } else if sc.len() >= 2 {
+                // Multi-contour ring. Subtract the holes from the outer
+                // contour to decompose. The holes include corridor geometry
+                // that cuts across the ring, severing it into simple pieces.
+                let outer_path = sc[0].clone();
+                let hole_clip: Vec<Vec<[f64; 2]>> = sc[1..].iter().map(|h| {
+                    let mut p = h.clone();
+                    if signed_area_f64(&p) < 0.0 { p.reverse(); } // ensure CCW for clip
+                    p
+                }).collect();
+                let decomposed = vec![outer_path]
+                    .overlay(&hole_clip, OverlayRule::Difference, FillRule::NonZero);
+                for dc in decomposed {
+                    if dc.len() != 1 { continue; }
+                    let contour = ensure_ccw(&to_vec2(&dc[0]));
+                    if signed_area(&contour).abs() < min_area { continue; }
+                    islands.push(crate::types::Island { contour, face_idx });
+                }
+            }
         }
     }
 
@@ -1138,7 +1153,7 @@ pub fn generate_from_spines(
 
     let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
 
-    let islands = compute_islands(&faces, &tagged_stalls, &faces_with_spines, 10.0, 2.5);
+    let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, 10.0);
 
     let spine_lines: Vec<SpineLine> = all_spines
         .iter()
@@ -1283,6 +1298,51 @@ mod tests {
         }
     }
 
+    /// Diagnostic: check face 0's boolean Difference for the default rect boundary.
+    #[test]
+    fn test_face0_difference_shapes() {
+        let boundary = Polygon {
+            outer: vec![
+                Vec2::new(0.0, 0.0),
+                Vec2::new(750.0, 0.0),
+                Vec2::new(750.0, 500.0),
+                Vec2::new(0.0, 500.0),
+            ],
+            holes: vec![vec![
+                Vec2::new(275.0, 150.0),
+                Vec2::new(475.0, 150.0),
+                Vec2::new(375.0, 350.0),
+            ]],
+        };
+        let params = ParkingParams::default();
+        let debug = DebugToggles::default();
+
+        let (stalls, _, _, faces_out, _, _, islands) =
+            generate_from_spines(
+                &crate::aisle_graph::auto_generate(&boundary, &params),
+                &boundary, &params, &debug,
+            );
+
+        eprintln!("Total stalls: {}, islands: {}", stalls.len(), islands.len());
+        for (ii, isl) in islands.iter().enumerate() {
+            let a = signed_area(&isl.contour).abs();
+            eprintln!("  island {}: face={}, area={:.0}, verts={}", ii, isl.face_idx, a, isl.contour.len());
+        }
+
+        // Check: any island from face 0?
+        let face0_islands: Vec<_> = islands.iter().filter(|i| i.face_idx == 0).collect();
+        eprintln!("Face 0 islands: {}", face0_islands.len());
+
+        // Check: any island near boundary corners?
+        let corners = [(5.0, 5.0), (745.0, 5.0), (745.0, 495.0), (5.0, 495.0)];
+        for (cx, cy) in &corners {
+            let near = islands.iter().any(|isl|
+                isl.contour.iter().any(|v| (v.x - cx).abs() < 20.0 && (v.y - cy).abs() < 20.0)
+            );
+            eprintln!("  corner ({}, {}): island nearby = {}", cx, cy, near);
+        }
+    }
+
     /// Islands test: verify that compute_islands returns small gap polygons,
     /// not the full face, for a face with stalls placed in it.
     #[test]
@@ -1333,25 +1393,21 @@ mod tests {
         let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces);
         let tagged_stalls = clip_stalls_to_boundary(tagged_stalls, &boundary);
         let tagged_stalls = remove_conflicting_stalls(tagged_stalls);
+        let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
 
-        let islands = compute_islands(&faces, &tagged_stalls, &faces_with_spines, 10.0, 2.5);
+        let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, 10.0);
 
-        // Check net area (outer minus holes) for each island. No island's
-        // net area should be as large as the total boundary area or the hole.
+        // No island should have area close to the boundary or the hole.
         let boundary_area = signed_area(&boundary.outer).abs();
         let hole_area = signed_area(&boundary.holes[0]).abs();
         for (ii, island) in islands.iter().enumerate() {
-            let outer_area = signed_area(&island.contour).abs();
-            let holes_area: f64 = island.holes.iter()
-                .map(|h| signed_area(h).abs())
-                .sum();
-            let net_area = outer_area - holes_area;
-            assert!(net_area < boundary_area * 0.5,
-                "island {} has net area {:.1} ≥ half boundary area {:.1}",
-                ii, net_area, boundary_area);
-            assert!(net_area < hole_area * 0.5,
-                "island {} has net area {:.1} ≥ half hole area {:.1} — triangular hole leaked as island",
-                ii, net_area, hole_area);
+            let area = signed_area(&island.contour).abs();
+            assert!(area < boundary_area * 0.5,
+                "island {} has area {:.1} ≥ half boundary area {:.1}",
+                ii, area, boundary_area);
+            assert!(area < hole_area * 0.5,
+                "island {} has area {:.1} ≥ half hole area {:.1} — triangular hole leaked",
+                ii, area, hole_area);
         }
     }
 

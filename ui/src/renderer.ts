@@ -1,5 +1,5 @@
 import { AppState, Camera, VertexRef } from "./app";
-import { Vec2, StallQuad, DriveAisleGraph, SpineLine, Face, Island } from "./types";
+import { Vec2, StallQuad, DriveAisleGraph, SpineLine, Face } from "./types";
 import { SnapGuide } from "./snap";
 
 export class Renderer {
@@ -132,19 +132,12 @@ export class Renderer {
         for (const island of state.layout.islands) {
           const [fr, fg, fb] = Renderer.FACE_COLORS[island.face_idx % Renderer.FACE_COLORS.length];
           const [r, g, b] = [Math.round(fr * 0.45), Math.round(fg * 0.45), Math.round(fb * 0.45)];
-          const { ctx } = this;
-          ctx.beginPath();
-          this.tracePath(island.contour);
-          if (island.holes) {
-            for (const hole of island.holes) {
-              this.tracePath(hole);
-            }
-          }
-          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.6)`;
-          ctx.fill("evenodd");
-          ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
-          ctx.lineWidth = 0.5;
-          ctx.stroke();
+          this.drawPolygon(
+            island.contour,
+            `rgba(${r}, ${g}, ${b}, 0.6)`,
+            `rgba(${r}, ${g}, ${b}, 0.9)`,
+            0.5,
+          );
         }
       }
 
