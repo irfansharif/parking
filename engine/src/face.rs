@@ -877,17 +877,21 @@ fn place_stalls_on_spines(
         let angle_override = if seg.is_interior { None } else { Some(90.0) };
         let spine_stalls = fill_strip(start, end, 1.0, 0.0, params, angle_override);
 
-        // Build tight strip envelope: quad from first stall's left edge to
-        // last stall's right edge. This covers inter-stall gaps without
-        // extending past the strip ends (preserving corner islands).
+        // Build tight strip envelope: hexagon following the actual stall
+        // edges. The back end is the first stall's back edge, the front end
+        // is the last stall's front edge, and the sides follow the spine
+        // direction. This covers inter-stall gaps without extending past
+        // the strip ends (preserving corner islands).
         if !spine_stalls.is_empty() {
             let first = &spine_stalls[0];
             let last = &spine_stalls[spine_stalls.len() - 1];
             let envelope = vec![
                 first.corners[0],  // first back-left
-                last.corners[1],   // last back-right
+                first.corners[1],  // first back-right
+                last.corners[1],   // last back-right (along spine)
                 last.corners[2],   // last front-right
-                first.corners[3],  // first front-left
+                last.corners[3],   // last front-left
+                first.corners[3],  // first front-left (along spine)
             ];
             strip_envelopes.push((envelope, seg.face_idx));
         }
