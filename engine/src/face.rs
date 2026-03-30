@@ -358,6 +358,16 @@ fn compute_face_spines(
         }
     }
 
+    // If every edge of the face is aisle-facing, the face is fully enclosed
+    // by corridors (no boundary/hole wall). All its spines should be
+    // interior/angled, even if one of the corridors is a perimeter corridor.
+    let has_boundary_wall = aisle_facing_flat.iter().any(|&af| !af);
+    if !has_boundary_wall {
+        for v in interior_flat.iter_mut() {
+            *v = true;
+        }
+    }
+
     // Edge weights for the weighted skeleton: aisle-facing edges shrink at
     // normal speed (1.0), non-aisle-facing edges (boundary walls) stay fixed
     // (0.0). This lets one-sided perimeter faces produce spines even when
