@@ -1,12 +1,21 @@
-use crate::aisle_graph::{auto_generate, merge_with_auto};
+use crate::aisle_graph::{auto_generate, find_or_add_vertex, intersect_line_polygon, merge_with_auto, subtract_intervals};
 use crate::face::generate_from_spines;
+use crate::inset::{inset_polygon, signed_area};
 use crate::types::*;
 
 pub fn generate(input: GenerateInput) -> ParkingLayout {
-    let graph = match input.aisle_graph {
+    // First, resolve the aisle graph from manual + auto as usual.
+    let mut graph = match input.aisle_graph {
         Some(manual) => merge_with_auto(manual, &input.boundary, &input.params),
         None => auto_generate(&input.boundary, &input.params),
     };
+
+    // Then append drive line edges on top — they're additive and should not
+    // cause auto edges to be filtered out.
+    let drive_graph = clip_drive_lines(&input.drive_lines, &input.boundary, &input.params);
+    if !drive_graph.vertices.is_empty() {
+        graph = append_graph(graph, drive_graph);
+    }
 
     let (stalls, aisle_polygons, spines, faces, miter_fills, skeleton_debug, islands) =
         generate_from_spines(&graph, &input.boundary, &input.params, &input.debug);
@@ -25,5 +34,188 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         miter_fills,
         skeleton_debug,
         islands,
+    }
+}
+
+/// Clip drive lines against the same inset perimeter and expanded holes that
+/// auto_generate uses. This ensures drive line endpoints land on the perimeter
+/// and hole loops, enabling proper corridor merging and miter fills.
+fn clip_drive_lines(
+    lines: &[DriveLine],
+    boundary: &Polygon,
+    params: &ParkingParams,
+) -> DriveAisleGraph {
+    if lines.is_empty() {
+        return DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 };
+    }
+
+    let hw = params.aisle_width / 2.0;
+    let stall_angle_rad = params.stall_angle_deg.to_radians();
+    let effective_depth = params.stall_depth * stall_angle_rad.sin();
+    let inset_d = effective_depth + hw;
+
+    // Compute the same inset perimeter and expanded holes as auto_generate.
+    let effective = if params.site_offset > 0.0 {
+        let p = inset_polygon(&boundary.outer, params.site_offset);
+        if p.is_empty() { return DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 }; }
+        p
+    } else {
+        boundary.outer.clone()
+    };
+    let effective = ensure_ccw(effective);
+    let outer_loop = inset_polygon(&effective, inset_d);
+    if outer_loop.is_empty() {
+        return DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 };
+    }
+
+    let mut hole_loops: Vec<Vec<Vec2>> = Vec::new();
+    for hole in &boundary.holes {
+        let expanded = inset_polygon(hole, -inset_d);
+        if !expanded.is_empty() {
+            hole_loops.push(expanded);
+        }
+    }
+
+    let mut vertices: Vec<Vec2> = Vec::new();
+    let mut edges: Vec<AisleEdge> = Vec::new();
+
+    for dl in lines {
+        let dir = dl.end - dl.start;
+        if dir.length() < 1e-9 {
+            continue;
+        }
+        let dir_norm = Vec2::new(dir.x / dir.length(), dir.y / dir.length());
+        let origin = dl.start;
+
+        // Intersect with inset perimeter (not raw boundary).
+        let outer_hits = intersect_line_polygon(origin, dir_norm, &outer_loop);
+        let mut intervals: Vec<(f64, f64)> = Vec::new();
+        for pair in outer_hits.chunks(2) {
+            if pair.len() == 2 {
+                intervals.push((pair[0].t_line, pair[1].t_line));
+            }
+        }
+
+        // Subtract expanded hole interiors.
+        for hl in &hole_loops {
+            let hole_hits = intersect_line_polygon(origin, dir_norm, hl);
+            let mut hole_ivs: Vec<(f64, f64)> = Vec::new();
+            for pair in hole_hits.chunks(2) {
+                if pair.len() == 2 {
+                    hole_ivs.push((pair[0].t_line, pair[1].t_line));
+                }
+            }
+            intervals = subtract_intervals(&intervals, &hole_ivs);
+        }
+
+        // Create edges for surviving intervals.
+        for &(ta, tb) in &intervals {
+            let pa = origin + dir_norm * ta;
+            let pb = origin + dir_norm * tb;
+            let via = find_or_add_vertex(&mut vertices, pa, 1.0);
+            let vib = find_or_add_vertex(&mut vertices, pb, 1.0);
+            edges.push(AisleEdge { start: via, end: vib, width: hw, interior: true });
+            edges.push(AisleEdge { start: vib, end: via, width: hw, interior: true });
+        }
+    }
+
+    DriveAisleGraph {
+        vertices,
+        edges,
+        perim_vertex_count: 0,
+    }
+}
+
+fn ensure_ccw(mut poly: Vec<Vec2>) -> Vec<Vec2> {
+    if signed_area(&poly) < 0.0 {
+        poly.reverse();
+    }
+    poly
+}
+
+/// Append graph b into graph a. For each b vertex, either merge with a nearby
+/// existing vertex OR split the nearest a-edge that passes through it. This
+/// ensures drive line endpoints on the perimeter/hole loops create proper
+/// junctions for miter fill computation.
+fn append_graph(a: DriveAisleGraph, b: DriveAisleGraph) -> DriveAisleGraph {
+    let vtx_tolerance = 1.0;
+    let edge_tolerance = 2.0;
+    let mut vertices = a.vertices;
+    let base_edge_count = a.edges.len();
+    let mut edges = a.edges;
+
+    let mut b_to_merged: Vec<usize> = Vec::with_capacity(b.vertices.len());
+    for bv in &b.vertices {
+        // First try: merge with an existing vertex.
+        let existing = vertices
+            .iter()
+            .position(|mv| (*mv - *bv).length() < vtx_tolerance);
+        if let Some(mi) = existing {
+            b_to_merged.push(mi);
+            continue;
+        }
+
+        // Second try: find an a-edge this vertex lies on, and split it.
+        let new_vi = vertices.len();
+        vertices.push(*bv);
+
+        let mut best_split: Option<(usize, f64)> = None;
+        let mut best_dist = edge_tolerance;
+        for ei in 0..base_edge_count {
+            let e = &edges[ei];
+            let s = vertices[e.start];
+            let ev = vertices[e.end];
+            let seg = ev - s;
+            let seg_len_sq = seg.x * seg.x + seg.y * seg.y;
+            if seg_len_sq < 1e-12 { continue; }
+            let t = ((*bv - s).dot(seg)) / seg_len_sq;
+            if t <= 0.01 || t >= 0.99 { continue; }
+            let proj = s + seg * t;
+            let dist = (*bv - proj).length();
+            if dist < best_dist {
+                best_dist = dist;
+                best_split = Some((ei, t));
+            }
+        }
+
+        if let Some((ei, _t)) = best_split {
+            // Split edge ei at new_vi: replace edge (s->e) with (s->new_vi) + (new_vi->e).
+            // Since edges are stored bidirectionally, find and split the reverse too.
+            let s = edges[ei].start;
+            let e = edges[ei].end;
+            let w = edges[ei].width;
+            let interior = edges[ei].interior;
+
+            // Replace the forward edge with s->new_vi, add new_vi->e.
+            edges[ei] = AisleEdge { start: s, end: new_vi, width: w, interior };
+            edges.push(AisleEdge { start: new_vi, end: e, width: w, interior });
+
+            // Find and split the reverse edge (e->s).
+            for ri in 0..edges.len() {
+                if ri == ei { continue; }
+                if edges[ri].start == e && edges[ri].end == s {
+                    edges[ri] = AisleEdge { start: e, end: new_vi, width: w, interior };
+                    edges.push(AisleEdge { start: new_vi, end: s, width: w, interior });
+                    break;
+                }
+            }
+        }
+
+        b_to_merged.push(new_vi);
+    }
+
+    for e in &b.edges {
+        edges.push(AisleEdge {
+            start: b_to_merged[e.start],
+            end: b_to_merged[e.end],
+            width: e.width,
+            interior: e.interior,
+        });
+    }
+
+    DriveAisleGraph {
+        vertices,
+        edges,
+        perim_vertex_count: a.perim_vertex_count,
     }
 }

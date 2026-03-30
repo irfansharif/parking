@@ -1,6 +1,7 @@
 import {
   Vec2,
   Polygon,
+  DriveLine,
   DriveAisleGraph,
   ParkingParams,
   ParkingLayout,
@@ -16,16 +17,18 @@ export interface Camera {
 }
 
 export interface VertexRef {
-  type: "boundary-outer" | "boundary-hole" | "aisle";
+  type: "boundary-outer" | "boundary-hole" | "aisle" | "drive-line";
   index: number;
   holeIndex?: number;
+  endpoint?: "start" | "end";
 }
 
 export type EditMode =
   | "select"
   | "add-aisle-vertex"
   | "add-aisle-edge"
-  | "add-hole";
+  | "add-hole"
+  | "add-drive-line";
 
 export interface LayerVisibility {
   stalls: boolean;
@@ -53,6 +56,10 @@ export interface AppState {
   editMode: EditMode;
   // For add-hole mode: vertices being placed
   pendingHole: Vec2[];
+  // For add-drive-line mode
+  driveLines: DriveLine[];
+  pendingDriveLine: Vec2 | null;
+  pendingDriveLinePreview: Vec2 | null;
   layers: LayerVisibility;
   snapGuides: SnapGuide[];
   snapState: SnapState;
@@ -116,6 +123,11 @@ export class App {
       camera: { offsetX: 30, offsetY: 60, zoom: 1.3 },
       editMode: "select",
       pendingHole: [],
+      driveLines: [
+        { start: { x: -50, y: 250 }, end: { x: 800, y: 250 } },
+      ],
+      pendingDriveLine: null,
+      pendingDriveLinePreview: null,
       snapGuides: [],
       snapState: emptySnapState(),
       layers: {
@@ -136,6 +148,7 @@ export class App {
     const input: GenerateInput = {
       boundary: this.state.boundary,
       aisle_graph: this.state.aisleGraph,
+      drive_lines: this.state.driveLines,
       params: this.state.params,
       debug: this.state.debug,
     };
@@ -199,6 +212,16 @@ export class App {
         result.push({ ref: { type: "aisle", index: i }, pos: v });
       });
     }
+    this.state.driveLines.forEach((dl, i) => {
+      result.push({
+        ref: { type: "drive-line", index: i, endpoint: "start" },
+        pos: dl.start,
+      });
+      result.push({
+        ref: { type: "drive-line", index: i, endpoint: "end" },
+        pos: dl.end,
+      });
+    });
     return result;
   }
 
@@ -209,6 +232,8 @@ export class App {
     } else if (ref.type === "boundary-hole" && ref.holeIndex !== undefined) {
       this.state.boundary.holes[ref.holeIndex][ref.index] = pos;
       this.state.aisleGraph = null;
+    } else if (ref.type === "drive-line" && ref.endpoint) {
+      this.state.driveLines[ref.index][ref.endpoint] = pos;
     } else if (ref.type === "aisle") {
       // Capture the anchor (pinned endpoint) on the first drag move.
       if (!this.state.dragAnchor) {
@@ -354,5 +379,16 @@ export class App {
       this.generate();
     }
     this.state.pendingHole = [];
+  }
+
+  addDriveLine(start: Vec2, end: Vec2): void {
+    this.state.driveLines.push({ start, end });
+    this.generate();
+  }
+
+  deleteDriveLine(index: number): void {
+    this.state.driveLines.splice(index, 1);
+    this.state.selectedVertex = null;
+    this.generate();
   }
 }

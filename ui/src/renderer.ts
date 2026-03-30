@@ -180,7 +180,12 @@ export class Renderer {
       this.drawPendingHole(state.pendingHole);
     }
 
-    // 8. Scale bar
+    // 8. Pending drive line preview
+    if (state.pendingDriveLine && state.pendingDriveLinePreview) {
+      this.drawPendingDriveLine(state.pendingDriveLine, state.pendingDriveLinePreview);
+    }
+
+    // 9. Scale bar
     this.drawScaleBar(cam);
 
     ctx.restore();
@@ -410,6 +415,33 @@ export class Renderer {
       ctx.setLineDash([]);
     }
 
+    // Draw drive line edges (solid green + faint infinite extent)
+    for (const dl of state.driveLines) {
+      const dir = { x: dl.end.x - dl.start.x, y: dl.end.y - dl.start.y };
+      const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y);
+      if (len > 1e-9) {
+        const nx = dir.x / len;
+        const ny = dir.y / len;
+        const ext = 10000;
+        // Faint infinite extent
+        ctx.beginPath();
+        ctx.moveTo(dl.start.x - nx * ext, dl.start.y - ny * ext);
+        ctx.lineTo(dl.end.x + nx * ext, dl.end.y + ny * ext);
+        ctx.strokeStyle = "rgba(50, 200, 100, 0.25)";
+        ctx.lineWidth = 0.5;
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      // Solid control segment
+      ctx.beginPath();
+      ctx.moveTo(dl.start.x, dl.start.y);
+      ctx.lineTo(dl.end.x, dl.end.y);
+      ctx.strokeStyle = "rgba(50, 200, 100, 0.8)";
+      ctx.lineWidth = 1.0;
+      ctx.stroke();
+    }
+
     const aisleVerts = (graph?.vertices ?? []).map((v, i) => ({
       pos: v,
       ref: { type: "aisle" as const, index: i },
@@ -417,6 +449,19 @@ export class Renderer {
         ? "rgba(100, 150, 255, 0.9)"
         : "rgba(100, 150, 255, 0.5)",
     }));
+
+    const driveLineVerts = state.driveLines.flatMap((dl, i) => [
+      {
+        pos: dl.start,
+        ref: { type: "drive-line" as const, index: i, endpoint: "start" as const },
+        color: "rgba(50, 200, 100, 0.9)",
+      },
+      {
+        pos: dl.end,
+        ref: { type: "drive-line" as const, index: i, endpoint: "end" as const },
+        color: "rgba(50, 200, 100, 0.9)",
+      },
+    ]);
 
     // Draw vertices
     const allVerts = [
@@ -433,6 +478,7 @@ export class Renderer {
         })),
       ),
       ...aisleVerts,
+      ...driveLineVerts,
     ];
 
     const radius = 3;
@@ -470,6 +516,8 @@ export class Renderer {
     if (a.type !== b.type || a.index !== b.index) return false;
     if (a.type === "boundary-hole")
       return a.holeIndex === (b as VertexRef).holeIndex;
+    if (a.type === "drive-line")
+      return a.endpoint === (b as VertexRef).endpoint;
     return true;
   }
 
@@ -493,6 +541,24 @@ export class Renderer {
       ctx.fillStyle = "rgba(233, 69, 96, 0.9)";
       ctx.fill();
     }
+  }
+
+  private drawPendingDriveLine(start: Vec2, previewEnd: Vec2): void {
+    const { ctx } = this;
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = "rgba(50, 200, 100, 0.7)";
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(previewEnd.x, previewEnd.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Dot at start point
+    ctx.beginPath();
+    ctx.arc(start.x, start.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(50, 200, 100, 0.9)";
+    ctx.fill();
   }
 
   private drawScaleBar(_cam: Camera): void {

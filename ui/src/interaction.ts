@@ -61,6 +61,19 @@ export function setupInteraction(
       return;
     }
 
+    if (mode === "add-drive-line") {
+      const { pos } = computeSnap(worldPos, app.getAllVertices(), null, app.state.camera.zoom, emptySnapState());
+      if (app.state.pendingDriveLine === null) {
+        app.state.pendingDriveLine = pos;
+      } else {
+        app.addDriveLine(app.state.pendingDriveLine, pos);
+        app.state.pendingDriveLine = null;
+        app.state.pendingDriveLinePreview = null;
+      }
+      renderer.render(app.state);
+      return;
+    }
+
     // Default: select mode — hit test and drag.
     const allVerts = app.getAllVertices();
     const perimCount = app.getEffectiveAisleGraph()?.perim_vertex_count ?? 0;
@@ -117,6 +130,14 @@ export function setupInteraction(
       return;
     }
 
+    // Pending drive line preview
+    if (app.state.editMode === "add-drive-line" && app.state.pendingDriveLine) {
+      const rawPos = renderer.screenToWorld(sx, sy, app.state.camera);
+      const { pos } = computeSnap(rawPos, app.getAllVertices(), null, app.state.camera.zoom, emptySnapState());
+      app.state.pendingDriveLinePreview = pos;
+      renderer.render(app.state);
+    }
+
     // Hover detection (all modes)
     const allVerts = app.getAllVertices();
     let hovered: VertexRef | null = null;
@@ -137,7 +158,7 @@ export function setupInteraction(
     if (hovered !== app.state.hoveredVertex) {
       app.state.hoveredVertex = hovered;
       const mode = app.state.editMode;
-      if (mode === "add-aisle-vertex" || mode === "add-hole") {
+      if (mode === "add-aisle-vertex" || mode === "add-hole" || mode === "add-drive-line") {
         canvas.style.cursor = "crosshair";
       } else if (mode === "add-aisle-edge") {
         canvas.style.cursor = hovered?.type === "aisle" ? "pointer" : "crosshair";
@@ -271,6 +292,8 @@ export function setupInteraction(
       app.state.editMode = "select";
       app.state.selectedVertex = null;
       app.state.pendingHole = [];
+      app.state.pendingDriveLine = null;
+      app.state.pendingDriveLinePreview = null;
       canvas.style.cursor = "default";
       updateModeHint(app);
       renderer.render(app.state);
@@ -283,6 +306,8 @@ export function setupInteraction(
         app.deleteHoleVertex(sel.holeIndex, sel.index);
       } else if (sel.type === "aisle") {
         app.deleteAisleVertex(sel.index);
+      } else if (sel.type === "drive-line") {
+        app.deleteDriveLine(sel.index);
       }
       renderer.render(app.state);
     }
@@ -331,6 +356,7 @@ export function updateModeHint(app: App): void {
     "add-aisle-vertex": "Click to place aisle vertices. Press Esc to return to select mode.",
     "add-aisle-edge": "Click two aisle vertices to connect them. Press Esc to cancel.",
     "add-hole": "Click to place hole vertices. Press Esc to finish the hole (needs 3+ vertices).",
+    "add-drive-line": "Click to place start point, click again to place end point. Press Esc to cancel.",
   };
   hint.textContent = hints[app.state.editMode] ?? "";
 }

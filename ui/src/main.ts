@@ -69,6 +69,7 @@ function setupToolbar(app: App, renderer: Renderer): void {
     { mode: "add-aisle-vertex", label: "Add Aisle Vertex (A)", key: "a" },
     { mode: "add-aisle-edge", label: "Add Aisle Edge (E)", key: "e" },
     { mode: "add-hole", label: "Add Hole (H)", key: "h" },
+    { mode: "add-drive-line", label: "Drive Line (D)", key: "d" },
   ];
 
   const buttons: HTMLButtonElement[] = [];
@@ -101,6 +102,11 @@ function setupToolbar(app: App, renderer: Renderer): void {
     // Commit pending hole if switching away from add-hole mode
     if (app.state.editMode === "add-hole" && mode !== "add-hole") {
       app.commitPendingHole();
+    }
+    // Clear pending drive line if switching away
+    if (app.state.editMode === "add-drive-line" && mode !== "add-drive-line") {
+      app.state.pendingDriveLine = null;
+      app.state.pendingDriveLinePreview = null;
     }
     app.state.editMode = mode;
     app.state.selectedVertex = null;

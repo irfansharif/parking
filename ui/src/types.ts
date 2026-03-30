@@ -90,9 +90,15 @@ export interface DebugToggles {
   skeleton_debug: boolean;
 }
 
+export interface DriveLine {
+  start: Vec2;
+  end: Vec2;
+}
+
 export interface GenerateInput {
   boundary: Polygon;
   aisle_graph: DriveAisleGraph | null;
+  drive_lines: DriveLine[];
   params: ParkingParams;
   debug: DebugToggles;
 }

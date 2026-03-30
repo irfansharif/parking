@@ -319,7 +319,7 @@ fn ensure_ccw(mut poly: Vec<Vec2>) -> Vec<Vec2> {
 
 
 /// Find an existing vertex within tolerance, or add a new one.
-fn find_or_add_vertex(vertices: &mut Vec<Vec2>, point: Vec2, tolerance: f64) -> usize {
+pub(crate) fn find_or_add_vertex(vertices: &mut Vec<Vec2>, point: Vec2, tolerance: f64) -> usize {
     for (i, v) in vertices.iter().enumerate() {
         if (*v - point).length() < tolerance {
             return i;
@@ -334,15 +334,15 @@ fn find_or_add_vertex(vertices: &mut Vec<Vec2>, point: Vec2, tolerance: f64) -> 
 // Line–polygon intersection
 // ---------------------------------------------------------------------------
 
-struct Hit {
-    t_line: f64,    // parameter along the line
-    edge_idx: usize, // which polygon edge
-    t_edge: f64,    // parameter along that edge (0..1)
+pub(crate) struct Hit {
+    pub t_line: f64,    // parameter along the line
+    pub edge_idx: usize, // which polygon edge
+    pub t_edge: f64,    // parameter along that edge (0..1)
 }
 
 /// Intersect an infinite line (origin + t*dir) with a polygon.
 /// Returns hits sorted by t_line.
-fn intersect_line_polygon(origin: Vec2, dir: Vec2, polygon: &[Vec2]) -> Vec<Hit> {
+pub(crate) fn intersect_line_polygon(origin: Vec2, dir: Vec2, polygon: &[Vec2]) -> Vec<Hit> {
     let n = polygon.len();
     let mut hits = Vec::new();
     for i in 0..n {
@@ -370,7 +370,7 @@ fn intersect_line_polygon(origin: Vec2, dir: Vec2, polygon: &[Vec2]) -> Vec<Hit>
 
 /// Subtract hole intervals from base intervals.
 /// Both inputs must be sorted and non-overlapping.
-fn subtract_intervals(base: &[(f64, f64)], holes: &[(f64, f64)]) -> Vec<(f64, f64)> {
+pub(crate) fn subtract_intervals(base: &[(f64, f64)], holes: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let mut result = Vec::new();
     for &(a, b) in base {
         let mut segments = vec![(a, b)];

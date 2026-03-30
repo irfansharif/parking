@@ -310,6 +310,16 @@ impl Default for DebugToggles {
 }
 
 // ---------------------------------------------------------------------------
+// Drive lines (user-drawn cutting lines clipped to boundary)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DriveLine {
+    pub start: Vec2,
+    pub end: Vec2,
+}
+
+// ---------------------------------------------------------------------------
 // Top-level input
 // ---------------------------------------------------------------------------
 
@@ -317,6 +327,8 @@ impl Default for DebugToggles {
 pub struct GenerateInput {
     pub boundary: Polygon,
     pub aisle_graph: Option<DriveAisleGraph>,
+    #[serde(default)]
+    pub drive_lines: Vec<DriveLine>,
     pub params: ParkingParams,
     #[serde(default)]
     pub debug: DebugToggles,

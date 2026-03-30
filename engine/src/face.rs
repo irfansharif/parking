@@ -1795,6 +1795,7 @@ mod tests {
                 holes: vec![],
             },
             aisle_graph: None,
+            drive_lines: vec![],
             params: ParkingParams::default(),
             debug: DebugToggles::default(),
         };
@@ -1882,6 +1883,7 @@ mod tests {
                 holes: vec![],
             },
             aisle_graph: None,
+            drive_lines: vec![],
             params: ParkingParams::default(),
             debug: DebugToggles::default(),
         };
@@ -1947,5 +1949,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_drive_line_horizontal_with_hole() {
+        use crate::generate::generate;
+        use crate::types::{GenerateInput, DriveLine};
+
+        let input = GenerateInput {
+            boundary: Polygon {
+                outer: vec![
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(750.0, 0.0),
+                    Vec2::new(750.0, 500.0),
+                    Vec2::new(0.0, 500.0),
+                ],
+                holes: vec![vec![
+                    Vec2::new(275.0, 150.0),
+                    Vec2::new(475.0, 150.0),
+                    Vec2::new(375.0, 350.0),
+                ]],
+            },
+            aisle_graph: None,
+            drive_lines: vec![
+                DriveLine {
+                    start: Vec2::new(-50.0, 250.0),
+                    end: Vec2::new(800.0, 250.0),
+                },
+            ],
+            params: ParkingParams::default(),
+            debug: DebugToggles::default(),
+        };
+
+        let layout = generate(input);
+        eprintln!("\n=== drive line horizontal with hole ===");
+        eprintln!("stalls: {}, faces: {}, miter_fills: {}",
+            layout.stalls.len(), layout.faces.len(), layout.miter_fills.len());
+        eprintln!("resolved graph: {} vertices, {} edges",
+            layout.resolved_graph.vertices.len(), layout.resolved_graph.edges.len());
+
+        // The drive line should produce interior segments that avoid the hole.
+        // There should be corridors and miter fills at the junction points.
+        assert!(layout.stalls.len() > 0, "should produce stalls");
+        assert!(layout.miter_fills.len() > 0, "should produce miter fills");
+        assert!(layout.faces.len() > 0, "should produce faces");
     }
 }
