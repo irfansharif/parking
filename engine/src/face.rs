@@ -849,12 +849,14 @@ fn clip_stalls_to_faces(
 
 
 /// Place stalls on a set of spine segments. Returns stalls tagged with their
-/// source spine's face_idx so island computation can group stalls by face.
+/// source spine's face_idx, plus strip envelopes (convex hull of each
+/// spine's stalls) for island computation.
 fn place_stalls_on_spines(
     spines: &[SpineSegment],
     params: &ParkingParams,
-) -> Vec<(StallQuad, usize)> {
+) -> (Vec<(StallQuad, usize)>, Vec<(Vec<Vec2>, usize)>) {
     let mut stalls = Vec::new();
+    let mut strip_envelopes = Vec::new();
     for seg in spines {
         let edge_dir = (seg.end - seg.start).normalize();
         let left_normal = Vec2::new(-edge_dir.y, edge_dir.x);
@@ -869,11 +871,64 @@ fn place_stalls_on_spines(
         };
 
         let angle_override = if seg.is_interior { None } else { Some(90.0) };
-        for quad in fill_strip(start, end, 1.0, 0.0, params, angle_override) {
+        let spine_stalls = fill_strip(start, end, 1.0, 0.0, params, angle_override);
+
+        // Compute the convex hull of all stall corners as the strip envelope.
+        if !spine_stalls.is_empty() {
+            let all_corners: Vec<Vec2> = spine_stalls.iter()
+                .flat_map(|s| s.corners.iter().copied())
+                .collect();
+            let hull = convex_hull(&all_corners);
+            if hull.len() >= 3 {
+                strip_envelopes.push((hull, seg.face_idx));
+            }
+        }
+
+        for quad in spine_stalls {
             stalls.push((quad, seg.face_idx));
         }
     }
-    stalls
+    (stalls, strip_envelopes)
+}
+
+/// Compute convex hull of a set of points using Andrew's monotone chain.
+fn convex_hull(points: &[Vec2]) -> Vec<Vec2> {
+    let mut pts = points.to_vec();
+    pts.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap().then(a.y.partial_cmp(&b.y).unwrap()));
+    pts.dedup_by(|a, b| (a.x - b.x).abs() < 1e-10 && (a.y - b.y).abs() < 1e-10);
+
+    if pts.len() <= 2 { return pts; }
+
+    let mut hull = Vec::new();
+    // Lower hull
+    for p in &pts {
+        while hull.len() >= 2 {
+            let a: Vec2 = hull[hull.len() - 2];
+            let b: Vec2 = hull[hull.len() - 1];
+            if (b - a).cross(*p - a) <= 0.0 {
+                hull.pop();
+            } else {
+                break;
+            }
+        }
+        hull.push(*p);
+    }
+    // Upper hull
+    let lower_len = hull.len();
+    for p in pts.iter().rev() {
+        while hull.len() > lower_len {
+            let a: Vec2 = hull[hull.len() - 2];
+            let b: Vec2 = hull[hull.len() - 1];
+            if (b - a).cross(*p - a) <= 0.0 {
+                hull.pop();
+            } else {
+                break;
+            }
+        }
+        hull.push(*p);
+    }
+    hull.pop(); // Remove last point (same as first)
+    hull
 }
 
 /// Deduplicate overlapping collinear spines. When two spines have the same
@@ -983,8 +1038,8 @@ fn dedup_overlapping_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<Sp
 /// render on top, covering the ring's stall areas.
 fn compute_islands(
     faces: &[Vec<Vec<Vec2>>],
-    tagged_stalls: &[(StallQuad, usize)],
-    all_stalls: &[StallQuad],
+    strip_envelopes: &[(Vec<Vec2>, usize)],
+    all_envelopes: &[Vec<Vec2>],
     min_area: f64,
 ) -> Vec<crate::types::Island> {
     use crate::inset::signed_area;
@@ -1000,8 +1055,8 @@ fn compute_islands(
         c.iter().map(|p| Vec2::new(p[0], p[1])).collect()
     };
 
-    let all_stall_paths: Vec<Vec<[f64; 2]>> = all_stalls.iter()
-        .map(|s| to_path(&s.corners))
+    let all_envelope_paths: Vec<Vec<[f64; 2]>> = all_envelopes.iter()
+        .map(|env| to_path(env))
         .collect();
 
     let mut islands = Vec::new();
@@ -1017,15 +1072,17 @@ fn compute_islands(
             subj.push(h);
         }
 
-        // Faces with holes subtract ALL stalls (some stalls are tagged
-        // with adjacent faces but physically overlap this face's outer).
-        // Simple faces use only face-tagged stalls.
+        // Subtract strip envelopes (convex hulls of stall strips) instead
+        // of individual stalls. This prevents inter-stall gaps from
+        // appearing as islands for angled parking.
+        // Faces with holes subtract ALL envelopes; simple faces use only
+        // face-tagged envelopes.
         let clip: Vec<Vec<[f64; 2]>> = if shape.len() > 1 {
-            all_stall_paths.clone()
+            all_envelope_paths.clone()
         } else {
-            tagged_stalls.iter()
+            strip_envelopes.iter()
                 .filter(|(_, fi)| *fi == face_idx)
-                .map(|(s, _)| to_path(&s.corners))
+                .map(|(env, _)| to_path(env))
                 .collect()
         };
 
@@ -1159,8 +1216,9 @@ pub fn generate_from_spines(
         all_spines
     };
 
-    // Place stalls on merged spines.
-    let tagged_stalls = place_stalls_on_spines(&all_spines, params);
+    // Place stalls on merged spines. Also produces strip envelopes
+    // (convex hulls of each spine's stalls) for island computation.
+    let (tagged_stalls, strip_envelopes) = place_stalls_on_spines(&all_spines, params);
 
     // Clip stalls to face interiors. A stall that protrudes past the face
     // boundary into a corridor (at miter-fill corners) is removed.
@@ -1181,7 +1239,8 @@ pub fn generate_from_spines(
 
     let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
 
-    let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, 10.0);
+    let all_envelopes: Vec<Vec<Vec2>> = strip_envelopes.iter().map(|(env, _)| env.clone()).collect();
+    let islands = compute_islands(&faces, &strip_envelopes, &all_envelopes, 10.0);
 
     let spine_lines: Vec<SpineLine> = all_spines
         .iter()
@@ -1421,13 +1480,13 @@ mod tests {
             .filter(|s| (s.end - s.start).length() >= effective_depth)
             .collect();
 
-        let tagged_stalls = place_stalls_on_spines(&all_spines, &params);
+        let (tagged_stalls, strip_envelopes) = place_stalls_on_spines(&all_spines, &params);
         let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces);
         let tagged_stalls = clip_stalls_to_boundary(tagged_stalls, &boundary);
         let tagged_stalls = remove_conflicting_stalls(tagged_stalls);
-        let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
 
-        let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, 10.0);
+        let all_envelopes: Vec<Vec<Vec2>> = strip_envelopes.iter().map(|(env, _)| env.clone()).collect();
+        let islands = compute_islands(&faces, &strip_envelopes, &all_envelopes, 10.0);
 
         // No island should have area close to the boundary or the hole.
         // No island should be as large as the full boundary or the hole itself.
@@ -1542,7 +1601,7 @@ mod tests {
             test_corridor_along(face_contour[2], face_contour[3]),
         ];
 
-        let params = ParkingParams::default(); // 90° stalls, 18ft depth
+        let params = ParkingParams { stall_angle_deg: 90.0, ..ParkingParams::default() };
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
@@ -1575,7 +1634,7 @@ mod tests {
         );
 
         // Place stalls and verify ALL stall corners are inside the face.
-        let stalls = place_stalls_on_spines(&spines, &params);
+        let (stalls, _) = place_stalls_on_spines(&spines, &params);
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
 
@@ -1633,7 +1692,7 @@ mod tests {
             test_corridor_along(face_contour[3], face_contour[4]),
         ];
 
-        let params = ParkingParams::default();
+        let params = ParkingParams { stall_angle_deg: 90.0, ..ParkingParams::default() };
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
@@ -1682,7 +1741,7 @@ mod tests {
         );
 
         // Place stalls and verify containment.
-        let stalls = place_stalls_on_spines(&spines, &params);
+        let (stalls, _) = place_stalls_on_spines(&spines, &params);
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
 
@@ -1734,12 +1793,12 @@ mod tests {
             test_corridor_along(face_contour[2], face_contour[3]),
         ];
 
-        let params = ParkingParams::default();
+        let params = ParkingParams { stall_angle_deg: 90.0, ..ParkingParams::default() };
         let effective_depth = params.stall_depth
             * params.stall_angle_deg.to_radians().sin();
 
         let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], &params, &DebugToggles::default());
-        let stalls = place_stalls_on_spines(&spines, &params);
+        let (stalls, _) = place_stalls_on_spines(&spines, &params);
 
         eprintln!("\n=== Narrow face test (30ft between aisles) ===");
         eprintln!("spines: {}, stalls: {}", spines.len(), stalls.len());
@@ -1782,7 +1841,7 @@ mod tests {
             test_corridor_along(face_contour[1], face_contour[2]),
         ];
 
-        let params = ParkingParams::default();
+        let params = ParkingParams { stall_angle_deg: 90.0, ..ParkingParams::default() };
         let effective_depth =
             params.stall_depth * params.stall_angle_deg.to_radians().sin();
 
@@ -1806,7 +1865,7 @@ mod tests {
         );
 
         // Place stalls and verify ALL corners are inside the face.
-        let stalls = place_stalls_on_spines(&spines, &params);
+        let (stalls, _) = place_stalls_on_spines(&spines, &params);
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
 
