@@ -123,8 +123,15 @@ export class Renderer {
       // 4. Islands (before stalls so stalls paint over island fill)
       if (state.layers.islands && state.layout.islands) {
         for (const island of state.layout.islands) {
-          const [fr, fg, fb] = Renderer.FACE_COLORS[island.face_idx % Renderer.FACE_COLORS.length];
-          const [r, g, b] = [Math.round(fr * 0.45), Math.round(fg * 0.45), Math.round(fb * 0.45)];
+          let fillR: number, fillG: number, fillB: number;
+          if (state.layers.faces) {
+            // Debug: colorize by face index
+            const [fr, fg, fb] = Renderer.FACE_COLORS[island.face_idx % Renderer.FACE_COLORS.length];
+            [fillR, fillG, fillB] = [Math.round(fr * 0.45), Math.round(fg * 0.45), Math.round(fb * 0.45)];
+          } else {
+            // Grass/landscaping green
+            [fillR, fillG, fillB] = [75, 140, 60];
+          }
           const { ctx } = this;
           ctx.beginPath();
           this.tracePath(island.contour);
@@ -133,9 +140,9 @@ export class Renderer {
               this.tracePath(hole);
             }
           }
-          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.6)`;
+          ctx.fillStyle = `rgba(${fillR}, ${fillG}, ${fillB}, 0.6)`;
           ctx.fill("evenodd");
-          ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
+          ctx.strokeStyle = `rgba(${fillR}, ${fillG}, ${fillB}, 0.9)`;
           ctx.lineWidth = 0.5;
           ctx.stroke();
         }
