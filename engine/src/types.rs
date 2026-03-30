@@ -232,6 +232,7 @@ pub struct SpineSegment {
     pub end: Vec2,
     pub outward_normal: Vec2,
     pub face_idx: usize,
+    pub is_interior: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

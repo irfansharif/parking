@@ -11,11 +11,11 @@ pub fn clip_stalls_to_boundary(
     stalls
         .into_iter()
         .filter(|(stall, _)| {
-            // Shrink toward centroid before testing so stalls whose tips are
-            // right at the boundary aren't rejected by floating-point noise.
-            // Use a small tolerance (0.1ft) to catch stalls that slightly
-            // protrude past the boundary at corners.
-            let shrunk = shrink_polygon(&stall.corners, 0.1);
+            // Shrink 30% toward centroid before testing. Rectangular stalls
+            // at non-90° angles have corners that extend past the face into
+            // the corridor and boundary areas. A proportional shrink handles
+            // all angles without rejecting stalls whose body is inside.
+            let shrunk = shrink_polygon_pct(&stall.corners, 0.3);
             // Every corner must be inside the outer boundary.
             for c in &shrunk {
                 if !point_in_polygon(c, &boundary.outer) {
@@ -32,6 +32,18 @@ pub fn clip_stalls_to_boundary(
             }
             true
         })
+        .collect()
+}
+
+/// Shrink a polygon by moving each vertex `pct` (0..1) of the way toward the centroid.
+fn shrink_polygon_pct(corners: &[Vec2], pct: f64) -> Vec<Vec2> {
+    let n = corners.len() as f64;
+    let cx = corners.iter().map(|c| c.x).sum::<f64>() / n;
+    let cy = corners.iter().map(|c| c.y).sum::<f64>() / n;
+    let centroid = Vec2::new(cx, cy);
+    corners
+        .iter()
+        .map(|c| *c + (centroid - *c) * pct)
         .collect()
 }
 

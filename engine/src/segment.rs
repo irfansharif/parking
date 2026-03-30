@@ -5,15 +5,19 @@ use crate::types::*;
 /// `side` is +1.0 or -1.0, selecting which side of the edge to place stalls.
 /// `edge_width` is the half-width of the aisle edge (distance from centerline
 /// to the near side of the stall row).
+/// `angle_override` overrides `params.stall_angle_deg` when set.
 pub fn fill_strip(
     edge_start: Vec2,
     edge_end: Vec2,
     side: f64,
     edge_width: f64,
     params: &ParkingParams,
+    angle_override: Option<f64>,
 ) -> Vec<StallQuad> {
-    let angle_rad = params.stall_angle_deg.to_radians();
+    let angle_deg = angle_override.unwrap_or(params.stall_angle_deg);
+    let angle_rad = angle_deg.to_radians();
     let sin_a = angle_rad.sin();
+    let cos_a = angle_rad.cos();
 
     if sin_a.abs() < 1e-12 {
         return Vec::new();
@@ -37,18 +41,32 @@ pub fn fill_strip(
 
     let padding = (edge_len - stall_count as f64 * stall_pitch) / 2.0;
 
-    // Stripe direction: at 90° (perpendicular stalls) the stripe points along
-    // the normal; at smaller angles it leans toward the edge direction.
-    let stripe = normal * angle_rad.sin() + edge_dir * angle_rad.cos();
+    // Depth direction: the direction a car drives into the stall.
+    // At 90° this is the normal; at smaller angles it leans toward edge_dir.
+    let depth_dir = normal * sin_a + edge_dir * cos_a;
+    // Width direction: perpendicular to depth_dir within the plane.
+    let width_dir = edge_dir * sin_a - normal * cos_a;
 
     let mut stalls = Vec::with_capacity(stall_count);
 
+    // For boundary spines (angle overridden to 90°), the stall depth is
+    // reduced to the effective_depth so 90° stalls fit exactly in the
+    // spine-to-corridor gap.
+    let stall_depth = if angle_override.is_some() {
+        params.stall_depth * params.stall_angle_deg.to_radians().sin()
+    } else {
+        params.stall_depth
+    };
+
     for i in 0..stall_count {
-        let base = edge_start + edge_dir * (padding + i as f64 * stall_pitch) + normal * edge_width;
-        let p0 = base;
-        let p1 = base + edge_dir * stall_pitch;
-        let p2 = p1 + stripe * params.stall_depth;
-        let p3 = p0 + stripe * params.stall_depth;
+        // Midpoint of the stall's back (deep) side sits on the spine.
+        let mid = edge_start
+            + edge_dir * (padding + (i as f64 + 0.5) * stall_pitch)
+            + normal * edge_width;
+        let p0 = mid - width_dir * (params.stall_width / 2.0);
+        let p1 = mid + width_dir * (params.stall_width / 2.0);
+        let p2 = p1 + depth_dir * stall_depth;
+        let p3 = p0 + depth_dir * stall_depth;
 
         stalls.push(StallQuad {
             corners: [p0, p1, p2, p3],
