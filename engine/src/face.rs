@@ -244,22 +244,21 @@ fn point_to_segment_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
 /// edge — meaning it was carved by a corridor during the boolean
 /// difference. Uses a tight floating-point epsilon since face edges
 /// are exact sub-segments of corridor edges after the boolean overlay.
-/// Classify each edge of a face contour as (aisle_facing, is_interior).
+/// Classify each edge of a face contour as (aisle_facing, is_interior, travel_dir).
 /// `per_edge_corridors` carries the un-merged corridor polygons paired with
-/// their source AisleEdge `interior` flag, used to determine whether a
-/// matching corridor is interior or perimeter.
+/// their source AisleEdge `interior` flag and travel direction.
 fn classify_face_edges(
     contour: &[Vec2],
     corridor_shapes: &[Vec<Vec<Vec2>>],
-    per_edge_corridors: &[(Vec<Vec2>, bool)],
+    per_edge_corridors: &[(Vec<Vec2>, bool, Option<Vec2>)],
     classify: bool,
-) -> Vec<(bool, bool)> {
+) -> Vec<(bool, bool, Option<Vec2>)> {
     if !classify {
-        return vec![(true, true); contour.len()];
+        return vec![(true, true, None); contour.len()];
     }
     let eps = 0.1;
     let n = contour.len();
-    let mut result = vec![(false, true); n];
+    let mut result = vec![(false, true, None); n];
     for i in 0..n {
         let j = (i + 1) % n;
         let mid = (contour[i] + contour[j]) * 0.5;
@@ -281,20 +280,23 @@ fn classify_face_edges(
             continue;
         }
 
-        // Determine interior status from the nearest un-merged corridor.
+        // Determine interior status and travel direction from the nearest
+        // un-merged corridor.
         let mut best_dist = f64::INFINITY;
         let mut best_interior = true;
-        for (poly, interior) in per_edge_corridors {
+        let mut best_travel_dir = None;
+        for (poly, interior, travel_dir) in per_edge_corridors {
             for ci in 0..poly.len() {
                 let cj = (ci + 1) % poly.len();
                 let d = point_to_segment_dist(mid, poly[ci], poly[cj]);
                 if d < best_dist {
                     best_dist = d;
                     best_interior = *interior;
+                    best_travel_dir = *travel_dir;
                 }
             }
         }
-        result[i] = (true, best_interior);
+        result[i] = (true, best_interior, best_travel_dir);
     }
     result
 }
@@ -323,14 +325,15 @@ fn normalize_face_winding(shape: &[Vec<Vec2>]) -> Vec<Vec<Vec2>> {
 /// the face interior.
 ///
 /// `per_edge_corridors` carries un-merged corridor polygons with their
-/// `interior` flag so that spines can be tagged as interior vs perimeter.
+/// `interior` flag and travel direction so that spines can be tagged
+/// as interior vs perimeter with the correct one-way direction.
 /// Perimeter aisle-facing edges get a higher skeleton weight so their
 /// spines sit at full stall_depth from the corridor (for 90° stalls).
 fn compute_face_spines(
     shape: &[Vec<Vec2>],
     effective_depth: f64,
     corridor_shapes: &[Vec<Vec<Vec2>>],
-    per_edge_corridors: &[(Vec<Vec2>, bool)],
+    per_edge_corridors: &[(Vec<Vec2>, bool, Option<Vec2>)],
     _params: &ParkingParams,
     debug: &DebugToggles,
 ) -> Vec<SpineSegment> {
@@ -354,11 +357,13 @@ fn compute_face_spines(
     // Classify edges and build flat arrays matching skeleton edge layout.
     let mut aisle_facing_flat: Vec<bool> = Vec::new();
     let mut interior_flat: Vec<bool> = Vec::new();
+    let mut travel_dir_flat: Vec<Option<Vec2>> = Vec::new();
     for contour in contours.iter() {
         let classified = classify_face_edges(contour, corridor_shapes, per_edge_corridors, debug.edge_classification);
-        for &(facing, interior) in classified.iter() {
+        for &(facing, interior, travel_dir) in classified.iter() {
             aisle_facing_flat.push(facing);
             interior_flat.push(interior);
+            travel_dir_flat.push(travel_dir);
         }
     }
 
@@ -405,6 +410,7 @@ fn compute_face_spines(
             // Outward normal = opposite of the edge's inward normal.
             let outward = Vec2::new(-sk.edge_normals[orig_edge].x, -sk.edge_normals[orig_edge].y);
             let is_interior = interior_flat.get(orig_edge).copied().unwrap_or(true);
+            let travel_dir = travel_dir_flat.get(orig_edge).copied().flatten();
 
             if !debug.spine_clipping {
                 all_spines.push(SpineSegment {
@@ -413,6 +419,7 @@ fn compute_face_spines(
                     outward_normal: outward,
                     face_idx: 0,
                     is_interior,
+                    travel_dir,
                 });
                 continue;
             }
@@ -441,6 +448,7 @@ fn compute_face_spines(
                             outward_normal: outward,
                             face_idx: 0,
                             is_interior,
+                            travel_dir,
                         });
                     }
                 }
@@ -456,7 +464,8 @@ fn compute_face_spines(
 // ---------------------------------------------------------------------------
 
 /// Build deduplicated corridor polygons (one rectangle per undirected edge).
-fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<(Vec<Vec2>, bool)> {
+/// Returns (polygon, interior, travel_dir) where travel_dir is Some for one-way edges.
+fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<(Vec<Vec2>, bool, Option<Vec2>)> {
     let mut seen = std::collections::HashSet::new();
     let mut corridors = Vec::new();
     for edge in &graph.edges {
@@ -468,7 +477,12 @@ fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<(Vec<Vec2>, bool)> {
         if !seen.insert(key) {
             continue;
         }
-        corridors.push((corridor_polygon(&graph.vertices, edge), edge.interior));
+        let travel_dir = if edge.direction == AisleDirection::OneWay {
+            Some((graph.vertices[edge.end] - graph.vertices[edge.start]).normalize())
+        } else {
+            None
+        };
+        corridors.push((corridor_polygon(&graph.vertices, edge), edge.interior, travel_dir));
     }
     corridors
 }
@@ -766,6 +780,13 @@ fn try_merge_spines(a: &SpineSegment, b: &SpineSegment, tolerance: f64) -> Optio
         return None;
     }
 
+    // Only merge spines with compatible travel directions.
+    match (&a.travel_dir, &b.travel_dir) {
+        (None, None) => {}
+        (Some(d1), Some(d2)) if d1.dot(*d2) > 0.99 => {}
+        _ => return None,
+    }
+
     let dir_a = (a.end - a.start).normalize();
     let dir_b = (b.end - b.start).normalize();
 
@@ -814,6 +835,7 @@ fn try_merge_spines(a: &SpineSegment, b: &SpineSegment, tolerance: f64) -> Optio
             outward_normal: a.outward_normal,
             face_idx: a.face_idx,
             is_interior: a.is_interior,
+            travel_dir: a.travel_dir,
         });
     }
 
@@ -875,7 +897,14 @@ fn place_stalls_on_spines(
         };
 
         let angle_override = if seg.is_interior { None } else { Some(90.0) };
-        let spine_stalls = fill_strip(start, end, 1.0, 0.0, params, angle_override);
+        let flip_angle = match &seg.travel_dir {
+            None => false,
+            Some(td) => {
+                let eff_dir = (end - start).normalize();
+                eff_dir.dot(*td) < 0.0
+            }
+        };
+        let spine_stalls = fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle);
 
         // Build tight strip envelope: hexagon following the actual stall
         // edges. The back end is the first stall's back edge, the front end
@@ -927,6 +956,14 @@ fn dedup_overlapping_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<Sp
                     continue;
                 }
                 if result[i].outward_normal.dot(result[j].outward_normal) < 0.99 {
+                    continue;
+                }
+                let travel_compat = match (&result[i].travel_dir, &result[j].travel_dir) {
+                    (None, None) => true,
+                    (Some(d1), Some(d2)) => d1.dot(*d2) > 0.99,
+                    _ => false,
+                };
+                if !travel_compat {
                     continue;
                 }
 
@@ -1102,7 +1139,7 @@ pub fn generate_from_spines(
     // Build deduplicated corridor rectangles + miter wedge fills, then
     // boolean-union them into merged shapes (preserving holes for loops).
     let dedup_corridors_with_flags = deduplicate_corridors(graph);
-    let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors_with_flags.iter().map(|(p, _)| p.clone()).collect();
+    let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors_with_flags.iter().map(|(p, _, _)| p.clone()).collect();
     let miter_fills = generate_miter_fills(graph, debug);
     let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, graph, debug);
 
@@ -1139,7 +1176,7 @@ pub fn generate_from_spines(
             // edges shrink (1.0), boundary edges stay fixed (0.0).
             let debug_weights: Vec<f64> = normalized.iter().flat_map(|contour| {
                 let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors_with_flags, debug.edge_classification);
-                classified.into_iter().map(|(facing, _)| {
+                classified.into_iter().map(|(facing, _, _)| {
                     if facing { 1.0 } else { 0.0 }
                 })
             }).collect();
@@ -1313,7 +1350,7 @@ mod tests {
             }
         }
 
-        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _)| p.clone()).collect();
+        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
 
         eprintln!("\nCorridor rects:");
         for (i, c) in dedup_corridor_polys.iter().enumerate() {
@@ -1432,7 +1469,7 @@ mod tests {
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
         let dedup_corridors = deduplicate_corridors(&graph);
-        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _)| p.clone()).collect();
+        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
         let miter_fills = generate_miter_fills(&graph, &debug);
         let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &debug);
         let faces = extract_faces(&boundary, &merged_corridors);
@@ -1500,12 +1537,14 @@ mod tests {
             end: 1,
             width: w,
             interior: false,
+            direction: AisleDirection::default(),
         };
         let edge_b = AisleEdge {
             start: 1,
             end: 2,
             width: w,
             interior: false,
+            direction: AisleDirection::default(),
         };
 
         let rect_a = corridor_polygon(&vertices, &edge_a);
@@ -1903,7 +1942,7 @@ mod tests {
         // Recompute corridor shapes for debug classification.
         let graph = auto_generate(&input.boundary, &input.params);
         let dedup_corridors = deduplicate_corridors(&graph);
-        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _)| p.clone()).collect();
+        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
         let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &DebugToggles::default());
 
         let effective_depth = input.params.stall_depth
@@ -1929,7 +1968,7 @@ mod tests {
             for i in 0..contour.len() {
                 let j = (i + 1) % contour.len();
                 let edge_len = (contour[j] - contour[i]).length();
-                let (af, _) = classified[i];
+                let (af, _, _) = classified[i];
                 let dist = if af && edge_len >= min_edge_len { ed } else { 0.0 };
                 eprintln!(
                     "    edge {}->{}: len={:.1} aisle_facing={} dist={:.1}{}",
@@ -1946,7 +1985,7 @@ mod tests {
                 for i in 0..hole.len() {
                     let j = (i + 1) % hole.len();
                     let elen = (hole[j] - hole[i]).length();
-                    let (af, _) = hole_classified[i];
+                    let (af, _, _) = hole_classified[i];
                     eprintln!("      edge {}->{}: len={:.1} af={} ({:.1},{:.1})->({:.1},{:.1})",
                         i, j, elen, af, hole[i].x, hole[i].y, hole[j].x, hole[j].y);
                 }
@@ -1994,7 +2033,7 @@ mod tests {
         // Recompute corridor shapes for debug classification.
         let graph = auto_generate(&input.boundary, &input.params);
         let dedup_corridors = deduplicate_corridors(&graph);
-        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _)| p.clone()).collect();
+        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
         let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &DebugToggles::default());
 
         let effective_depth = input.params.stall_depth
@@ -2016,7 +2055,7 @@ mod tests {
             for i in 0..contour.len() {
                 let j = (i + 1) % contour.len();
                 let edge_len = (contour[j] - contour[i]).length();
-                let (af, _) = classified[i];
+                let (af, _, _) = classified[i];
                 let dist = if af && edge_len >= min_edge_len { ed } else { 0.0 };
                 eprintln!(
                     "    edge {}->{}: len={:.1} aisle_facing={} dist={:.1}{}",
@@ -2076,6 +2115,7 @@ mod tests {
                 DriveLine {
                     start: Vec2::new(-50.0, 250.0),
                     end: Vec2::new(800.0, 250.0),
+                    direction: AisleDirection::default(),
                 },
             ],
             params: ParkingParams::default(),
