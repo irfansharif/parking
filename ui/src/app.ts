@@ -244,6 +244,7 @@ export class App {
       this.state.aisleGraph = null;
     } else if (ref.type === "drive-line" && ref.endpoint) {
       this.state.driveLines[ref.index][ref.endpoint] = pos;
+      this.state.aisleGraph = null;
     } else if (ref.type === "aisle") {
       // Capture the anchor (pinned endpoint) on the first drag move.
       if (!this.state.dragAnchor) {
