@@ -1013,17 +1013,9 @@ fn compute_islands(
                 // 2. Subtract stalls from each strip → simple gap islands
                 let outer_path = sc[0].clone();
 
-                // Stage 1: structural cuts.
-                // Use merged corridor outers + face holes + small squares at
-                // each boundary/hole vertex. The squares sever the perimeter
-                // strip at corners where no corridor cuts through.
+                // Stage 1: structural cuts using the face's own holes
+                // + thin midpoint cuts on all boundary/hole edges.
                 let mut structural_clip: Vec<Vec<[f64; 2]>> = Vec::new();
-                for shape in merged_corridors {
-                    if shape.is_empty() { continue; }
-                    let mut p = to_path(&shape[0]);
-                    if signed_area_f64(&p) < 0.0 { p.reverse(); }
-                    structural_clip.push(p);
-                }
                 // Thin perpendicular cuts at boundary/hole edge midpoints.
                 // These sever the ring into per-side segments while keeping
                 // corners intact. Each cut is a 1ft-wide × 200ft-long rect
