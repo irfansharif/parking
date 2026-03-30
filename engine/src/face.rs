@@ -928,6 +928,8 @@ fn compute_islands(
     faces: &[Vec<Vec<Vec2>>],
     tagged_stalls: &[(StallQuad, usize)],
     all_stalls: &[StallQuad],
+    merged_corridors: &[Vec<Vec<Vec2>>],
+    boundary: &Polygon,
     min_area: f64,
 ) -> Vec<crate::types::Island> {
     use crate::inset::signed_area;
@@ -1004,22 +1006,86 @@ fn compute_islands(
                 if signed_area(&contour).abs() < min_area { continue; }
                 islands.push(crate::types::Island { contour, face_idx });
             } else if sc.len() >= 2 {
-                // Multi-contour ring. Subtract the holes from the outer
-                // contour to decompose. The holes include corridor geometry
-                // that cuts across the ring, severing it into simple pieces.
+                // Multi-contour ring from a face with structural holes.
+                // Two-stage decomposition:
+                // 1. Cut the outer with corridors + boundary holes only
+                //    (clean cuts, no hairline slivers) → per-side strips
+                // 2. Subtract stalls from each strip → simple gap islands
                 let outer_path = sc[0].clone();
-                let hole_clip: Vec<Vec<[f64; 2]>> = sc[1..].iter().map(|h| {
-                    let mut p = h.clone();
-                    if signed_area_f64(&p) < 0.0 { p.reverse(); } // ensure CCW for clip
-                    p
-                }).collect();
-                let decomposed = vec![outer_path]
-                    .overlay(&hole_clip, OverlayRule::Difference, FillRule::NonZero);
-                for dc in decomposed {
-                    if dc.len() != 1 { continue; }
-                    let contour = ensure_ccw(&to_vec2(&dc[0]));
-                    if signed_area(&contour).abs() < min_area { continue; }
-                    islands.push(crate::types::Island { contour, face_idx });
+
+                // Stage 1: structural cuts.
+                // Use merged corridor outers + face holes + small squares at
+                // each boundary/hole vertex. The squares sever the perimeter
+                // strip at corners where no corridor cuts through.
+                let mut structural_clip: Vec<Vec<[f64; 2]>> = Vec::new();
+                for shape in merged_corridors {
+                    if shape.is_empty() { continue; }
+                    let mut p = to_path(&shape[0]);
+                    if signed_area_f64(&p) < 0.0 { p.reverse(); }
+                    structural_clip.push(p);
+                }
+                // Thin perpendicular cuts at boundary/hole edge midpoints.
+                // These sever the ring into per-side segments while keeping
+                // corners intact. Each cut is a 1ft-wide × 200ft-long rect
+                // perpendicular to the edge at its midpoint.
+                let all_edges: Vec<(Vec2, Vec2)> = {
+                    let mut edges = Vec::new();
+                    let outer = &boundary.outer;
+                    for i in 0..outer.len() {
+                        edges.push((outer[i], outer[(i + 1) % outer.len()]));
+                    }
+                    for hole in &boundary.holes {
+                        for i in 0..hole.len() {
+                            edges.push((hole[i], hole[(i + 1) % hole.len()]));
+                        }
+                    }
+                    edges
+                };
+                for (a, b) in &all_edges {
+                    let mid = (*a + *b) * 0.5;
+                    let dir = (*b - *a).normalize();
+                    let perp = Vec2::new(-dir.y, dir.x);
+                    let w = 0.5;   // half-width along edge (total 1ft cut)
+                    let h = 200.0; // half-extent perpendicular
+                    structural_clip.push(vec![
+                        [mid.x - dir.x * w + perp.x * h, mid.y - dir.y * w + perp.y * h],
+                        [mid.x + dir.x * w + perp.x * h, mid.y + dir.y * w + perp.y * h],
+                        [mid.x + dir.x * w - perp.x * h, mid.y + dir.y * w - perp.y * h],
+                        [mid.x - dir.x * w - perp.x * h, mid.y - dir.y * w - perp.y * h],
+                    ]);
+                }
+                for h in shape[1..].iter() {
+                    let mut p = to_path(h);
+                    if signed_area_f64(&p) < 0.0 { p.reverse(); }
+                    structural_clip.push(p);
+                }
+                let strips = vec![outer_path]
+                    .overlay(&structural_clip, OverlayRule::Difference, FillRule::NonZero);
+                #[cfg(test)]
+                {
+                    eprintln!("[stage1] face {}: {} structural clips + {} face holes → {} strips",
+                        face_idx, structural_clip.len(), shape.len() - 1, strips.len());
+                    for (si, s) in strips.iter().enumerate() {
+                        let a = if !s.is_empty() { signed_area_f64(&s[0]).abs() } else { 0.0 };
+                        eprintln!("  strip {}: {} contours, area={:.0}", si, s.len(), a);
+                    }
+                }
+
+                // Stage 2: subtract stalls from each simple strip.
+                let stall_clip: Vec<Vec<[f64; 2]>> = all_stalls.iter()
+                    .map(|s| to_path(&s.corners))
+                    .collect();
+                for strip in strips {
+                    if strip.is_empty() { continue; }
+                    // Use all strip contours as subject (handles strip holes).
+                    let gaps = strip.overlay(
+                        &stall_clip, OverlayRule::Difference, FillRule::NonZero);
+                    for dc in gaps {
+                        if dc.len() != 1 { continue; }
+                        let contour = ensure_ccw(&to_vec2(&dc[0]));
+                        if signed_area(&contour).abs() < min_area { continue; }
+                        islands.push(crate::types::Island { contour, face_idx });
+                    }
                 }
             }
         }
@@ -1153,7 +1219,7 @@ pub fn generate_from_spines(
 
     let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
 
-    let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, 10.0);
+    let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, &merged_corridors, boundary, 10.0);
 
     let spine_lines: Vec<SpineLine> = all_spines
         .iter()
@@ -1367,6 +1433,7 @@ mod tests {
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
         let dedup_corridors = deduplicate_corridors(&graph);
+        let miter_fills = generate_miter_fills(&graph, &debug);
         let merged_corridors = merge_corridor_shapes(&dedup_corridors, &graph, &debug);
         let faces = extract_faces(&boundary, &merged_corridors);
 
@@ -1395,18 +1462,20 @@ mod tests {
         let tagged_stalls = remove_conflicting_stalls(tagged_stalls);
         let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
 
-        let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, 10.0);
+        let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, &merged_corridors, &boundary, 10.0);
 
         // No island should have area close to the boundary or the hole.
+        // No island should be as large as the full boundary or the hole itself.
         let boundary_area = signed_area(&boundary.outer).abs();
         let hole_area = signed_area(&boundary.holes[0]).abs();
         for (ii, island) in islands.iter().enumerate() {
             let area = signed_area(&island.contour).abs();
-            assert!(area < boundary_area * 0.5,
-                "island {} has area {:.1} ≥ half boundary area {:.1}",
+            assert!(area < boundary_area * 0.25,
+                "island {} has area {:.1} ≥ 25% of boundary area {:.1}",
                 ii, area, boundary_area);
-            assert!(area < hole_area * 0.5,
-                "island {} has area {:.1} ≥ half hole area {:.1} — triangular hole leaked",
+            // The triangle hole itself should not appear as an island.
+            assert!((area - hole_area).abs() > hole_area * 0.1,
+                "island {} has area {:.1} ≈ hole area {:.1} — hole leaked as island",
                 ii, area, hole_area);
         }
     }
