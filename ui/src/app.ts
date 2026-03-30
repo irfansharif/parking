@@ -23,6 +23,10 @@ export interface VertexRef {
   endpoint?: "start" | "end";
 }
 
+export interface EdgeRef {
+  index: number; // index into the graph's edges array
+}
+
 export type EditMode =
   | "select"
   | "add-aisle-vertex"
@@ -34,6 +38,7 @@ export interface LayerVisibility {
   stalls: boolean;
   aisles: boolean;
   vertices: boolean;
+  driveLines: boolean;
   spines: boolean;
   faces: boolean;
   faceColors: boolean;
@@ -50,6 +55,7 @@ export interface AppState {
   layout: ParkingLayout | null;
   selectedVertex: VertexRef | null;
   hoveredVertex: VertexRef | null;
+  selectedEdge: EdgeRef | null;
   isDragging: boolean;
   dragAnchor: Vec2 | null;
   camera: Camera;
@@ -118,6 +124,7 @@ export class App {
       layout: null,
       selectedVertex: null,
       hoveredVertex: null,
+      selectedEdge: null,
       isDragging: false,
       dragAnchor: null,
       camera: { offsetX: 30, offsetY: 60, zoom: 1.3 },
@@ -134,6 +141,7 @@ export class App {
         stalls: true,
         aisles: false,
         vertices: true,
+        driveLines: true,
         spines: true,
         faces: true,
         faceColors: false,
@@ -195,6 +203,18 @@ export class App {
 
   getAllVertices(): { ref: VertexRef; pos: Vec2 }[] {
     const result: { ref: VertexRef; pos: Vec2 }[] = [];
+    // Drive-line vertices first so they win hit-tests over overlapping
+    // resolved-graph aisle vertices at the same position.
+    this.state.driveLines.forEach((dl, i) => {
+      result.push({
+        ref: { type: "drive-line", index: i, endpoint: "start" },
+        pos: dl.start,
+      });
+      result.push({
+        ref: { type: "drive-line", index: i, endpoint: "end" },
+        pos: dl.end,
+      });
+    });
     this.state.boundary.outer.forEach((v, i) => {
       result.push({ ref: { type: "boundary-outer", index: i }, pos: v });
     });
@@ -212,16 +232,6 @@ export class App {
         result.push({ ref: { type: "aisle", index: i }, pos: v });
       });
     }
-    this.state.driveLines.forEach((dl, i) => {
-      result.push({
-        ref: { type: "drive-line", index: i, endpoint: "start" },
-        pos: dl.start,
-      });
-      result.push({
-        ref: { type: "drive-line", index: i, endpoint: "end" },
-        pos: dl.end,
-      });
-    });
     return result;
   }
 
@@ -389,6 +399,76 @@ export class App {
   deleteDriveLine(index: number): void {
     this.state.driveLines.splice(index, 1);
     this.state.selectedVertex = null;
+    this.generate();
+  }
+
+  cycleEdgeDirection(edgeIndex: number): void {
+    this.materializeAisleGraph();
+    const g = this.state.aisleGraph;
+    if (!g) return;
+
+    // Find the edge and its reverse (edges are stored bidirectionally).
+    const edge = g.edges[edgeIndex];
+    if (!edge) return;
+    const reverseIdx = g.edges.findIndex(
+      (e, i) => i !== edgeIndex && e.start === edge.end && e.end === edge.start
+    );
+
+    const dir = edge.direction ?? "TwoWay";
+    if (dir === "TwoWay") {
+      // TwoWay → OneWay (forward = start→end direction)
+      edge.direction = "OneWay";
+      if (reverseIdx >= 0) g.edges[reverseIdx].direction = "OneWay";
+    } else {
+      // OneWay → flip direction by swapping start/end on the forward edge.
+      // Since we have bidirectional pairs, "flipping" means the forward edge
+      // was (A→B, OneWay), reverse was (B→A, OneWay). The canonical travel
+      // direction is taken from whichever edge is first seen in dedup.
+      // Simplest: swap start/end on this edge, swap on reverse too, keeping
+      // OneWay. But if we already flipped once, go back to TwoWay.
+      if (edge._flipped) {
+        edge.direction = "TwoWay";
+        delete edge._flipped;
+        if (reverseIdx >= 0) {
+          g.edges[reverseIdx].direction = "TwoWay";
+          delete g.edges[reverseIdx]._flipped;
+        }
+      } else {
+        // Swap start/end to reverse the one-way direction.
+        const tmp = edge.start;
+        edge.start = edge.end;
+        edge.end = tmp;
+        edge._flipped = true;
+        if (reverseIdx >= 0) {
+          const tmp2 = g.edges[reverseIdx].start;
+          g.edges[reverseIdx].start = g.edges[reverseIdx].end;
+          g.edges[reverseIdx].end = tmp2;
+          g.edges[reverseIdx]._flipped = true;
+        }
+      }
+    }
+    this.generate();
+  }
+
+  /// Cycle drive line direction: TwoWay → OneWay → OneWay(reversed) → TwoWay.
+  /// "Reversed" swaps start/end so the arrow flips.
+  cycleDriveLineDirection(index: number): void {
+    const dl = this.state.driveLines[index];
+    if (!dl) return;
+    if (!dl.direction || dl.direction === "TwoWay") {
+      // TwoWay → OneWay (start→end direction)
+      dl.direction = "OneWay";
+    } else if (!dl._reversed) {
+      // OneWay → swap endpoints (reverse the one-way direction)
+      const tmp = dl.start;
+      dl.start = dl.end;
+      dl.end = tmp;
+      dl._reversed = true;
+    } else {
+      // OneWay(reversed) → TwoWay
+      dl.direction = "TwoWay";
+      delete dl._reversed;
+    }
     this.generate();
   }
 }

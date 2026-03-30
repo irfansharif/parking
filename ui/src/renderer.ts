@@ -406,24 +406,61 @@ export class Renderer {
 
     // Draw aisle graph edges (dashed lines)
     if (graph) {
-      ctx.setLineDash([2, 2]);
-      ctx.strokeStyle = isManualGraph
-        ? "rgba(100, 150, 255, 0.5)"
-        : "rgba(100, 150, 255, 0.3)";
-      ctx.lineWidth = 0.5;
-      for (const edge of graph.edges) {
+      const seen = new Set<string>();
+      for (let ei = 0; ei < graph.edges.length; ei++) {
+        const edge = graph.edges[ei];
+        const key = Math.min(edge.start, edge.end) + "," + Math.max(edge.start, edge.end);
+        if (seen.has(key)) continue;
+        seen.add(key);
+
         const start = graph.vertices[edge.start];
         const end = graph.vertices[edge.end];
+        const isSelected = state.selectedEdge?.index === ei;
+        const isOneWay = edge.direction === "OneWay";
+
+        // Edge line
+        ctx.setLineDash(isOneWay ? [] : [2, 2]);
+        ctx.strokeStyle = isSelected
+          ? "rgba(255, 220, 50, 0.9)"
+          : isOneWay
+            ? "rgba(255, 180, 50, 0.7)"
+            : isManualGraph
+              ? "rgba(100, 150, 255, 0.5)"
+              : "rgba(100, 150, 255, 0.3)";
+        ctx.lineWidth = isSelected ? 1.5 : isOneWay ? 1.0 : 0.5;
         ctx.beginPath();
         ctx.moveTo(start.x, start.y);
         ctx.lineTo(end.x, end.y);
         ctx.stroke();
+
+        // Draw arrows on one-way edges
+        if (isOneWay) {
+          const dx = end.x - start.x;
+          const dy = end.y - start.y;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len > 1) {
+            const nx = dx / len;
+            const ny = dy / len;
+            const arrowSize = 5;
+            for (const t of [0.33, 0.66]) {
+              const ax = start.x + dx * t;
+              const ay = start.y + dy * t;
+              ctx.beginPath();
+              ctx.moveTo(ax + nx * arrowSize, ay + ny * arrowSize);
+              ctx.lineTo(ax - nx * arrowSize * 0.5 + ny * arrowSize * 0.5, ay - ny * arrowSize * 0.5 - nx * arrowSize * 0.5);
+              ctx.lineTo(ax - nx * arrowSize * 0.5 - ny * arrowSize * 0.5, ay - ny * arrowSize * 0.5 + nx * arrowSize * 0.5);
+              ctx.closePath();
+              ctx.fillStyle = isSelected ? "rgba(255, 220, 50, 0.9)" : "rgba(255, 180, 50, 0.8)";
+              ctx.fill();
+            }
+          }
+        }
       }
       ctx.setLineDash([]);
     }
 
     // Draw drive line edges (solid green + faint infinite extent)
-    for (const dl of state.driveLines) {
+    for (const dl of state.layers.driveLines ? state.driveLines : []) {
       const dir = { x: dl.end.x - dl.start.x, y: dl.end.y - dl.start.y };
       const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y);
       if (len > 1e-9) {
@@ -444,9 +481,28 @@ export class Renderer {
       ctx.beginPath();
       ctx.moveTo(dl.start.x, dl.start.y);
       ctx.lineTo(dl.end.x, dl.end.y);
-      ctx.strokeStyle = "rgba(50, 200, 100, 0.8)";
+      ctx.strokeStyle = dl.direction === "OneWay" ? "rgba(255, 180, 50, 0.9)" : "rgba(50, 200, 100, 0.8)";
       ctx.lineWidth = 1.0;
       ctx.stroke();
+
+      // Draw arrows for one-way drive lines
+      if (dl.direction === "OneWay" && len > 1e-9) {
+        const nx = dir.x / len;
+        const ny = dir.y / len;
+        const arrowSize = 6;
+        // Draw arrows at 25%, 50%, 75% along the line
+        for (const t of [0.25, 0.5, 0.75]) {
+          const ax = dl.start.x + dir.x * t;
+          const ay = dl.start.y + dir.y * t;
+          ctx.beginPath();
+          ctx.moveTo(ax + nx * arrowSize, ay + ny * arrowSize);
+          ctx.lineTo(ax - nx * arrowSize * 0.5 + ny * arrowSize * 0.5, ay - ny * arrowSize * 0.5 - nx * arrowSize * 0.5);
+          ctx.lineTo(ax - nx * arrowSize * 0.5 - ny * arrowSize * 0.5, ay - ny * arrowSize * 0.5 + nx * arrowSize * 0.5);
+          ctx.closePath();
+          ctx.fillStyle = "rgba(255, 180, 50, 0.9)";
+          ctx.fill();
+        }
+      }
     }
 
     const aisleVerts = (graph?.vertices ?? []).map((v, i) => ({
@@ -457,16 +513,16 @@ export class Renderer {
         : "rgba(100, 150, 255, 0.5)",
     }));
 
-    const driveLineVerts = state.driveLines.flatMap((dl, i) => [
+    const driveLineVerts = (state.layers.driveLines ? state.driveLines : []).flatMap((dl, i) => [
       {
         pos: dl.start,
         ref: { type: "drive-line" as const, index: i, endpoint: "start" as const },
-        color: "rgba(50, 200, 100, 0.9)",
+        color: "#00ff88",
       },
       {
         pos: dl.end,
         ref: { type: "drive-line" as const, index: i, endpoint: "end" as const },
-        color: "rgba(50, 200, 100, 0.9)",
+        color: "#00ff88",
       },
     ]);
 
@@ -492,12 +548,14 @@ export class Renderer {
     for (const vert of allVerts) {
       const isSelected = this.vertexRefsEqual(vert.ref, state.selectedVertex);
       const isHovered = this.vertexRefsEqual(vert.ref, state.hoveredVertex);
+      const isDriveLine = vert.ref.type === "drive-line";
+      const baseRadius = isDriveLine ? radius * 1.5 : radius;
 
       ctx.beginPath();
       ctx.arc(
         vert.pos.x,
         vert.pos.y,
-        isSelected || isHovered ? radius * 1.5 : radius,
+        isSelected || isHovered ? baseRadius * 1.5 : baseRadius,
         0,
         Math.PI * 2,
       );

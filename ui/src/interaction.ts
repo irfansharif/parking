@@ -1,4 +1,4 @@
-import { App, VertexRef } from "./app";
+import { App, VertexRef, EdgeRef } from "./app";
 import { Renderer } from "./renderer";
 import { Vec2 } from "./types";
 import { computeSnap, emptySnapState } from "./snap";
@@ -9,6 +9,7 @@ export function setupInteraction(
   renderer: Renderer,
 ): void {
   const HIT_RADIUS = 8; // screen pixels
+  const EDGE_HIT_RADIUS = 6; // screen pixels for edge hit testing
   let isPanning = false;
   let panStart: Vec2 = { x: 0, y: 0 };
 
@@ -98,12 +99,20 @@ export function setupInteraction(
 
     if (closest) {
       app.state.selectedVertex = closest.ref;
+      app.state.selectedEdge = null;
       app.state.isDragging = true;
     } else {
       app.state.selectedVertex = null;
-      // No vertex hit — start canvas pan.
-      isPanning = true;
-      panStart = { x: sx, y: sy };
+      // No vertex hit — try edge hit test.
+      const edgeHit = hitTestEdge(worldPos, app, EDGE_HIT_RADIUS / app.state.camera.zoom);
+      if (edgeHit) {
+        app.state.selectedEdge = edgeHit;
+      } else {
+        app.state.selectedEdge = null;
+        // No vertex or edge hit — start canvas pan.
+        isPanning = true;
+        panStart = { x: sx, y: sy };
+      }
     }
     renderer.render(app.state);
   });
@@ -291,12 +300,25 @@ export function setupInteraction(
       }
       app.state.editMode = "select";
       app.state.selectedVertex = null;
+      app.state.selectedEdge = null;
       app.state.pendingHole = [];
       app.state.pendingDriveLine = null;
       app.state.pendingDriveLinePreview = null;
       canvas.style.cursor = "default";
       updateModeHint(app);
       renderer.render(app.state);
+    } else if (e.key === "f" || e.key === "F") {
+      // Cycle direction on selected edge or drive line.
+      if (app.state.selectedEdge) {
+        app.cycleEdgeDirection(app.state.selectedEdge.index);
+        renderer.render(app.state);
+      } else {
+        const sel = app.state.selectedVertex;
+        if (sel?.type === "drive-line") {
+          app.cycleDriveLineDirection(sel.index);
+          renderer.render(app.state);
+        }
+      }
     } else if (e.key === "Delete" || e.key === "Backspace") {
       const sel = app.state.selectedVertex;
       if (!sel) return;
@@ -348,11 +370,37 @@ function pointToSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
   return Math.sqrt((p.x - projX) ** 2 + (p.y - projY) ** 2);
 }
 
+/// Hit-test against aisle graph edges in world space.
+function hitTestEdge(worldPos: Vec2, app: App, worldRadius: number): EdgeRef | null {
+  const graph = app.getEffectiveAisleGraph();
+  if (!graph) return null;
+
+  // Deduplicate bidirectional edges so clicking picks a canonical one.
+  const seen = new Set<string>();
+  let best: { index: number; dist: number } | null = null;
+
+  for (let i = 0; i < graph.edges.length; i++) {
+    const edge = graph.edges[i];
+    const key = Math.min(edge.start, edge.end) + "," + Math.max(edge.start, edge.end);
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const a = graph.vertices[edge.start];
+    const b = graph.vertices[edge.end];
+    const dist = pointToSegmentDist(worldPos, a, b);
+    if (dist < worldRadius && (!best || dist < best.dist)) {
+      best = { index: i, dist };
+    }
+  }
+
+  return best ? { index: best.index } : null;
+}
+
 export function updateModeHint(app: App): void {
   const hint = document.getElementById("mode-hint");
   if (!hint) return;
   const hints: Record<string, string> = {
-    select: "Click to select/drag vertices. Double-click edge to insert vertex. Delete key removes selected vertex. Right-drag to pan.",
+    select: "Click to select/drag vertices or aisle edges. F cycles edge direction. Delete removes vertex. Right-drag to pan.",
     "add-aisle-vertex": "Click to place aisle vertices. Press Esc to return to select mode.",
     "add-aisle-edge": "Click two aisle vertices to connect them. Press Esc to cancel.",
     "add-hole": "Click to place hole vertices. Press Esc to finish the hole (needs 3+ vertices).",

@@ -129,6 +129,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     { key: "stalls", label: "Stalls" },
     { key: "aisles", label: "Drive Aisles" },
     { key: "vertices", label: "Vertices" },
+    { key: "driveLines", label: "Drive Lines" },
     { key: "spines", label: "Spines" },
     { key: "faces", label: "Faces" },
     { key: "faceColors", label: "Face Colors" },

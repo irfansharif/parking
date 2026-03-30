@@ -205,6 +205,18 @@ impl Default for ParkingParams {
 // Drive-aisle graph (defined here to avoid circular deps)
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum AisleDirection {
+    TwoWay,
+    OneWay,
+}
+
+impl Default for AisleDirection {
+    fn default() -> Self {
+        AisleDirection::TwoWay
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AisleEdge {
     pub start: usize,
@@ -212,6 +224,8 @@ pub struct AisleEdge {
     pub width: f64,
     #[serde(default)]
     pub interior: bool,
+    #[serde(default)]
+    pub direction: AisleDirection,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -233,6 +247,8 @@ pub struct SpineSegment {
     pub outward_normal: Vec2,
     pub face_idx: usize,
     pub is_interior: bool,
+    /// Travel direction of the adjacent aisle. `None` for two-way or perimeter edges.
+    pub travel_dir: Option<Vec2>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -318,6 +334,8 @@ impl Default for DebugToggles {
 pub struct DriveLine {
     pub start: Vec2,
     pub end: Vec2,
+    #[serde(default)]
+    pub direction: AisleDirection,
 }
 
 // ---------------------------------------------------------------------------

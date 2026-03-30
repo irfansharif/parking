@@ -41,10 +41,14 @@ export interface ParkingLayout {
   islands: Island[];
 }
 
+export type AisleDirection = "TwoWay" | "OneWay";
+
 export interface AisleEdge {
   start: number;
   end: number;
   width: number;
+  direction?: AisleDirection;
+  _flipped?: boolean; // UI-only: tracks cycle state for direction toggling
 }
 
 export interface DriveAisleGraph {
@@ -93,6 +97,8 @@ export interface DebugToggles {
 export interface DriveLine {
   start: Vec2;
   end: Vec2;
+  direction?: AisleDirection;
+  _reversed?: boolean; // UI-only: tracks cycle state for direction toggling
 }
 
 export interface GenerateInput {

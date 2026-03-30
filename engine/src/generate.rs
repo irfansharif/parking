@@ -51,9 +51,11 @@ fn clip_drive_lines(
         return DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 };
     }
 
-    let hw = params.aisle_width / 2.0;
     let stall_angle_rad = params.stall_angle_deg.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin();
+    // Use the widest possible aisle width for the inset computation so that
+    // the clipping perimeter works for both one-way and two-way drive lines.
+    let hw = params.aisle_width / 2.0;
     let inset_d = effective_depth + hw;
 
     // Compute the same inset perimeter and expanded holes as auto_generate.
@@ -134,13 +136,14 @@ fn clip_drive_lines(
             .collect();
 
         // Create edges for surviving intervals.
+        let edge_hw = hw;
         for &(ta, tb) in &intervals {
             let pa = origin + dir_norm * ta;
             let pb = origin + dir_norm * tb;
             let via = find_or_add_vertex(&mut vertices, pa, 1.0);
             let vib = find_or_add_vertex(&mut vertices, pb, 1.0);
-            edges.push(AisleEdge { start: via, end: vib, width: hw, interior: true });
-            edges.push(AisleEdge { start: vib, end: via, width: hw, interior: true });
+            edges.push(AisleEdge { start: via, end: vib, width: edge_hw, interior: true, direction: dl.direction.clone() });
+            edges.push(AisleEdge { start: vib, end: via, width: edge_hw, interior: true, direction: dl.direction.clone() });
         }
     }
 
@@ -243,17 +246,19 @@ fn append_graph(a: DriveAisleGraph, b: DriveAisleGraph) -> DriveAisleGraph {
             let e = edges[ei].end;
             let w = edges[ei].width;
             let interior = edges[ei].interior;
+            let direction = edges[ei].direction.clone();
 
             // Replace the forward edge with s->new_vi, add new_vi->e.
-            edges[ei] = AisleEdge { start: s, end: new_vi, width: w, interior };
-            edges.push(AisleEdge { start: new_vi, end: e, width: w, interior });
+            edges[ei] = AisleEdge { start: s, end: new_vi, width: w, interior, direction: direction.clone() };
+            edges.push(AisleEdge { start: new_vi, end: e, width: w, interior, direction: direction.clone() });
 
             // Find and split the reverse edge (e->s).
             for ri in 0..edges.len() {
                 if ri == ei { continue; }
                 if edges[ri].start == e && edges[ri].end == s {
-                    edges[ri] = AisleEdge { start: e, end: new_vi, width: w, interior };
-                    edges.push(AisleEdge { start: new_vi, end: s, width: w, interior });
+                    let rd = edges[ri].direction.clone();
+                    edges[ri] = AisleEdge { start: e, end: new_vi, width: w, interior, direction: rd.clone() };
+                    edges.push(AisleEdge { start: new_vi, end: s, width: w, interior, direction: rd });
                     break;
                 }
             }
@@ -268,6 +273,7 @@ fn append_graph(a: DriveAisleGraph, b: DriveAisleGraph) -> DriveAisleGraph {
             end: b_to_merged[e.end],
             width: e.width,
             interior: e.interior,
+            direction: e.direction.clone(),
         });
     }
 
