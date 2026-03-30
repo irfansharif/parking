@@ -11,10 +11,7 @@ use crate::types::*;
 pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGraph {
     let hw = params.aisle_width / 2.0;
     let stall_angle_rad = params.stall_angle_deg.to_radians();
-    // Effective depth includes the stall corner protrusion so the face
-    // is wide enough to contain the full rectangular stall hypotenuse.
-    let effective_depth = params.stall_depth * stall_angle_rad.sin()
-        + stall_angle_rad.cos() * params.stall_width / 2.0;
+    let effective_depth = params.stall_depth * stall_angle_rad.sin();
     let inset_d = effective_depth + hw;
     let row_spacing = 2.0 * effective_depth + params.aisle_width;
 
@@ -165,12 +162,12 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
 
         let mut prev = vi_start;
         for &(_, split_vi) in &perim_splits[i] {
-            edges.push(AisleEdge { start: prev, end: split_vi, width: hw, interior: false });
-            edges.push(AisleEdge { start: split_vi, end: prev, width: hw, interior: false });
+            edges.push(AisleEdge { start: prev, end: split_vi, width: hw, interior: false, direction: AisleDirection::TwoWay });
+            edges.push(AisleEdge { start: split_vi, end: prev, width: hw, interior: false, direction: AisleDirection::TwoWay });
             prev = split_vi;
         }
-        edges.push(AisleEdge { start: prev, end: vi_end, width: hw, interior: false });
-        edges.push(AisleEdge { start: vi_end, end: prev, width: hw, interior: false });
+        edges.push(AisleEdge { start: prev, end: vi_end, width: hw, interior: false, direction: AisleDirection::TwoWay });
+        edges.push(AisleEdge { start: vi_end, end: prev, width: hw, interior: false, direction: AisleDirection::TwoWay });
     }
 
     // 5. Build hole loop edges.
@@ -179,15 +176,15 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
         let hn = hl.len();
         for i in 0..hn {
             let j = (i + 1) % hn;
-            edges.push(AisleEdge { start: base + i, end: base + j, width: hw, interior: false });
-            edges.push(AisleEdge { start: base + j, end: base + i, width: hw, interior: false });
+            edges.push(AisleEdge { start: base + i, end: base + j, width: hw, interior: false, direction: AisleDirection::TwoWay });
+            edges.push(AisleEdge { start: base + j, end: base + i, width: hw, interior: false, direction: AisleDirection::TwoWay });
         }
     }
 
     // 6. Build interior aisle edges.
     for &(via, vib) in &interior_pairs {
-        edges.push(AisleEdge { start: via, end: vib, width: hw, interior: true });
-        edges.push(AisleEdge { start: vib, end: via, width: hw, interior: true });
+        edges.push(AisleEdge { start: via, end: vib, width: hw, interior: true, direction: AisleDirection::TwoWay });
+        edges.push(AisleEdge { start: vib, end: via, width: hw, interior: true, direction: AisleDirection::TwoWay });
     }
 
     // 7. Connect interior aisle endpoints near holes to nearest hole vertex.
@@ -215,8 +212,8 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
                 }
             }
             if best_dist < row_spacing {
-                edges.push(AisleEdge { start: vi, end: best_vi, width: hw, interior: true });
-                edges.push(AisleEdge { start: best_vi, end: vi, width: hw, interior: true });
+                edges.push(AisleEdge { start: vi, end: best_vi, width: hw, interior: true, direction: AisleDirection::TwoWay });
+                edges.push(AisleEdge { start: best_vi, end: vi, width: hw, interior: true, direction: AisleDirection::TwoWay });
             }
         }
     }
@@ -290,6 +287,7 @@ pub fn merge_with_auto(
                 end: t,
                 width: e.width,
                 interior: e.interior,
+                direction: e.direction.clone(),
             });
         }
     }
