@@ -870,13 +870,15 @@ fn clip_stalls_to_faces(
 }
 
 
-/// Place stalls on a set of spine segments. Returns stalls tagged with their
-/// source spine's face_idx so island computation can group stalls by face.
+/// Place stalls on a set of spine segments. Returns stalls tagged with
+/// face_idx, plus strip envelopes (hexagon around each spine's stalls)
+/// for island computation on simple faces.
 fn place_stalls_on_spines(
     spines: &[SpineSegment],
     params: &ParkingParams,
-) -> Vec<(StallQuad, usize)> {
+) -> (Vec<(StallQuad, usize)>, Vec<(Vec<Vec2>, usize)>) {
     let mut stalls = Vec::new();
+    let mut strip_envelopes = Vec::new();
     for seg in spines {
         let edge_dir = (seg.end - seg.start).normalize();
         let left_normal = Vec2::new(-edge_dir.y, edge_dir.x);
@@ -898,11 +900,31 @@ fn place_stalls_on_spines(
                 eff_dir.dot(*td) < 0.0
             }
         };
-        for quad in fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle) {
+        let spine_stalls = fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle);
+
+        // Build tight strip envelope: hexagon following the actual stall
+        // edges (first stall's back edge → right side along spine → last
+        // stall's front edge → left side along spine). Covers inter-stall
+        // gaps without extending past strip ends.
+        if !spine_stalls.is_empty() {
+            let first = &spine_stalls[0];
+            let last = &spine_stalls[spine_stalls.len() - 1];
+            let envelope = vec![
+                first.corners[0],  // first back-left
+                first.corners[1],  // first back-right
+                last.corners[1],   // last back-right (along spine)
+                last.corners[2],   // last front-right
+                last.corners[3],   // last front-left
+                first.corners[3],  // first front-left (along spine)
+            ];
+            strip_envelopes.push((envelope, seg.face_idx));
+        }
+
+        for quad in spine_stalls {
             stalls.push((quad, seg.face_idx));
         }
     }
-    stalls
+    (stalls, strip_envelopes)
 }
 
 
@@ -1023,6 +1045,7 @@ fn compute_islands(
     faces: &[Vec<Vec<Vec2>>],
     tagged_stalls: &[(StallQuad, usize)],
     all_stalls: &[StallQuad],
+    strip_envelopes: &[(Vec<Vec2>, usize)],
     min_area: f64,
 ) -> Vec<crate::types::Island> {
     use crate::inset::signed_area;
@@ -1055,15 +1078,16 @@ fn compute_islands(
             subj.push(h);
         }
 
-        // Faces with holes subtract ALL stalls (some stalls are tagged
-        // with adjacent faces but physically overlap this face's outer).
-        // Simple faces use only face-tagged stalls.
+        // Faces with holes subtract ALL individual stalls (some stalls
+        // from adjacent faces physically overlap this face). Simple
+        // faces use strip envelopes (hexagons covering each spine's
+        // stalls) to avoid inter-stall zigzag gaps appearing as islands.
         let clip: Vec<Vec<[f64; 2]>> = if shape.len() > 1 {
             all_stall_paths.clone()
         } else {
-            tagged_stalls.iter()
+            strip_envelopes.iter()
                 .filter(|(_, fi)| *fi == face_idx)
-                .map(|(s, _)| to_path(&s.corners))
+                .map(|(env, _)| to_path(env))
                 .collect()
         };
 
@@ -1102,7 +1126,8 @@ pub fn generate_from_spines(
     debug: &DebugToggles,
 ) -> (Vec<StallQuad>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>, Vec<SkeletonDebug>, Vec<crate::types::Island>) {
     let stall_angle_rad = params.stall_angle_deg.to_radians();
-    let effective_depth = params.stall_depth * stall_angle_rad.sin();
+    let effective_depth = params.stall_depth * stall_angle_rad.sin()
+        + stall_angle_rad.cos() * params.stall_width / 2.0;
 
     // Build deduplicated corridor rectangles + miter wedge fills, then
     // boolean-union them into merged shapes (preserving holes for loops).
@@ -1198,7 +1223,7 @@ pub fn generate_from_spines(
     };
 
     // Place stalls on merged spines.
-    let tagged_stalls = place_stalls_on_spines(&all_spines, params);
+    let (tagged_stalls, strip_envelopes) = place_stalls_on_spines(&all_spines, params);
 
     // Clip stalls to face interiors. A stall that protrudes past the face
     // boundary into a corridor (at miter-fill corners) is removed.
@@ -1219,7 +1244,7 @@ pub fn generate_from_spines(
 
     let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
 
-    let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, 10.0);
+    let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, &strip_envelopes, 10.0);
 
     let spine_lines: Vec<SpineLine> = all_spines
         .iter()
@@ -1459,13 +1484,13 @@ mod tests {
             .filter(|s| (s.end - s.start).length() >= effective_depth)
             .collect();
 
-        let tagged_stalls = place_stalls_on_spines(&all_spines, &params);
+        let (tagged_stalls, strip_envelopes) = place_stalls_on_spines(&all_spines, &params);
         let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces);
         let tagged_stalls = clip_stalls_to_boundary(tagged_stalls, &boundary);
         let tagged_stalls = remove_conflicting_stalls(tagged_stalls);
         let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
 
-        let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, 10.0);
+        let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, &strip_envelopes, 10.0);
 
         // No island should have area close to the boundary or the hole.
         // No island should be as large as the full boundary or the hole itself.
@@ -1615,7 +1640,7 @@ mod tests {
         );
 
         // Place stalls and verify ALL stall corners are inside the face.
-        let stalls = place_stalls_on_spines(&spines, &params);
+        let (stalls, _) = place_stalls_on_spines(&spines, &params);
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
 
@@ -1722,7 +1747,7 @@ mod tests {
         );
 
         // Place stalls and verify containment.
-        let stalls = place_stalls_on_spines(&spines, &params);
+        let (stalls, _) = place_stalls_on_spines(&spines, &params);
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
 
@@ -1779,7 +1804,7 @@ mod tests {
             * params.stall_angle_deg.to_radians().sin();
 
         let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], &params, &DebugToggles::default());
-        let stalls = place_stalls_on_spines(&spines, &params);
+        let (stalls, _) = place_stalls_on_spines(&spines, &params);
 
         eprintln!("\n=== Narrow face test (30ft between aisles) ===");
         eprintln!("spines: {}, stalls: {}", spines.len(), stalls.len());
@@ -1846,7 +1871,7 @@ mod tests {
         );
 
         // Place stalls and verify ALL corners are inside the face.
-        let stalls = place_stalls_on_spines(&spines, &params);
+        let (stalls, _) = place_stalls_on_spines(&spines, &params);
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
 
