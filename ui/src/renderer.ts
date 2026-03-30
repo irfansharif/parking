@@ -124,7 +124,7 @@ export class Renderer {
       if (state.layers.islands && state.layout.islands) {
         for (const island of state.layout.islands) {
           let fillR: number, fillG: number, fillB: number;
-          if (state.layers.faces) {
+          if (state.layers.faceColors) {
             // Debug: colorize by face index
             const [fr, fg, fb] = Renderer.FACE_COLORS[island.face_idx % Renderer.FACE_COLORS.length];
             [fillR, fillG, fillB] = [Math.round(fr * 0.45), Math.round(fg * 0.45), Math.round(fb * 0.45)];
