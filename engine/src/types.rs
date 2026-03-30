@@ -126,6 +126,8 @@ pub struct Face {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Island {
     pub contour: Vec<Vec2>,
+    #[serde(default)]
+    pub holes: Vec<Vec<Vec2>>,
     pub face_idx: usize,
 }
 
