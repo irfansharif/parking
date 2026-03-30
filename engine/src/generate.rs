@@ -12,7 +12,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
 
     // Then append drive line edges on top — they're additive and should not
     // cause auto edges to be filtered out.
-    let drive_graph = clip_drive_lines(&input.drive_lines, &input.boundary, &input.params);
+    let drive_graph = clip_drive_lines(&input.drive_lines, &input.boundary, &input.params, &graph);
     if !drive_graph.vertices.is_empty() {
         graph = append_graph(graph, drive_graph);
     }
@@ -37,13 +37,15 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     }
 }
 
-/// Clip drive lines against the same inset perimeter and expanded holes that
-/// auto_generate uses. This ensures drive line endpoints land on the perimeter
-/// and hole loops, enabling proper corridor merging and miter fills.
+/// Clip drive lines against the inset perimeter/expanded holes and clamp to
+/// the nearest existing aisle graph edge from each control point. This means
+/// a short segment between two inner aisles only extends to those aisles,
+/// while a long segment spanning the lot still clips to the perimeter.
 fn clip_drive_lines(
     lines: &[DriveLine],
     boundary: &Polygon,
     params: &ParkingParams,
+    auto_graph: &DriveAisleGraph,
 ) -> DriveAisleGraph {
     if lines.is_empty() {
         return DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 };
@@ -86,6 +88,20 @@ fn clip_drive_lines(
         }
         let dir_norm = Vec2::new(dir.x / dir.length(), dir.y / dir.length());
         let origin = dl.start;
+        let seg_len = dir.length();
+
+        // Find nearest auto graph edge intersections to clamp the extent.
+        let graph_hits = intersect_line_with_graph_edges(origin, dir_norm, auto_graph);
+        // t_start: nearest hit at or before control point A (t <= 0)
+        let t_start = graph_hits.iter().rev()
+            .find(|&&t| t <= 0.0)
+            .copied()
+            .unwrap_or(f64::NEG_INFINITY);
+        // t_end: nearest hit at or after control point B (t >= seg_len)
+        let t_end = graph_hits.iter()
+            .find(|&&t| t >= seg_len)
+            .copied()
+            .unwrap_or(f64::INFINITY);
 
         // Intersect with inset perimeter (not raw boundary).
         let outer_hits = intersect_line_polygon(origin, dir_norm, &outer_loop);
@@ -108,6 +124,15 @@ fn clip_drive_lines(
             intervals = subtract_intervals(&intervals, &hole_ivs);
         }
 
+        // Clamp intervals to [t_start, t_end] — the nearest graph edges.
+        intervals = intervals.iter()
+            .filter_map(|&(a, b)| {
+                let a = a.max(t_start);
+                let b = b.min(t_end);
+                if a < b { Some((a, b)) } else { None }
+            })
+            .collect();
+
         // Create edges for surviving intervals.
         for &(ta, tb) in &intervals {
             let pa = origin + dir_norm * ta;
@@ -124,6 +149,39 @@ fn clip_drive_lines(
         edges,
         perim_vertex_count: 0,
     }
+}
+
+/// Find all intersection t-values of an infinite line with graph edge segments.
+/// Returns sorted t values. Deduplicates bidirectional edges.
+fn intersect_line_with_graph_edges(
+    origin: Vec2,
+    dir: Vec2,
+    graph: &DriveAisleGraph,
+) -> Vec<f64> {
+    let mut hits: Vec<f64> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for edge in &graph.edges {
+        let key = (edge.start.min(edge.end), edge.start.max(edge.end));
+        if !seen.insert(key) { continue; }
+
+        let s = graph.vertices[edge.start];
+        let e = graph.vertices[edge.end];
+        let seg = e - s;
+        let denom = dir.cross(seg);
+        if denom.abs() < 1e-12 { continue; }
+
+        let h = s - origin;
+        let t = h.cross(seg) / denom;
+        let u = -(dir.cross(h)) / denom;
+
+        if u >= 0.0 && u <= 1.0 {
+            hits.push(t);
+        }
+    }
+
+    hits.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    hits
 }
 
 fn ensure_ccw(mut poly: Vec<Vec2>) -> Vec<Vec2> {
