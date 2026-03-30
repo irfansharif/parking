@@ -8,7 +8,7 @@ polygon outer: 4 vertices
 
 generate
 ----
-total_stalls: 114
+total_stalls: 129
 
 screenshot fix-all.png
 ----

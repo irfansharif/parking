@@ -96,7 +96,7 @@ export class App {
         stall_width: 9,
         stall_depth: 18,
         aisle_width: 24,
-        stall_angle_deg: 90,
+        stall_angle_deg: 45,
         aisle_angle_deg: 90,
         aisle_offset: 0,
         site_offset: 0,

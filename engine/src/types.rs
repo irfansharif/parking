@@ -193,7 +193,7 @@ impl Default for ParkingParams {
             stall_width: 9.0,
             stall_depth: 18.0,
             aisle_width: 24.0,
-            stall_angle_deg: 90.0,
+            stall_angle_deg: 45.0,
             aisle_angle_deg: 90.0,
             aisle_offset: 0.0,
             site_offset: 0.0,
