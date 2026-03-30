@@ -11,7 +11,10 @@ use crate::types::*;
 pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGraph {
     let hw = params.aisle_width / 2.0;
     let stall_angle_rad = params.stall_angle_deg.to_radians();
-    let effective_depth = params.stall_depth * stall_angle_rad.sin();
+    // Effective depth includes the stall corner protrusion so the face
+    // is wide enough to contain the full rectangular stall hypotenuse.
+    let effective_depth = params.stall_depth * stall_angle_rad.sin()
+        + stall_angle_rad.cos() * params.stall_width / 2.0;
     let inset_d = effective_depth + hw;
     let row_spacing = 2.0 * effective_depth + params.aisle_width;
 

@@ -13,11 +13,15 @@ use i_overlay::float::single::SingleFloatOverlay;
 
 /// Build corridor rectangle for a single aisle edge.
 pub(crate) fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2> {
+    corridor_polygon_with_width(vertices, edge, edge.width)
+}
+
+/// Build corridor rectangle with a custom half-width.
+fn corridor_polygon_with_width(vertices: &[Vec2], edge: &AisleEdge, w: f64) -> Vec<Vec2> {
     let start = vertices[edge.start];
     let end = vertices[edge.end];
     let dir = (end - start).normalize();
     let normal = Vec2::new(-dir.y, dir.x);
-    let w = edge.width;
     vec![
         start + normal * w,
         end + normal * w,
@@ -873,15 +877,19 @@ fn place_stalls_on_spines(
         let angle_override = if seg.is_interior { None } else { Some(90.0) };
         let spine_stalls = fill_strip(start, end, 1.0, 0.0, params, angle_override);
 
-        // Compute the convex hull of all stall corners as the strip envelope.
+        // Build tight strip envelope: quad from first stall's left edge to
+        // last stall's right edge. This covers inter-stall gaps without
+        // extending past the strip ends (preserving corner islands).
         if !spine_stalls.is_empty() {
-            let all_corners: Vec<Vec2> = spine_stalls.iter()
-                .flat_map(|s| s.corners.iter().copied())
-                .collect();
-            let hull = convex_hull(&all_corners);
-            if hull.len() >= 3 {
-                strip_envelopes.push((hull, seg.face_idx));
-            }
+            let first = &spine_stalls[0];
+            let last = &spine_stalls[spine_stalls.len() - 1];
+            let envelope = vec![
+                first.corners[0],  // first back-left
+                last.corners[1],   // last back-right
+                last.corners[2],   // last front-right
+                first.corners[3],  // first front-left
+            ];
+            strip_envelopes.push((envelope, seg.face_idx));
         }
 
         for quad in spine_stalls {
@@ -891,45 +899,6 @@ fn place_stalls_on_spines(
     (stalls, strip_envelopes)
 }
 
-/// Compute convex hull of a set of points using Andrew's monotone chain.
-fn convex_hull(points: &[Vec2]) -> Vec<Vec2> {
-    let mut pts = points.to_vec();
-    pts.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap().then(a.y.partial_cmp(&b.y).unwrap()));
-    pts.dedup_by(|a, b| (a.x - b.x).abs() < 1e-10 && (a.y - b.y).abs() < 1e-10);
-
-    if pts.len() <= 2 { return pts; }
-
-    let mut hull = Vec::new();
-    // Lower hull
-    for p in &pts {
-        while hull.len() >= 2 {
-            let a: Vec2 = hull[hull.len() - 2];
-            let b: Vec2 = hull[hull.len() - 1];
-            if (b - a).cross(*p - a) <= 0.0 {
-                hull.pop();
-            } else {
-                break;
-            }
-        }
-        hull.push(*p);
-    }
-    // Upper hull
-    let lower_len = hull.len();
-    for p in pts.iter().rev() {
-        while hull.len() > lower_len {
-            let a: Vec2 = hull[hull.len() - 2];
-            let b: Vec2 = hull[hull.len() - 1];
-            if (b - a).cross(*p - a) <= 0.0 {
-                hull.pop();
-            } else {
-                break;
-            }
-        }
-        hull.push(*p);
-    }
-    hull.pop(); // Remove last point (same as first)
-    hull
-}
 
 /// Deduplicate overlapping collinear spines. When two spines have the same
 /// direction and outward normal and overlap along their length, trim the
@@ -1121,7 +1090,10 @@ pub fn generate_from_spines(
     debug: &DebugToggles,
 ) -> (Vec<StallQuad>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>, Vec<SkeletonDebug>, Vec<crate::types::Island>) {
     let stall_angle_rad = params.stall_angle_deg.to_radians();
-    let effective_depth = params.stall_depth * stall_angle_rad.sin();
+    // Effective depth includes the stall corner protrusion so the face
+    // is wide enough to contain the full rectangular stall hypotenuse.
+    let effective_depth = params.stall_depth * stall_angle_rad.sin()
+        + stall_angle_rad.cos() * params.stall_width / 2.0;
 
     // Build deduplicated corridor rectangles + miter wedge fills, then
     // boolean-union them into merged shapes (preserving holes for loops).

@@ -49,11 +49,12 @@ pub fn fill_strip(
 
     let mut stalls = Vec::with_capacity(stall_count);
 
-    // For boundary spines (angle overridden to 90°), the stall depth is
-    // reduced to the effective_depth so 90° stalls fit exactly in the
-    // spine-to-corridor gap.
+    // For boundary spines (angle overridden to 90°), the stall depth
+    // matches the effective_depth (spine-to-corridor gap) so 90° stalls
+    // fill exactly from spine to corridor edge.
     let stall_depth = if angle_override.is_some() {
-        params.stall_depth * params.stall_angle_deg.to_radians().sin()
+        let theta = params.stall_angle_deg.to_radians();
+        params.stall_depth * theta.sin() + theta.cos() * params.stall_width / 2.0
     } else {
         params.stall_depth
     };
