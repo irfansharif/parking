@@ -103,27 +103,6 @@ export function createCommandAPI(app: App): CommandAPI {
           return "screenshot captured";
         }
 
-        case "drag": {
-          // Simulate dragging an aisle vertex.
-          // Usage: drag <vertex-index> <x,y>
-          // Simulates: mousedown on vertex, mousemove to (x,y), mouseup.
-          const vertexIdx = parseInt(parts[1]);
-          const coords = parts[2];
-          const [x, y] = coords.split(",").map(Number);
-          const ref = { type: "aisle" as const, index: vertexIdx };
-
-          // Simulate the drag: moveVertex handles anchor capture and angle mirroring.
-          app.moveVertex(ref, { x, y });
-
-          // Simulate mouseup: clear manual graph and regenerate at new angle.
-          app.state.aisleGraph = null;
-          app.state.dragAnchor = null;
-          app.generate();
-
-          const angle = app.state.params.aisle_angle_deg;
-          return `dragged vertex ${vertexIdx} to ${x},${y}\naisle_angle_deg: ${angle}`;
-        }
-
         case "graph": {
           // Dump the effective aisle graph vertex positions.
           const graph = app.getEffectiveAisleGraph();

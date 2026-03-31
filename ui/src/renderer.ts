@@ -424,7 +424,7 @@ export class Renderer {
 
         const start = graph.vertices[edge.start];
         const end = graph.vertices[edge.end];
-        const isSelected = state.selectedEdge?.index === ei;
+        const isSelected = state.selectedEdge?.chain.includes(ei) ?? false;
         const isOneWay = edge.direction === "OneWay";
 
         // Edge line
@@ -521,7 +521,7 @@ export class Renderer {
     const annotationVerts = state.annotations.map((ann, i) => ({
       pos: ann.midpoint,
       ref: { type: "annotation" as const, index: i },
-      color: "rgba(255, 180, 50, 0.95)",
+      color: ann._active === false ? "rgba(255, 180, 50, 0.3)" : "rgba(255, 180, 50, 0.95)",
     }));
 
     const allVerts = [
@@ -554,7 +554,7 @@ export class Renderer {
 
       if (isAnnotation) {
         // Draw diamond shape for annotation anchors.
-        const r = isSelected || isHovered ? baseRadius * 1.8 : baseRadius * 1.3;
+        const r = baseRadius * 1.3;
         ctx.beginPath();
         ctx.moveTo(vert.pos.x, vert.pos.y - r);
         ctx.lineTo(vert.pos.x + r, vert.pos.y);
@@ -583,6 +583,74 @@ export class Renderer {
         ctx.stroke();
       }
     }
+
+    // Aisle vector control — rendered last so it's always on top.
+    this.drawAisleVector(state);
+  }
+
+  private drawAisleVector(state: AppState): void {
+    const { ctx } = this;
+    const vec = state.aisleVector;
+    const dx = vec.end.x - vec.start.x;
+    const dy = vec.end.y - vec.start.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+
+    // Faint infinite extent line
+    if (len > 1e-9) {
+      const nx = dx / len;
+      const ny = dy / len;
+      const ext = 10000;
+      ctx.beginPath();
+      ctx.moveTo(vec.start.x - nx * ext, vec.start.y - ny * ext);
+      ctx.lineTo(vec.end.x + nx * ext, vec.end.y + ny * ext);
+      ctx.strokeStyle = "rgba(255, 160, 50, 0.2)";
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Solid control segment
+    ctx.beginPath();
+    ctx.moveTo(vec.start.x, vec.start.y);
+    ctx.lineTo(vec.end.x, vec.end.y);
+    ctx.strokeStyle = "rgba(255, 160, 50, 0.9)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Arrowhead at end
+    if (len > 10) {
+      const nx = dx / len;
+      const ny = dy / len;
+      const arrowSize = 7;
+      const ax = vec.end.x;
+      const ay = vec.end.y;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(ax - nx * arrowSize + ny * arrowSize * 0.4, ay - ny * arrowSize - nx * arrowSize * 0.4);
+      ctx.lineTo(ax - nx * arrowSize - ny * arrowSize * 0.4, ay - ny * arrowSize + nx * arrowSize * 0.4);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(255, 160, 50, 0.9)";
+      ctx.fill();
+    }
+
+    // Endpoint dots
+    const endpoints = [
+      { pos: vec.start, ref: { type: "aisle-vector" as const, index: 0, endpoint: "start" as const } },
+      { pos: vec.end, ref: { type: "aisle-vector" as const, index: 0, endpoint: "end" as const } },
+    ];
+    for (const ep of endpoints) {
+      const isSelected = this.vertexRefsEqual(ep.ref, state.selectedVertex);
+      const isHovered = this.vertexRefsEqual(ep.ref, state.hoveredVertex);
+      const r = isSelected || isHovered ? 6 : 4.5;
+      ctx.beginPath();
+      ctx.arc(ep.pos.x, ep.pos.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = isSelected ? "#ffffff" : isHovered ? "#ffff00" : "rgba(255, 160, 50, 0.95)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+    }
   }
 
   private vertexRefsEqual(
@@ -593,7 +661,7 @@ export class Renderer {
     if (a.type !== b.type || a.index !== b.index) return false;
     if (a.type === "boundary-hole")
       return a.holeIndex === (b as VertexRef).holeIndex;
-    if (a.type === "drive-line")
+    if (a.type === "drive-line" || a.type === "aisle-vector")
       return a.endpoint === (b as VertexRef).endpoint;
     return true;
   }

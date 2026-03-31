@@ -33,8 +33,9 @@ async function main() {
     const cw = container.clientWidth;
     const ch = container.clientHeight;
     const b = app.state.boundary.outer;
-    const xs = b.map((v) => v.x);
-    const ys = b.map((v) => v.y);
+    const vec = app.state.aisleVector;
+    const xs = [...b.map((v) => v.x), vec.start.x, vec.end.x];
+    const ys = [...b.map((v) => v.y), vec.start.y, vec.end.y];
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
@@ -66,10 +67,8 @@ function setupToolbar(app: App, renderer: Renderer): void {
 
   const modes: { mode: EditMode; label: string; key: string }[] = [
     { mode: "select", label: "Select (V)", key: "v" },
-    { mode: "add-aisle-vertex", label: "Add Aisle Vertex (A)", key: "a" },
-    { mode: "add-aisle-edge", label: "Add Aisle Edge (E)", key: "e" },
     { mode: "add-hole", label: "Add Hole (H)", key: "h" },
-    { mode: "add-drive-line", label: "Drive Line (D)", key: "d" },
+    { mode: "add-drive-line", label: "Drive Line (L)", key: "l" },
   ];
 
   const buttons: HTMLButtonElement[] = [];
@@ -83,20 +82,6 @@ function setupToolbar(app: App, renderer: Renderer): void {
     toolbar.appendChild(btn);
     buttons.push(btn);
   }
-
-  // Separator + clear aisles button
-  const sep = document.createElement("div");
-  sep.className = "separator";
-  toolbar.appendChild(sep);
-
-  const clearBtn = document.createElement("button");
-  clearBtn.textContent = "Clear Aisles";
-  clearBtn.addEventListener("click", () => {
-    app.state.aisleGraph = null;
-    app.state.selectedVertex = null;
-    app.generate();
-  });
-  toolbar.appendChild(clearBtn);
 
   function setMode(mode: EditMode) {
     // Commit pending hole if switching away from add-hole mode

@@ -105,6 +105,7 @@ export interface Annotation {
   midpoint: Vec2;
   travel_dir: Vec2;
   _origDir?: Vec2; // UI-only: original edge direction for cycle state tracking
+  _active?: boolean; // UI-only: false = tombstone (visible but no effect). Default true.
 }
 
 export interface GenerateInput {

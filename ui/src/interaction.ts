@@ -1,6 +1,6 @@
 import { App, VertexRef, EdgeRef } from "./app";
 import { Renderer } from "./renderer";
-import { Vec2 } from "./types";
+import { Vec2, DriveAisleGraph } from "./types";
 import { computeSnap, emptySnapState } from "./snap";
 
 export function setupInteraction(
@@ -30,30 +30,6 @@ export function setupInteraction(
 
     const worldPos = renderer.screenToWorld(sx, sy, app.state.camera);
     const mode = app.state.editMode;
-
-    if (mode === "add-aisle-vertex") {
-      const { pos } = computeSnap(worldPos, app.getAllVertices(), null, app.state.camera.zoom, emptySnapState());
-      const idx = app.addAisleVertex(pos);
-      app.state.selectedVertex = { type: "aisle", index: idx };
-      renderer.render(app.state);
-      return;
-    }
-
-    if (mode === "add-aisle-edge") {
-      // Click on an aisle vertex to start/complete an edge.
-      const hit = hitTestType(sx, sy, app, renderer, HIT_RADIUS, "aisle");
-      if (!hit) return;
-      if (!app.state.selectedVertex || app.state.selectedVertex.type !== "aisle") {
-        // First vertex selected — highlight it, wait for second click.
-        app.state.selectedVertex = hit;
-      } else {
-        // Second vertex — create edge.
-        app.addAisleEdge(app.state.selectedVertex.index, hit.index);
-        app.state.selectedVertex = null;
-      }
-      renderer.render(app.state);
-      return;
-    }
 
     if (mode === "add-hole") {
       const { pos } = computeSnap(worldPos, app.getAllVertices(), null, app.state.camera.zoom, emptySnapState());
@@ -97,17 +73,65 @@ export function setupInteraction(
       }
     }
 
+    // Clean up tombstone annotations when selection moves away.
+    const wasAnnotation = app.state.selectedVertex?.type === "annotation";
+    const stayingOnAnnotation = wasAnnotation && closest?.ref.type === "annotation";
+    if (wasAnnotation && !stayingOnAnnotation) {
+      app.cleanupTombstones();
+    }
+
     if (closest) {
       app.state.selectedVertex = closest.ref;
       app.state.selectedEdge = null;
-      // Annotation anchors are fixed — don't start dragging.
-      app.state.isDragging = closest.ref.type !== "annotation";
+      // Annotation and aisle vertices are fixed — don't start dragging.
+      app.state.isDragging = closest.ref.type !== "annotation" && closest.ref.type !== "aisle";
+      // Sync: when clicking an annotation, also select its edge.
+      if (closest.ref.type === "annotation") {
+        const ann = app.state.annotations[closest.ref.index];
+        if (ann) {
+          const graph = app.getEffectiveAisleGraph();
+          if (graph) {
+            const seen = new Set<string>();
+            let bestIdx = -1;
+            let bestDist = Infinity;
+            for (let i = 0; i < graph.edges.length; i++) {
+              const e = graph.edges[i];
+              const key = Math.min(e.start, e.end) + "," + Math.max(e.start, e.end);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              const s = graph.vertices[e.start];
+              const end = graph.vertices[e.end];
+              const dist = pointToSegmentDist(ann.midpoint, s, end);
+              if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+            }
+            if (bestIdx >= 0 && bestDist < 5) {
+              app.state.selectedEdge = { index: bestIdx, chain: findCollinearChain(graph, bestIdx) };
+            }
+          }
+        }
+      }
     } else {
       app.state.selectedVertex = null;
       // No vertex hit — try edge hit test.
       const edgeHit = hitTestEdge(worldPos, app, EDGE_HIT_RADIUS / app.state.camera.zoom);
       if (edgeHit) {
         app.state.selectedEdge = edgeHit;
+        // Sync: also select annotation on this edge if one exists.
+        const graph = app.getEffectiveAisleGraph();
+        if (graph) {
+          const edge = graph.edges[edgeHit.index];
+          if (edge) {
+            const s = graph.vertices[edge.start];
+            const e = graph.vertices[edge.end];
+            const mid = { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 };
+            const annIdx = app.state.annotations.findIndex(
+              (a) => Math.sqrt((a.midpoint.x - mid.x) ** 2 + (a.midpoint.y - mid.y) ** 2) < 5
+            );
+            if (annIdx >= 0) {
+              app.state.selectedVertex = { type: "annotation", index: annIdx };
+            }
+          }
+        }
       } else {
         app.state.selectedEdge = null;
         // No vertex or edge hit — start canvas pan.
@@ -169,10 +193,8 @@ export function setupInteraction(
     if (hovered !== app.state.hoveredVertex) {
       app.state.hoveredVertex = hovered;
       const mode = app.state.editMode;
-      if (mode === "add-aisle-vertex" || mode === "add-hole" || mode === "add-drive-line") {
+      if (mode === "add-hole" || mode === "add-drive-line") {
         canvas.style.cursor = "crosshair";
-      } else if (mode === "add-aisle-edge") {
-        canvas.style.cursor = hovered?.type === "aisle" ? "pointer" : "crosshair";
       } else {
         canvas.style.cursor = hovered ? "pointer" : "default";
       }
@@ -186,13 +208,6 @@ export function setupInteraction(
     if (isPanning) {
       isPanning = false;
       return;
-    }
-    // If we were dragging an aisle vertex, clear the manual graph and anchor
-    // so all aisles regenerate cleanly at the final aisle_angle_deg.
-    if (app.state.isDragging && app.state.selectedVertex?.type === "aisle") {
-      app.state.aisleGraph = null;
-      app.state.dragAnchor = null;
-      app.generate();
     }
     app.state.isDragging = false;
   });
@@ -301,6 +316,7 @@ export function setupInteraction(
         app.commitPendingHole();
       }
       app.state.editMode = "select";
+      app.cleanupTombstones();
       app.state.selectedVertex = null;
       app.state.selectedEdge = null;
       app.state.pendingHole = [];
@@ -310,12 +326,15 @@ export function setupInteraction(
       updateModeHint(app);
       renderer.render(app.state);
     } else if (e.key === "f" || e.key === "F") {
-      // Cycle direction on selected aisle graph edge.
+      // Cycle direction on selected aisle graph edge or annotation anchor.
       if (app.state.selectedEdge) {
         app.cycleEdgeDirection(app.state.selectedEdge.index);
         renderer.render(app.state);
+      } else if (app.state.selectedVertex?.type === "annotation") {
+        app.cycleAnnotationDirection(app.state.selectedVertex.index);
+        renderer.render(app.state);
       }
-    } else if (e.key === "Delete" || e.key === "Backspace") {
+    } else if (e.key === "Delete" || e.key === "Backspace" || e.key === "d" || e.key === "D") {
       const sel = app.state.selectedVertex;
       if (!sel) return;
       if (sel.type === "annotation") {
@@ -332,27 +351,6 @@ export function setupInteraction(
       renderer.render(app.state);
     }
   });
-}
-
-function hitTestType(
-  sx: number,
-  sy: number,
-  app: App,
-  renderer: Renderer,
-  hitRadius: number,
-  type: string,
-): VertexRef | null {
-  const allVerts = app.getAllVertices();
-  for (const v of allVerts) {
-    if (v.ref.type !== type) continue;
-    const screenV = renderer.worldToScreen(v.pos.x, v.pos.y, app.state.camera);
-    const dx = screenV.x - sx;
-    const dy = screenV.y - sy;
-    if (Math.sqrt(dx * dx + dy * dy) < hitRadius) {
-      return v.ref;
-    }
-  }
-  return null;
 }
 
 function pointToSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
@@ -391,7 +389,58 @@ function hitTestEdge(worldPos: Vec2, app: App, worldRadius: number): EdgeRef | n
     }
   }
 
-  return best ? { index: best.index } : null;
+  if (!best) return null;
+  return { index: best.index, chain: findCollinearChain(graph, best.index) };
+}
+
+/// Find all deduplicated edge indices in the same collinear chain as the seed.
+export function findCollinearChain(graph: DriveAisleGraph, seedIdx: number): number[] {
+  const seed = graph.edges[seedIdx];
+  const s = graph.vertices[seed.start];
+  const e = graph.vertices[seed.end];
+  const dx = e.x - s.x, dy = e.y - s.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len < 1e-9) return [seedIdx];
+  const seedDir = { x: dx / len, y: dy / len };
+
+  // Build adjacency: vertex → [(edgeIdx, otherVertex, dir)]
+  // Deduplicate bidirectional edges.
+  const adj = new Map<number, { ei: number; other: number; dx: number; dy: number }[]>();
+  const seen = new Set<string>();
+  for (let i = 0; i < graph.edges.length; i++) {
+    const edge = graph.edges[i];
+    const key = Math.min(edge.start, edge.end) + "," + Math.max(edge.start, edge.end);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const a = graph.vertices[edge.start];
+    const b = graph.vertices[edge.end];
+    const edx = b.x - a.x, edy = b.y - a.y;
+    const elen = Math.sqrt(edx * edx + edy * edy);
+    if (elen < 1e-9) continue;
+    const ndx = edx / elen, ndy = edy / elen;
+    if (!adj.has(edge.start)) adj.set(edge.start, []);
+    if (!adj.has(edge.end)) adj.set(edge.end, []);
+    adj.get(edge.start)!.push({ ei: i, other: edge.end, dx: ndx, dy: ndy });
+    adj.get(edge.end)!.push({ ei: i, other: edge.start, dx: -ndx, dy: -ndy });
+  }
+
+  // BFS along collinear edges.
+  const chain = [seedIdx];
+  const visited = new Set<number>();
+  visited.add(seedIdx);
+  const frontier = [seed.start, seed.end];
+  while (frontier.length > 0) {
+    const v = frontier.pop()!;
+    for (const n of adj.get(v) ?? []) {
+      if (visited.has(n.ei)) continue;
+      const dot = Math.abs(n.dx * seedDir.x + n.dy * seedDir.y);
+      if (dot < 0.99) continue;
+      visited.add(n.ei);
+      chain.push(n.ei);
+      frontier.push(n.other);
+    }
+  }
+  return chain;
 }
 
 export function updateModeHint(app: App): void {
@@ -401,7 +450,7 @@ export function updateModeHint(app: App): void {
     if (app.state.selectedEdge) {
       hint.textContent = "Edge selected. F to cycle direction (two-way → one-way → reverse → two-way). Esc to deselect.";
     } else if (app.state.selectedVertex?.type === "annotation") {
-      hint.textContent = "Annotation selected. Delete to remove. Right-drag to pan.";
+      hint.textContent = "Annotation selected. F to cycle direction. Delete to remove.";
     } else if (app.state.selectedVertex) {
       hint.textContent = "Drag to move. Delete to remove. Right-drag to pan.";
     } else {
@@ -410,8 +459,6 @@ export function updateModeHint(app: App): void {
     return;
   }
   const hints: Record<string, string> = {
-    "add-aisle-vertex": "Click to place aisle vertices. Press Esc to return to select mode.",
-    "add-aisle-edge": "Click two aisle vertices to connect them. Press Esc to cancel.",
     "add-hole": "Click to place hole vertices. Press Esc to finish the hole (needs 3+ vertices).",
     "add-drive-line": "Click to place start point, click again to place end point. Press Esc to cancel.",
   };

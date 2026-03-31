@@ -373,34 +373,89 @@ fn apply_annotations(
                 }
                 let Some((matched_idx, _dist)) = best else { continue };
 
-                // Orient the matched edge so start→end aligns with travel_dir.
-                let edge = &graph.edges[matched_idx];
-                let s = edge.start;
-                let e = edge.end;
-                let edge_dir = (graph.vertices[e] - graph.vertices[s]).normalize();
-                let needs_flip = edge_dir.dot(*travel_dir) < 0.0;
+                // Expand to the full collinear chain.
+                let chain = find_collinear_chain(graph, matched_idx);
 
-                // Apply to the matched edge and its reverse.
-                for i in 0..graph.edges.len() {
-                    let ei = &graph.edges[i];
-                    let is_forward = ei.start == s && ei.end == e;
-                    let is_reverse = ei.start == e && ei.end == s;
-                    if !is_forward && !is_reverse {
-                        continue;
-                    }
-                    graph.edges[i].direction = AisleDirection::OneWay;
-                    graph.edges[i].width = one_way_hw;
-                    if needs_flip && is_forward {
-                        graph.edges[i].start = e;
-                        graph.edges[i].end = s;
-                    } else if needs_flip && is_reverse {
-                        graph.edges[i].start = s;
-                        graph.edges[i].end = e;
+                // Apply direction to every edge in the chain.
+                for &chain_idx in &chain {
+                    let edge = &graph.edges[chain_idx];
+                    let s = edge.start;
+                    let e = edge.end;
+                    let edge_dir = (graph.vertices[e] - graph.vertices[s]).normalize();
+                    let needs_flip = edge_dir.dot(*travel_dir) < 0.0;
+
+                    for i in 0..graph.edges.len() {
+                        let ei = &graph.edges[i];
+                        let is_forward = ei.start == s && ei.end == e;
+                        let is_reverse = ei.start == e && ei.end == s;
+                        if !is_forward && !is_reverse {
+                            continue;
+                        }
+                        graph.edges[i].direction = AisleDirection::OneWay;
+                        graph.edges[i].width = one_way_hw;
+                        if needs_flip && is_forward {
+                            graph.edges[i].start = e;
+                            graph.edges[i].end = s;
+                        } else if needs_flip && is_reverse {
+                            graph.edges[i].start = s;
+                            graph.edges[i].end = e;
+                        }
                     }
                 }
             }
         }
     }
+}
+
+/// Find all edges in the same collinear chain as the seed edge. Two edges
+/// chain if they share a vertex and are collinear (direction dot > 0.99).
+/// Returns deduplicated edge indices (one per undirected edge pair).
+fn find_collinear_chain(graph: &DriveAisleGraph, seed_idx: usize) -> Vec<usize> {
+    let seed = &graph.edges[seed_idx];
+    let seed_dir = (graph.vertices[seed.end] - graph.vertices[seed.start]).normalize();
+
+    // Build adjacency: vertex → list of (edge_idx, other_vertex, direction).
+    let mut adj: std::collections::HashMap<usize, Vec<(usize, usize, Vec2)>> =
+        std::collections::HashMap::new();
+    let mut seen_edges = std::collections::HashSet::new();
+    for (i, edge) in graph.edges.iter().enumerate() {
+        let key = if edge.start < edge.end {
+            (edge.start, edge.end)
+        } else {
+            (edge.end, edge.start)
+        };
+        if !seen_edges.insert(key) {
+            continue;
+        }
+        let dir = (graph.vertices[edge.end] - graph.vertices[edge.start]).normalize();
+        adj.entry(edge.start).or_default().push((i, edge.end, dir));
+        adj.entry(edge.end).or_default().push((i, edge.start, Vec2::new(-dir.x, -dir.y)));
+    }
+
+    // BFS/walk from seed in both directions along collinear edges.
+    let mut chain = vec![seed_idx];
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(seed_idx);
+
+    let mut frontier = vec![seed.start, seed.end];
+    while let Some(v) = frontier.pop() {
+        if let Some(neighbors) = adj.get(&v) {
+            for &(ei, other_v, dir) in neighbors {
+                if visited.contains(&ei) {
+                    continue;
+                }
+                // Must be collinear with seed direction.
+                if dir.dot(seed_dir).abs() < 0.99 {
+                    continue;
+                }
+                visited.insert(ei);
+                chain.push(ei);
+                frontier.push(other_v);
+            }
+        }
+    }
+
+    chain
 }
 
 /// Perpendicular distance from point `p` to the line segment `a`–`b`.

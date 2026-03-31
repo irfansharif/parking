@@ -10,6 +10,7 @@ import {
   Annotation,
 } from "./types";
 import { SnapGuide, SnapState, emptySnapState } from "./snap";
+import { findCollinearChain } from "./interaction";
 
 export interface Camera {
   offsetX: number;
@@ -18,20 +19,19 @@ export interface Camera {
 }
 
 export interface VertexRef {
-  type: "boundary-outer" | "boundary-hole" | "aisle" | "drive-line" | "annotation";
+  type: "boundary-outer" | "boundary-hole" | "aisle" | "drive-line" | "annotation" | "aisle-vector";
   index: number;
   holeIndex?: number;
   endpoint?: "start" | "end";
 }
 
 export interface EdgeRef {
-  index: number; // index into the graph's edges array
+  index: number; // seed edge index
+  chain: number[]; // all deduplicated edge indices in the collinear chain
 }
 
 export type EditMode =
   | "select"
-  | "add-aisle-vertex"
-  | "add-aisle-edge"
   | "add-hole"
   | "add-drive-line";
 
@@ -58,13 +58,14 @@ export interface AppState {
   hoveredVertex: VertexRef | null;
   selectedEdge: EdgeRef | null;
   isDragging: boolean;
-  dragAnchor: Vec2 | null;
   camera: Camera;
   editMode: EditMode;
   // For add-hole mode: vertices being placed
   pendingHole: Vec2[];
   // Spatial annotations (survive graph regeneration)
   annotations: Annotation[];
+  // Aisle vector control — defines dominant aisle direction/offset
+  aisleVector: { start: Vec2; end: Vec2 };
   // For add-drive-line mode
   driveLines: DriveLine[];
   pendingDriveLine: Vec2 | null;
@@ -130,11 +131,11 @@ export class App {
       hoveredVertex: null,
       selectedEdge: null,
       isDragging: false,
-      dragAnchor: null,
       camera: { offsetX: 30, offsetY: 60, zoom: 1.3 },
       editMode: "select",
       pendingHole: [],
       annotations: [],
+      aisleVector: aisleVectorFromAngle(90, 0, { x: -80, y: 250 }),
       driveLines: [
         { start: { x: -50, y: 250 }, end: { x: 800, y: 250 } },
       ],
@@ -162,7 +163,7 @@ export class App {
       boundary: this.state.boundary,
       aisle_graph: this.state.aisleGraph,
       drive_lines: this.state.driveLines,
-      annotations: this.state.annotations,
+      annotations: this.state.annotations.filter((a) => a._active !== false),
       params: this.state.params,
       debug: this.state.debug,
     };
@@ -184,7 +185,23 @@ export class App {
   setParam(key: keyof ParkingParams, value: number): void {
     (this.state.params as any)[key] = value;
     this.state.aisleGraph = null;
+    if (key === "aisle_angle_deg" || key === "aisle_offset") {
+      this.syncAisleVector();
+    }
     this.generate();
+  }
+
+  private syncAisleVector(): void {
+    const vec = this.state.aisleVector;
+    const center = {
+      x: (vec.start.x + vec.end.x) / 2,
+      y: (vec.start.y + vec.end.y) / 2,
+    };
+    this.state.aisleVector = aisleVectorFromAngle(
+      this.state.params.aisle_angle_deg,
+      this.state.params.aisle_offset,
+      center,
+    );
   }
 
   // Returns the effective aisle graph: manual if set, otherwise resolved from
@@ -209,7 +226,16 @@ export class App {
 
   getAllVertices(): { ref: VertexRef; pos: Vec2 }[] {
     const result: { ref: VertexRef; pos: Vec2 }[] = [];
-    // Annotation anchors first — highest hit-test priority.
+    // Aisle vector endpoints — highest hit-test priority.
+    result.push({
+      ref: { type: "aisle-vector", index: 0, endpoint: "start" },
+      pos: this.state.aisleVector.start,
+    });
+    result.push({
+      ref: { type: "aisle-vector", index: 0, endpoint: "end" },
+      pos: this.state.aisleVector.end,
+    });
+    // Annotation anchors next.
     this.state.annotations.forEach((ann, i) => {
       result.push({ ref: { type: "annotation", index: i }, pos: ann.midpoint });
     });
@@ -255,61 +281,26 @@ export class App {
     } else if (ref.type === "drive-line" && ref.endpoint) {
       this.state.driveLines[ref.index][ref.endpoint] = pos;
       this.state.aisleGraph = null;
-    } else if (ref.type === "aisle") {
-      // Capture the anchor (pinned endpoint) on the first drag move.
-      if (!this.state.dragAnchor) {
-        const graph = this.getEffectiveAisleGraph();
-        if (!graph) return;
-        let bestLen = 0;
-        let bestOther: Vec2 | null = null;
-        for (const e of graph.edges) {
-          const otherIdx = e.start === ref.index ? e.end :
-                           e.end === ref.index ? e.start : -1;
-          if (otherIdx < 0) continue;
-          const other = graph.vertices[otherIdx];
-          const dx = pos.x - other.x;
-          const dy = pos.y - other.y;
-          const len = Math.sqrt(dx * dx + dy * dy);
-          if (len > bestLen) {
-            bestLen = len;
-            bestOther = other;
-          }
-        }
-        this.state.dragAnchor = bestOther;
+    } else if (ref.type === "aisle-vector") {
+      const vec = this.state.aisleVector;
+      if (ref.endpoint === "start") {
+        vec.start = pos;
+      } else {
+        vec.end = pos;
       }
-
-      const anchor = this.state.dragAnchor;
-      if (anchor) {
-        // Compute angle from anchor to drag position.
-        const dx = pos.x - anchor.x;
-        const dy = pos.y - anchor.y;
-        const len = Math.sqrt(dx * dx + dy * dy);
-        if (len > 1) {
-          let angleDeg = Math.atan2(dy, dx) * (180 / Math.PI);
-          // Normalize to [0, 180) — aisle lines at θ and θ+180° are identical.
-          angleDeg = ((angleDeg % 180) + 180) % 180;
-          this.state.params.aisle_angle_deg = Math.round(angleDeg);
-        }
-
-        // Compute perpendicular offset so the aisle grid is anchored to the
-        // pinned vertex. The offset is the anchor's projection onto the
-        // perpendicular direction for the current angle.
-        const angleRad = this.state.params.aisle_angle_deg * (Math.PI / 180);
-        const perpX = -Math.sin(angleRad);
-        const perpY = Math.cos(angleRad);
-        this.state.params.aisle_offset = anchor.x * perpX + anchor.y * perpY;
-
-        // Create a minimal manual graph with just the dragged edge so that
-        // other interior aisles regenerate at the new angle via merge_with_auto.
-        const hw = this.state.params.aisle_width / 2;
-        this.state.aisleGraph = {
-          vertices: [anchor, pos],
-          edges: [
-            { start: 0, end: 1, width: hw },
-            { start: 1, end: 0, width: hw },
-          ],
-        };
+      const anchor = ref.endpoint === "start" ? vec.end : vec.start;
+      const dx = vec.end.x - vec.start.x;
+      const dy = vec.end.y - vec.start.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len > 1) {
+        let angleDeg = Math.atan2(dy, dx) * (180 / Math.PI);
+        angleDeg = ((angleDeg % 180) + 180) % 180;
+        this.state.params.aisle_angle_deg = Math.round(angleDeg);
       }
+      const angleRad = this.state.params.aisle_angle_deg * (Math.PI / 180);
+      const perpX = -Math.sin(angleRad);
+      const perpY = Math.cos(angleRad);
+      this.state.params.aisle_offset = anchor.x * perpX + anchor.y * perpY;
     }
     this.generate();
   }
@@ -332,26 +323,6 @@ export class App {
     this.state.aisleGraph = null;
     this.generate();
     return true;
-  }
-
-  addAisleVertex(pos: Vec2): number {
-    if (!this.state.aisleGraph) {
-      this.state.aisleGraph = { vertices: [], edges: [] };
-    }
-    const idx = this.state.aisleGraph.vertices.length;
-    this.state.aisleGraph.vertices.push(pos);
-    this.generate();
-    return idx;
-  }
-
-  addAisleEdge(startIdx: number, endIdx: number): void {
-    if (!this.state.aisleGraph) return;
-    this.state.aisleGraph.edges.push({
-      start: startIdx,
-      end: endIdx,
-      width: this.state.params.aisle_width / 2,
-    });
-    this.generate();
   }
 
   deleteAisleVertex(index: number): void {
@@ -413,6 +384,64 @@ export class App {
     this.generate();
   }
 
+  cycleAnnotationDirection(index: number): void {
+    const ann = this.state.annotations[index];
+    if (!ann || ann.kind !== "OneWay") return;
+    const orig = ann._origDir ?? ann.travel_dir;
+
+    if (ann._active === false) {
+      ann._active = true;
+      ann.travel_dir = { x: orig.x, y: orig.y };
+    } else {
+      const dot = ann.travel_dir.x * orig.x + ann.travel_dir.y * orig.y;
+      if (dot > 0) {
+        ann.travel_dir = { x: -orig.x, y: -orig.y };
+      } else {
+        ann._active = false;
+      }
+    }
+    this.generate();
+    // Sync: also select the matching edge so it highlights.
+    this.syncEdgeSelectionFromAnnotation(ann);
+  }
+
+  /// Find the resolved graph edge nearest to an annotation and select it.
+  private syncEdgeSelectionFromAnnotation(ann: Annotation): void {
+    const graph = this.state.layout?.resolved_graph;
+    if (!graph) return;
+    const seen = new Set<string>();
+    let bestIdx = -1;
+    let bestDist = Infinity;
+    for (let i = 0; i < graph.edges.length; i++) {
+      const edge = graph.edges[i];
+      const key = Math.min(edge.start, edge.end) + "," + Math.max(edge.start, edge.end);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const s = graph.vertices[edge.start];
+      const e = graph.vertices[edge.end];
+      const dist = pointToSegmentDist(ann.midpoint, s, e);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx >= 0 && bestDist < 5) {
+      this.state.selectedEdge = { index: bestIdx, chain: findCollinearChain(graph, bestIdx) };
+    }
+  }
+
+  /// Remove all tombstone (inactive) annotations. Called when selection
+  /// changes away from an annotation.
+  cleanupTombstones(): void {
+    const before = this.state.annotations.length;
+    this.state.annotations = this.state.annotations.filter(
+      (a) => a._active !== false
+    );
+    if (this.state.annotations.length !== before) {
+      this.generate();
+    }
+  }
+
   deleteDriveLine(index: number): void {
     this.state.driveLines.splice(index, 1);
     this.state.selectedVertex = null;
@@ -442,29 +471,57 @@ export class App {
         Math.sqrt((a.midpoint.x - mid.x) ** 2 + (a.midpoint.y - mid.y) ** 2) < tolerance
     );
 
+    let annIdx: number;
     if (existing < 0) {
       // No annotation → create OneWay in start→end direction.
-      // Store the original direction so we can detect the flip→remove cycle
-      // even after the engine reorients the edge to match travel_dir.
+      annIdx = this.state.annotations.length;
       this.state.annotations.push({
         kind: "OneWay",
         midpoint: mid,
         travel_dir: edgeDir,
         _origDir: edgeDir,
+        _active: true,
       });
     } else {
+      annIdx = existing;
       const ann = this.state.annotations[existing];
-      const orig = ann._origDir ?? ann.travel_dir;
-      // Compare current travel_dir against original to determine cycle state.
-      const dot = ann.travel_dir.x * orig.x + ann.travel_dir.y * orig.y;
-      if (dot > 0) {
-        // Currently forward → flip to reversed.
-        ann.travel_dir = { x: -orig.x, y: -orig.y };
+      if (ann._active === false) {
+        // Tombstone → reactivate as forward.
+        const orig = ann._origDir ?? ann.travel_dir;
+        ann._active = true;
+        ann.travel_dir = { x: orig.x, y: orig.y };
       } else {
-        // Currently reversed → remove (back to TwoWay).
-        this.state.annotations.splice(existing, 1);
+        const orig = ann._origDir ?? ann.travel_dir;
+        const dot = ann.travel_dir.x * orig.x + ann.travel_dir.y * orig.y;
+        if (dot > 0) {
+          ann.travel_dir = { x: -orig.x, y: -orig.y };
+        } else {
+          ann._active = false;
+        }
       }
     }
+    // Keep edge and annotation selections in sync.
+    this.state.selectedVertex = { type: "annotation", index: annIdx };
     this.generate();
   }
+}
+
+function aisleVectorFromAngle(angleDeg: number, _offset: number, center: Vec2): { start: Vec2; end: Vec2 } {
+  const angleRad = angleDeg * (Math.PI / 180);
+  const dirX = Math.cos(angleRad);
+  const dirY = Math.sin(angleRad);
+  const halfLen = 60;
+  return {
+    start: { x: center.x - dirX * halfLen, y: center.y - dirY * halfLen },
+    end: { x: center.x + dirX * halfLen, y: center.y + dirY * halfLen },
+  };
+}
+
+function pointToSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.sqrt((p.x - a.x) ** 2 + (p.y - a.y) ** 2);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq));
+  const px = a.x + t * dx, py = a.y + t * dy;
+  return Math.sqrt((p.x - px) ** 2 + (p.y - py) ** 2);
 }
