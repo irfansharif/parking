@@ -313,7 +313,9 @@ fn append_graph(a: DriveAisleGraph, b: DriveAisleGraph) -> DriveAisleGraph {
 }
 
 /// Apply spatial annotations to a resolved graph. Each annotation is matched
-/// to the nearest graph edge by midpoint proximity and angle compatibility.
+/// to the edge that passes closest to the annotation point (point-to-segment
+/// distance), with a tight threshold so annotations only bind to edges that
+/// geometrically pass through them.
 fn apply_annotations(
     graph: &mut DriveAisleGraph,
     annotations: &[Annotation],
@@ -323,9 +325,10 @@ fn apply_annotations(
         return;
     }
 
-    // Precompute edge midpoints and directions (one per undirected edge).
+    // Precompute edge endpoints and directions (one per undirected edge).
     struct EdgeInfo {
-        mid: Vec2,
+        start: Vec2,
+        end: Vec2,
         dir: Vec2,
         idx: usize,
     }
@@ -342,23 +345,26 @@ fn apply_annotations(
         }
         let s = graph.vertices[edge.start];
         let e = graph.vertices[edge.end];
-        let mid = (s + e) * 0.5;
         let dir = (e - s).normalize();
-        edge_infos.push(EdgeInfo { mid, dir, idx: i });
+        edge_infos.push(EdgeInfo { start: s, end: e, dir, idx: i });
     }
 
     let one_way_hw = params.aisle_width / 2.0;
+    // Tight threshold: annotation must be essentially on top of the edge.
+    let max_dist = 3.0;
 
     for ann in annotations {
         match ann {
             Annotation::OneWay { midpoint, travel_dir } => {
-                // Find the closest edge whose midpoint is near and direction
-                // is roughly parallel to the travel direction.
+                // Find the edge that passes closest to the annotation point.
                 let mut best: Option<(usize, f64)> = None;
                 for info in &edge_infos {
-                    let dist = (info.mid - *midpoint).length();
                     // Edge must be roughly parallel to travel direction.
                     if info.dir.dot(*travel_dir).abs() < 0.7 {
+                        continue;
+                    }
+                    let dist = point_to_segment_dist(*midpoint, info.start, info.end);
+                    if dist > max_dist {
                         continue;
                     }
                     if best.is_none() || dist < best.unwrap().1 {
@@ -395,4 +401,16 @@ fn apply_annotations(
             }
         }
     }
+}
+
+/// Perpendicular distance from point `p` to the line segment `a`–`b`.
+fn point_to_segment_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
+    let ab = b - a;
+    let len_sq = ab.dot(ab);
+    if len_sq < 1e-12 {
+        return (p - a).length();
+    }
+    let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
+    let proj = a + ab * t;
+    (p - proj).length()
 }
