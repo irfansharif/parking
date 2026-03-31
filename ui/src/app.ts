@@ -238,7 +238,8 @@ export class App {
     });
     // Annotation anchors next.
     this.state.annotations.forEach((ann, i) => {
-      result.push({ ref: { type: "annotation", index: i }, pos: ann.midpoint });
+      const pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
+      result.push({ ref: { type: "annotation", index: i }, pos });
     });
     // Drive-line vertices next so they win hit-tests over overlapping
     // resolved-graph aisle vertices at the same position.
@@ -302,6 +303,7 @@ export class App {
       const perpX = -Math.sin(angleRad);
       const perpY = Math.cos(angleRad);
       this.state.params.aisle_offset = anchor.x * perpX + anchor.y * perpY;
+      this.state.aisleGraph = null;
     }
     this.generate();
   }
@@ -408,6 +410,8 @@ export class App {
 
   /// Find the resolved graph edge nearest to an annotation and select it.
   private syncEdgeSelectionFromAnnotation(ann: Annotation): void {
+    if (ann.kind === "DeleteVertex") return;
+    const pt = ann.midpoint;
     const graph = this.state.layout?.resolved_graph;
     if (!graph) return;
     const seen = new Set<string>();
@@ -420,7 +424,7 @@ export class App {
       seen.add(key);
       const s = graph.vertices[edge.start];
       const e = graph.vertices[edge.end];
-      const dist = pointToSegmentDist(ann.midpoint, s, e);
+      const dist = pointToSegmentDist(pt, s, e);
       if (dist < bestDist) {
         bestDist = dist;
         bestIdx = i;
@@ -441,6 +445,44 @@ export class App {
     if (this.state.annotations.length !== before) {
       this.generate();
     }
+  }
+
+  deleteAisleVertexByAnnotation(vertexIndex: number): void {
+    const graph = this.getEffectiveAisleGraph();
+    if (!graph) return;
+    const v = graph.vertices[vertexIndex];
+    if (!v) return;
+    this.state.annotations.push({
+      kind: "DeleteVertex",
+      point: { x: v.x, y: v.y },
+    });
+    this.state.selectedVertex = null;
+    this.state.aisleGraph = null;
+    this.generate();
+  }
+
+  deleteSelectedEdge(): void {
+    const sel = this.state.selectedEdge;
+    if (!sel) return;
+    const graph = this.getEffectiveAisleGraph();
+    if (!graph) return;
+    const edge = graph.edges[sel.index];
+    if (!edge) return;
+    const s = graph.vertices[edge.start];
+    const e = graph.vertices[edge.end];
+    const mid = { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 };
+    const dx = e.x - s.x, dy = e.y - s.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len < 1e-9) return;
+    this.state.annotations.push({
+      kind: "DeleteEdge",
+      midpoint: mid,
+      edge_dir: { x: dx / len, y: dy / len },
+      chain: sel.mode === "chain",
+    });
+    this.state.selectedEdge = null;
+    this.state.aisleGraph = null;
+    this.generate();
   }
 
   deleteDriveLine(index: number): void {
@@ -488,8 +530,8 @@ export class App {
     } else {
       annIdx = existing;
       const ann = this.state.annotations[existing];
+      if (ann.kind !== "OneWay") return;
       if (ann._active === false) {
-        // Tombstone → reactivate as forward.
         const orig = ann._origDir ?? ann.travel_dir;
         ann._active = true;
         ann.travel_dir = { x: orig.x, y: orig.y };

@@ -90,7 +90,8 @@ export function setupInteraction(
       // Sync: when clicking an annotation, also select its edge.
       if (closest.ref.type === "annotation") {
         const ann = app.state.annotations[closest.ref.index];
-        if (ann) {
+        if (ann && ann.kind !== "DeleteVertex") {
+          const pt = ann.midpoint;
           const graph = app.getEffectiveAisleGraph();
           if (graph) {
             const seen = new Set<string>();
@@ -103,7 +104,7 @@ export function setupInteraction(
               seen.add(key);
               const s = graph.vertices[e.start];
               const end = graph.vertices[e.end];
-              const dist = pointToSegmentDist(ann.midpoint, s, end);
+              const dist = pointToSegmentDist(pt, s, end);
               if (dist < bestDist) { bestDist = dist; bestIdx = i; }
             }
             if (bestIdx >= 0 && bestDist < 5) {
@@ -137,9 +138,10 @@ export function setupInteraction(
             const s = graph.vertices[edge.start];
             const e = graph.vertices[edge.end];
             const mid = { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 };
-            const annIdx = app.state.annotations.findIndex(
-              (a) => Math.sqrt((a.midpoint.x - mid.x) ** 2 + (a.midpoint.y - mid.y) ** 2) < 5
-            );
+            const annIdx = app.state.annotations.findIndex((a) => {
+              const ap = a.kind === "DeleteVertex" ? a.point : a.midpoint;
+              return Math.sqrt((ap.x - mid.x) ** 2 + (ap.y - mid.y) ** 2) < 5;
+            });
             if (annIdx >= 0) {
               app.state.selectedVertex = { type: "annotation", index: annIdx };
             }
@@ -348,6 +350,12 @@ export function setupInteraction(
         renderer.render(app.state);
       }
     } else if (e.key === "Delete" || e.key === "Backspace" || e.key === "d" || e.key === "D") {
+      // Delete selected edge via annotation.
+      if (app.state.selectedEdge) {
+        app.deleteSelectedEdge();
+        renderer.render(app.state);
+        return;
+      }
       const sel = app.state.selectedVertex;
       if (!sel) return;
       if (sel.type === "annotation") {
@@ -357,7 +365,8 @@ export function setupInteraction(
       } else if (sel.type === "boundary-hole" && sel.holeIndex !== undefined) {
         app.deleteHoleVertex(sel.holeIndex, sel.index);
       } else if (sel.type === "aisle") {
-        app.deleteAisleVertex(sel.index);
+        // Create a DeleteVertex annotation instead of mutating the graph.
+        app.deleteAisleVertexByAnnotation(sel.index);
       } else if (sel.type === "drive-line") {
         app.deleteDriveLine(sel.index);
       }

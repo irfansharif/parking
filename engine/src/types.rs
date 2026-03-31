@@ -356,6 +356,18 @@ pub enum Annotation {
         #[serde(default = "default_true")]
         chain: bool,
     },
+    /// Remove the nearest vertex and all its incident edges.
+    DeleteVertex {
+        point: Vec2,
+    },
+    /// Remove the nearest edge. When `chain` is true, removes the full
+    /// collinear chain.
+    DeleteEdge {
+        midpoint: Vec2,
+        edge_dir: Vec2,
+        #[serde(default = "default_true")]
+        chain: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------

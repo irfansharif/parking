@@ -518,11 +518,17 @@ export class Renderer {
 
     // Draw vertices — boundary/aisle verts gated by layers.vertices,
     // drive-line verts gated by layers.driveLines.
-    const annotationVerts = state.annotations.map((ann, i) => ({
-      pos: ann.midpoint,
-      ref: { type: "annotation" as const, index: i },
-      color: ann._active === false ? "rgba(255, 180, 50, 0.3)" : "rgba(255, 180, 50, 0.95)",
-    }));
+    const annotationVerts = state.annotations.map((ann, i) => {
+      const pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
+      const isDelete = ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
+      const activeColor = isDelete ? "rgba(255, 80, 80, 0.95)" : "rgba(255, 180, 50, 0.95)";
+      const inactiveColor = isDelete ? "rgba(255, 80, 80, 0.3)" : "rgba(255, 180, 50, 0.3)";
+      return {
+        pos,
+        ref: { type: "annotation" as const, index: i },
+        color: ann._active === false ? inactiveColor : activeColor,
+      };
+    });
 
     const allVerts = [
       ...(state.layers.vertices ? [

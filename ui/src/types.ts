@@ -100,13 +100,29 @@ export interface DriveLine {
   end: Vec2;
 }
 
-export interface Annotation {
+export type Annotation = OneWayAnnotation | DeleteVertexAnnotation | DeleteEdgeAnnotation;
+
+export interface OneWayAnnotation {
   kind: "OneWay";
   midpoint: Vec2;
   travel_dir: Vec2;
-  chain?: boolean; // true (default) = apply to full collinear chain, false = single segment
-  _origDir?: Vec2; // UI-only: original edge direction for cycle state tracking
-  _active?: boolean; // UI-only: false = tombstone (visible but no effect). Default true.
+  chain?: boolean;
+  _origDir?: Vec2;
+  _active?: boolean; // false = tombstone
+}
+
+export interface DeleteVertexAnnotation {
+  kind: "DeleteVertex";
+  point: Vec2;
+  _active?: boolean;
+}
+
+export interface DeleteEdgeAnnotation {
+  kind: "DeleteEdge";
+  midpoint: Vec2;
+  edge_dir: Vec2;
+  chain?: boolean;
+  _active?: boolean;
 }
 
 export interface GenerateInput {

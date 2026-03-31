@@ -407,7 +407,87 @@ fn apply_annotations(
                     }
                 }
             }
+            _ => {} // DeleteVertex/DeleteEdge handled in second pass
         }
+    }
+
+    // Second pass: collect vertices and edges to delete.
+    let max_vtx_dist = 5.0;
+    let mut vertices_to_remove = std::collections::HashSet::new();
+    let mut edges_to_remove = std::collections::HashSet::new();
+
+    for ann in annotations {
+        match ann {
+            Annotation::DeleteVertex { point } => {
+                // Find nearest vertex.
+                let mut best: Option<(usize, f64)> = None;
+                for (i, v) in graph.vertices.iter().enumerate() {
+                    let dist = (*v - *point).length();
+                    if dist < max_vtx_dist && (best.is_none() || dist < best.unwrap().1) {
+                        best = Some((i, dist));
+                    }
+                }
+                if let Some((vi, _)) = best {
+                    vertices_to_remove.insert(vi);
+                }
+            }
+            Annotation::DeleteEdge { midpoint, edge_dir, chain: expand_chain } => {
+                let mut best: Option<(usize, f64)> = None;
+                for info in &edge_infos {
+                    if info.dir.dot(*edge_dir).abs() < 0.7 {
+                        continue;
+                    }
+                    let dist = point_to_segment_dist(*midpoint, info.start, info.end);
+                    if dist > max_dist {
+                        continue;
+                    }
+                    if best.is_none() || dist < best.unwrap().1 {
+                        best = Some((info.idx, dist));
+                    }
+                }
+                if let Some((matched_idx, _)) = best {
+                    let chain = if *expand_chain {
+                        find_collinear_chain(graph, matched_idx)
+                    } else {
+                        vec![matched_idx]
+                    };
+                    for &ci in &chain {
+                        let edge = &graph.edges[ci];
+                        let s = edge.start;
+                        let e = edge.end;
+                        // Mark both forward and reverse edges.
+                        for (i, ei) in graph.edges.iter().enumerate() {
+                            if (ei.start == s && ei.end == e) || (ei.start == e && ei.end == s) {
+                                edges_to_remove.insert(i);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Apply deletions: remove edges incident to deleted vertices, then
+    // remove explicitly deleted edges. Rebuild with compacted indices.
+    if !vertices_to_remove.is_empty() || !edges_to_remove.is_empty() {
+        // Also remove edges touching deleted vertices.
+        for (i, edge) in graph.edges.iter().enumerate() {
+            if vertices_to_remove.contains(&edge.start) || vertices_to_remove.contains(&edge.end) {
+                edges_to_remove.insert(i);
+            }
+        }
+
+        // Filter edges.
+        let new_edges: Vec<AisleEdge> = graph.edges.iter().enumerate()
+            .filter(|(i, _)| !edges_to_remove.contains(i))
+            .map(|(_, e)| e.clone())
+            .collect();
+        graph.edges = new_edges;
+
+        // Note: we don't compact vertices (remove unused ones) since vertex
+        // indices are referenced by edges and the perimeter_vertex_count.
+        // Orphaned vertices are harmless.
     }
 }
 
