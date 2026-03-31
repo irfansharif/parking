@@ -21,6 +21,7 @@ export interface SpineLine {
 export interface Face {
   contour: Vec2[];
   holes?: Vec2[][];
+  is_boundary?: boolean;
 }
 
 export interface Island {
@@ -47,6 +48,7 @@ export interface AisleEdge {
   start: number;
   end: number;
   width: number;
+  interior?: boolean;
   direction?: AisleDirection;
 }
 
@@ -80,6 +82,7 @@ export interface DebugToggles {
   // Face extraction
   face_extraction: boolean;
   // Spine generation
+  face_simplification: boolean;
   edge_classification: boolean;
   spine_clipping: boolean;
   // Spine post-processing

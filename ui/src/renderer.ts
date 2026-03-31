@@ -339,6 +339,29 @@ export class Renderer {
     ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.8)`;
     ctx.lineWidth = 0.5;
     ctx.stroke();
+
+    if (face.is_boundary) {
+      ctx.save();
+      ctx.beginPath();
+      this.tracePath(face.contour);
+      if (face.holes) {
+        for (const hole of face.holes) this.tracePath(hole);
+      }
+      ctx.clip("evenodd");
+      const xs = face.contour.map(v => v.x);
+      const ys = face.contour.map(v => v.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.4)`;
+      ctx.lineWidth = 0.3;
+      ctx.beginPath();
+      for (let d = minX + minY; d < maxX + maxY; d += 6) {
+        ctx.moveTo(Math.max(minX, d - maxY), Math.min(maxY, d - minX));
+        ctx.lineTo(Math.min(maxX, d - minY), Math.max(minY, d - maxX));
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   private drawStall(stall: StallQuad): void {
@@ -431,13 +454,16 @@ export class Renderer {
 
         // Edge line — segment selection is solid+thick, chain selection is dashed+thick.
         ctx.setLineDash(isSegmentSelected ? [] : isOneWay ? [] : [2, 2]);
+        const isPerimeter = edge.interior === false;
         ctx.strokeStyle = isSelected
           ? "rgba(255, 220, 50, 0.9)"
           : isOneWay
             ? "rgba(255, 180, 50, 0.7)"
-            : isManualGraph
-              ? "rgba(100, 150, 255, 0.5)"
-              : "rgba(100, 150, 255, 0.3)";
+            : isPerimeter
+              ? "rgba(255, 100, 100, 0.5)"
+              : isManualGraph
+                ? "rgba(100, 150, 255, 0.5)"
+                : "rgba(100, 150, 255, 0.3)";
         ctx.lineWidth = isSegmentSelected ? 2.5 : isSelected ? 1.5 : isOneWay ? 1.0 : 0.5;
         ctx.beginPath();
         ctx.moveTo(start.x, start.y);
