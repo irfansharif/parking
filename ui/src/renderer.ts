@@ -113,13 +113,6 @@ export class Renderer {
         }
       }
 
-      // 3a. Spines
-      if (state.layers.spines && state.layout.spines) {
-        for (const spine of state.layout.spines) {
-          this.drawSpine(spine);
-        }
-      }
-
       // 4. Islands (before stalls so stalls paint over island fill)
       if (state.layers.islands && state.layout.islands) {
         for (const island of state.layout.islands) {
@@ -145,6 +138,13 @@ export class Renderer {
           ctx.strokeStyle = `rgba(${fillR}, ${fillG}, ${fillB}, 0.9)`;
           ctx.lineWidth = 0.5;
           ctx.stroke();
+        }
+      }
+
+      // 4a. Spines (after islands so they're visible over green fill)
+      if (state.layers.spines && state.layout.spines) {
+        for (const spine of state.layout.spines) {
+          this.drawSpine(spine);
         }
       }
 
@@ -374,11 +374,21 @@ export class Renderer {
 
   private drawSpine(spine: SpineLine): void {
     const { ctx } = this;
-    // Draw the spine line itself — bright cyan, dashed.
+
+    // Color by normal direction so opposing spines are visually distinct.
+    // Map to 4 high-contrast colors: right=cyan, up=orange, left=red, down=blue.
+    const angle = Math.atan2(spine.normal.y, spine.normal.x);
+    const quadrant = Math.round(((angle * 180 / Math.PI) + 360) % 360 / 90) % 4;
+    const hues = [180, 40, 0, 220]; // right, up, left, down
+    const hue = hues[quadrant];
+    const color = `hsla(${hue}, 100%, 70%, 0.95)`;
+    const colorFaint = `hsla(${hue}, 100%, 70%, 0.8)`;
+
+    // Draw the spine line itself — dashed.
     ctx.beginPath();
     ctx.moveTo(spine.start.x, spine.start.y);
     ctx.lineTo(spine.end.x, spine.end.y);
-    ctx.strokeStyle = "rgba(0, 220, 255, 0.8)";
+    ctx.strokeStyle = color;
     ctx.lineWidth = 0.8;
     ctx.setLineDash([3, 2]);
     ctx.stroke();
@@ -392,7 +402,7 @@ export class Renderer {
     ctx.beginPath();
     ctx.moveTo(mx, my);
     ctx.lineTo(mx + spine.normal.x * tickLen, my + spine.normal.y * tickLen);
-    ctx.strokeStyle = "rgba(0, 220, 255, 0.6)";
+    ctx.strokeStyle = colorFaint;
     ctx.lineWidth = 0.6;
     ctx.stroke();
   }
