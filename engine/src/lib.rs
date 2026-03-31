@@ -84,8 +84,8 @@ fn format_fixture(input: &GenerateInput) -> String {
     if (p.site_offset - defaults.site_offset).abs() > 1e-6 {
         param_lines.push(format!("set site_offset={}", fmt_coord(p.site_offset)));
     }
-    if (p.cross_aisle_spacing - defaults.cross_aisle_spacing).abs() > 1e-6 {
-        param_lines.push(format!("set cross_aisle_spacing={}", fmt_coord(p.cross_aisle_spacing)));
+    if (p.cross_aisle_max_run - defaults.cross_aisle_max_run).abs() > 1e-6 {
+        param_lines.push(format!("set cross_aisle_max_run={}", fmt_coord(p.cross_aisle_max_run)));
     }
     for line in &param_lines {
         out.push_str(&format!("\n{}\n----\n{}\n", line, line));

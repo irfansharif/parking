@@ -76,12 +76,12 @@ const PARAM_DEFS: ParamDef[] = [
     type: "range",
   },
   {
-    key: "cross_aisle_spacing",
+    key: "cross_aisle_max_run",
     label: "Cross Aisle Spacing",
-    min: 50,
-    max: 400,
+    min: 3,
+    max: 50,
     step: 1,
-    unit: "ft",
+    unit: "stalls",
     type: "range",
   },
 ];

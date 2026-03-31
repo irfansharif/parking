@@ -111,7 +111,7 @@ export class App {
         aisle_angle_deg: 90,
         aisle_offset: 0,
         site_offset: 0,
-        cross_aisle_spacing: 179,
+        cross_aisle_max_run: 15,
       },
       debug: {
         miter_fills: true,

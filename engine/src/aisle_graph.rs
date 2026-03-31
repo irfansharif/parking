@@ -156,8 +156,9 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
 
     // 3b. Cross-aisles (perpendicular to main aisles).
     let mut cross_pairs: Vec<(usize, usize)> = Vec::new();
-    if params.cross_aisle_spacing >= row_spacing {
-        let col_spacing = params.cross_aisle_spacing;
+    let stall_pitch = params.stall_width / stall_angle_rad.sin();
+    let col_spacing = params.cross_aisle_max_run * stall_pitch;
+    if col_spacing >= row_spacing {
 
         // Project perimeter onto aisle_dir to find extent.
         let min_along = outer_loop
