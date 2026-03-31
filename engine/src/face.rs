@@ -245,6 +245,7 @@ fn point_to_segment_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
 /// walls) get 90° stalls. Any interior aisle edge makes the face interior.
 fn is_boundary_face(
     contour: &[Vec2],
+    merged_aisle_shapes: &[Vec<Vec<Vec2>>],
     per_edge_aisles: &[(Vec<Vec2>, bool, Option<Vec2>)],
 ) -> bool {
     let eps = 0.5;
@@ -253,6 +254,28 @@ fn is_boundary_face(
         let j = (i + 1) % n;
         let p0 = contour[i];
         let p1 = contour[j];
+
+        // Condition 1: check against MERGED aisle shapes. Face edges come
+        // from the merged union, so this is the right thing to match against.
+        let mut on_merged = false;
+        'merged: for shape in merged_aisle_shapes {
+            for ring in shape {
+                for ci in 0..ring.len() {
+                    let cj = (ci + 1) % ring.len();
+                    let d = point_to_segment_dist(p0, ring[ci], ring[cj])
+                        .max(point_to_segment_dist(p1, ring[ci], ring[cj]));
+                    if d < eps {
+                        on_merged = true;
+                        break 'merged;
+                    }
+                }
+            }
+        }
+        if !on_merged {
+            return true; // Wall edge.
+        }
+
+        // Condition 2: check which un-merged aisle this edge belongs to.
         let mut best_dist = f64::INFINITY;
         let mut best_interior = false;
         for (poly, interior, _) in per_edge_aisles {
@@ -267,7 +290,7 @@ fn is_boundary_face(
             }
         }
         if best_interior {
-            return false; // Has an interior aisle edge → interior face.
+            return false; // Has an interior aisle edge.
         }
     }
     true
@@ -289,7 +312,7 @@ fn classify_face_edges(
         return vec![(true, true, None); contour.len()];
     }
 
-    let is_interior = !is_boundary_face(contour, per_edge_corridors);
+    let is_interior = !is_boundary_face(contour, corridor_shapes, per_edge_corridors);
 
     let eps = 0.5;
     let n = contour.len();
@@ -337,68 +360,35 @@ fn classify_face_edges(
     result
 }
 
-/// Simplify a polygon contour for skeleton computation, preserving
-/// classification boundaries. Removes duplicate vertices (zero-length edges),
-/// micro-edges shorter than `min_edge`, and merges nearly-collinear
-/// consecutive edges whose classifications match.
-///
-/// `edge_classes` has one entry per edge (same length as `pts`); edge `i`
-/// runs from `pts[i]` to `pts[(i+1) % n]`. A vertex is only dropped if the
-/// edges on both sides share the same class, so aisle-facing / boundary
-/// transitions are never erased.
-///
-/// Returns the simplified vertices and their corresponding per-edge classes.
-fn simplify_contour(
-    pts: &[Vec2],
-    edge_classes: &[bool],
-    min_edge: f64,
-    angle_tol: f64,
-) -> (Vec<Vec2>, Vec<bool>) {
+/// Simplify a polygon contour for skeleton computation.
+/// Removes duplicate vertices (zero-length edges) and merges nearly-collinear
+/// consecutive edges (angle between them smaller than `angle_tol` radians).
+fn simplify_contour(pts: &[Vec2], angle_tol: f64) -> Vec<Vec2> {
     if pts.len() < 3 {
-        return (pts.to_vec(), edge_classes.to_vec());
+        return pts.to_vec();
     }
 
-    // Pass 1: remove duplicate/micro-edge vertices.
-    // When two vertices merge, keep the class of the surviving (longer) edge.
+    // Pass 1: remove duplicate vertices (truly zero-length edges only).
+    let dup_tol = 1e-6;
     let mut deduped: Vec<Vec2> = Vec::with_capacity(pts.len());
-    let mut deduped_cls: Vec<bool> = Vec::with_capacity(pts.len());
-    for i in 0..pts.len() {
-        if deduped.last().map_or(true, |prev: &Vec2| (*prev - pts[i]).length() > min_edge) {
-            deduped.push(pts[i]);
-            deduped_cls.push(edge_classes[i]);
-        } else {
-            // Micro-edge: merge with previous. The surviving edge inherits
-            // the class of the edge leaving this vertex (current class).
-            if let Some(last_cls) = deduped_cls.last_mut() {
-                *last_cls = edge_classes[i];
-            }
+    for &p in pts {
+        if deduped.last().map_or(true, |prev: &Vec2| (*prev - p).length() > dup_tol) {
+            deduped.push(p);
         }
     }
-    // Check wrap-around: last vertex vs first.
     while deduped.len() > 3 {
-        if (deduped[0] - *deduped.last().unwrap()).length() <= min_edge {
+        if (deduped[0] - *deduped.last().unwrap()).length() <= dup_tol {
             deduped.pop();
-            deduped_cls.pop();
         } else {
             break;
         }
     }
 
-    // Pass 2: merge collinear edges only when both share the same class.
+    // Pass 2: merge nearly-collinear edges.
     let cos_tol = angle_tol.cos();
     let mut simplified: Vec<Vec2> = Vec::with_capacity(deduped.len());
-    let mut simplified_cls: Vec<bool> = Vec::with_capacity(deduped.len());
     let n = deduped.len();
     for i in 0..n {
-        let prev_edge = (i + n - 1) % n;
-        let curr_edge = i;
-        // Only merge if the edge entering and leaving this vertex have the
-        // same class (both aisle-facing or both boundary).
-        if deduped_cls[prev_edge] != deduped_cls[curr_edge] {
-            simplified.push(deduped[i]);
-            simplified_cls.push(deduped_cls[i]);
-            continue;
-        }
         let prev = deduped[(i + n - 1) % n];
         let curr = deduped[i];
         let next = deduped[(i + 1) % n];
@@ -411,17 +401,15 @@ fn simplify_contour(
         }
         let dot = d1.dot(d2) / (len1 * len2);
         if dot > cos_tol {
-            // Edges are nearly collinear with same class; drop the vertex.
             continue;
         }
-        simplified.push(deduped[i]);
-        simplified_cls.push(deduped_cls[i]);
+        simplified.push(curr);
     }
 
     if simplified.len() < 3 {
-        return (deduped, deduped_cls);
+        return deduped;
     }
-    (simplified, simplified_cls)
+    simplified
 }
 
 /// Normalize winding for multi-contour skeleton input.
@@ -477,11 +465,16 @@ fn compute_face_spines(
     }
 
     let mut contours = normalize_face_winding(shape);
+    if debug.face_simplification {
+        contours = contours.into_iter()
+            .map(|c| simplify_contour(&c, 0.035))
+            .filter(|c| c.len() >= 3)
+            .collect();
+        if contours.is_empty() {
+            return vec![];
+        }
+    }
     let ed = effective_depth - 0.05;
-    // Classify edges first, then optionally simplify — classification must
-    // happen on the original geometry so corridor-edge proximity is accurate.
-    // Simplification only merges vertices where both adjacent edges share the
-    // same class, preserving aisle/boundary transitions.
     let mut aisle_facing_flat: Vec<bool> = Vec::new();
     let face_interior = !face_is_boundary;
     let mut interior_flat: Vec<bool> = Vec::new();
@@ -492,45 +485,6 @@ fn compute_face_spines(
             aisle_facing_flat.push(facing);
             interior_flat.push(face_interior);
             travel_dir_flat.push(travel_dir);
-        }
-    }
-    if debug.face_simplification {
-        let mut new_contours = Vec::new();
-        let mut new_facing = Vec::new();
-        let mut new_interior = Vec::new();
-        let mut new_travel = Vec::new();
-        let mut offset = 0;
-        for contour in &contours {
-            let n = contour.len();
-            let cls: Vec<bool> = aisle_facing_flat[offset..offset + n].to_vec();
-            let (simp_pts, simp_cls) = simplify_contour(contour, &cls, 0.1, 0.035);
-            for (i, &af) in simp_cls.iter().enumerate() {
-                // Find the original edge closest to this simplified edge to
-                // recover interior/travel_dir.
-                let mid = (simp_pts[i] + simp_pts[(i + 1) % simp_pts.len()]) * 0.5;
-                let mut best_j = 0;
-                let mut best_dist = f64::INFINITY;
-                for j in 0..n {
-                    let om = (contour[j] + contour[(j + 1) % n]) * 0.5;
-                    let d = (mid - om).length();
-                    if d < best_dist {
-                        best_dist = d;
-                        best_j = j;
-                    }
-                }
-                new_facing.push(af);
-                new_interior.push(interior_flat[offset + best_j]);
-                new_travel.push(travel_dir_flat[offset + best_j]);
-            }
-            new_contours.push(simp_pts);
-            offset += n;
-        }
-        contours = new_contours.into_iter().filter(|c| c.len() >= 3).collect();
-        aisle_facing_flat = new_facing;
-        interior_flat = new_interior;
-        travel_dir_flat = new_travel;
-        if contours.is_empty() {
-            return vec![];
         }
     }
 
@@ -1403,12 +1357,7 @@ pub fn generate_from_spines(
             let mut normalized = normalize_face_winding(shape);
             if debug.face_simplification {
                 normalized = normalized.into_iter()
-                    .map(|c| {
-                        let cls: Vec<bool> = classify_face_edges(&c, &merged_corridors, &dedup_corridors_with_flags, debug.edge_classification)
-                            .iter().map(|(af, _, _)| *af).collect();
-                        let (pts, _) = simplify_contour(&c, &cls, 0.1, 0.035);
-                        pts
-                    })
+                    .map(|c| simplify_contour(&c, 0.035))
                     .filter(|c| c.len() >= 3)
                     .collect();
             }
@@ -1439,7 +1388,7 @@ pub fn generate_from_spines(
                 sources,
             });
         }
-        let face_is_boundary = is_boundary_face(&shape[0], &dedup_corridors_with_flags);
+        let face_is_boundary = is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags);
         let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors_with_flags, face_is_boundary, params, debug);
         if !face_spines.is_empty() {
             faces_with_spines.insert(face_idx);
@@ -1526,7 +1475,7 @@ pub fn generate_from_spines(
         .iter()
         .filter(|shape| !shape.is_empty() && shape[0].len() >= 3)
         .map(|shape| {
-            let ib = is_boundary_face(&shape[0], &dedup_corridors_with_flags);
+            let ib = is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags);
             Face {
                 contour: shape[0].clone(),
                 holes: shape[1..].iter().cloned().collect(),
