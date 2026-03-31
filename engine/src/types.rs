@@ -286,7 +286,7 @@ pub struct DebugToggles {
     pub face_extraction: bool,
 
     // Spine generation
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub face_simplification: bool,
     #[serde(default = "default_true")]
     pub edge_classification: bool,
@@ -325,7 +325,7 @@ impl Default for DebugToggles {
             spike_removal: false,
             hole_filtering: true,
             face_extraction: true,
-            face_simplification: true,
+            face_simplification: false,
             edge_classification: true,
             spine_clipping: true,
             spine_dedup: true,

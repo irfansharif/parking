@@ -118,7 +118,7 @@ export class App {
         spike_removal: false,
         hole_filtering: false,
         face_extraction: true,
-        face_simplification: true,
+        face_simplification: false,
         edge_classification: true,
         spine_clipping: true,
         spine_dedup: true,

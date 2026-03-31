@@ -20,12 +20,24 @@ export function createCommandAPI(app: App): CommandAPI {
       const cmd = parts[0];
 
       switch (cmd) {
+        case "clear": {
+          app.state.boundary = { outer: [], holes: [] };
+          app.state.driveLines = [];
+          app.state.annotations = [];
+          app.state.aisleGraph = null;
+          return "cleared";
+        }
+
         case "polygon": {
           const subtype = parts[1]; // "outer" or "hole"
           if (!body) return "error: polygon requires body with vertices";
           const points = parsePoints(body);
           if (subtype === "outer") {
             app.state.boundary.outer = points;
+            app.state.boundary.holes = [];
+            app.state.driveLines = [];
+            app.state.annotations = [];
+            app.state.aisleGraph = null;
           } else if (subtype === "hole") {
             app.state.boundary.holes.push(points);
           }
