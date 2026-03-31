@@ -425,10 +425,12 @@ export class Renderer {
         const start = graph.vertices[edge.start];
         const end = graph.vertices[edge.end];
         const isSelected = state.selectedEdge?.chain.includes(ei) ?? false;
+        const isSegmentSelected = isSelected && state.selectedEdge?.mode === "segment" && state.selectedEdge?.index === ei;
+        const isChainSelected = isSelected && !isSegmentSelected;
         const isOneWay = edge.direction === "OneWay";
 
-        // Edge line
-        ctx.setLineDash(isOneWay ? [] : [2, 2]);
+        // Edge line — segment selection is solid+thick, chain selection is dashed+thick.
+        ctx.setLineDash(isSegmentSelected ? [] : isOneWay ? [] : [2, 2]);
         ctx.strokeStyle = isSelected
           ? "rgba(255, 220, 50, 0.9)"
           : isOneWay
@@ -436,7 +438,7 @@ export class Renderer {
             : isManualGraph
               ? "rgba(100, 150, 255, 0.5)"
               : "rgba(100, 150, 255, 0.3)";
-        ctx.lineWidth = isSelected ? 1.5 : isOneWay ? 1.0 : 0.5;
+        ctx.lineWidth = isSegmentSelected ? 2.5 : isSelected ? 1.5 : isOneWay ? 1.0 : 0.5;
         ctx.beginPath();
         ctx.moveTo(start.x, start.y);
         ctx.lineTo(end.x, end.y);

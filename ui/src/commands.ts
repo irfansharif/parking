@@ -130,6 +130,40 @@ export function createCommandAPI(app: App): CommandAPI {
           return `drive-line: ${points[0].x},${points[0].y} -> ${points[1].x},${points[1].y}`;
         }
 
+        case "annotation": {
+          const subtype = parts[1]; // "one-way", "delete-vertex", "delete-edge"
+          if (!body) return "error: annotation requires body";
+          const points = parsePoints(body);
+          const noChain = parts.includes("no-chain");
+          if (subtype === "one-way") {
+            if (points.length < 2) return "error: one-way requires midpoint and travel_dir";
+            app.state.annotations.push({
+              kind: "OneWay",
+              midpoint: points[0],
+              travel_dir: points[1],
+              chain: !noChain,
+            });
+            return `annotation one-way at ${points[0].x},${points[0].y}`;
+          } else if (subtype === "delete-vertex") {
+            if (points.length < 1) return "error: delete-vertex requires point";
+            app.state.annotations.push({
+              kind: "DeleteVertex",
+              point: points[0],
+            });
+            return `annotation delete-vertex at ${points[0].x},${points[0].y}`;
+          } else if (subtype === "delete-edge") {
+            if (points.length < 2) return "error: delete-edge requires midpoint and edge_dir";
+            app.state.annotations.push({
+              kind: "DeleteEdge",
+              midpoint: points[0],
+              edge_dir: points[1],
+              chain: !noChain,
+            });
+            return `annotation delete-edge at ${points[0].x},${points[0].y}`;
+          }
+          return `error: unknown annotation type '${subtype}'`;
+        }
+
         case "layers": {
           // Toggle layer visibility. Usage: layers stalls=on aisles=off spines=on
           const rest = parts.slice(1).join(" ");

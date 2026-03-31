@@ -154,6 +154,73 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
         t += row_spacing;
     }
 
+    // 3b. Cross-aisles (perpendicular to main aisles).
+    let mut cross_pairs: Vec<(usize, usize)> = Vec::new();
+    if params.cross_aisle_spacing >= row_spacing {
+        let col_spacing = params.cross_aisle_spacing;
+
+        // Project perimeter onto aisle_dir to find extent.
+        let min_along = outer_loop
+            .iter()
+            .map(|v| v.dot(aisle_dir))
+            .fold(f64::INFINITY, f64::min);
+        let max_along = outer_loop
+            .iter()
+            .map(|v| v.dot(aisle_dir))
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        let col_start = min_along + col_spacing;
+        let col_end = max_along - col_spacing;
+
+        let mut s = col_start;
+        while s <= col_end {
+            let origin = aisle_dir * s;
+
+            let outer_hits = intersect_line_polygon(origin, perp_dir, &outer_loop);
+
+            // Record perimeter splits.
+            for hit in &outer_hits {
+                let pt = origin + perp_dir * hit.t_line;
+                let vi = vertices.len();
+                vertices.push(pt);
+                perim_splits[hit.edge_idx].push((hit.t_edge, vi));
+            }
+
+            let mut intervals: Vec<(f64, f64)> = Vec::new();
+            for pair in outer_hits.chunks(2) {
+                if pair.len() == 2 {
+                    intervals.push((pair[0].t_line, pair[1].t_line));
+                }
+            }
+
+            // Subtract hole interiors.
+            for hl in &hole_loops {
+                let hole_hits = intersect_line_polygon(origin, perp_dir, hl);
+                let mut hole_ivs: Vec<(f64, f64)> = Vec::new();
+                for pair in hole_hits.chunks(2) {
+                    if pair.len() == 2 {
+                        hole_ivs.push((pair[0].t_line, pair[1].t_line));
+                    }
+                }
+                intervals = subtract_intervals(&intervals, &hole_ivs);
+            }
+
+            for &(ta, tb) in &intervals {
+                let pa = origin + perp_dir * ta;
+                let pb = origin + perp_dir * tb;
+                let via = find_or_add_vertex(&mut vertices, pa, 0.1);
+                let vib = find_or_add_vertex(&mut vertices, pb, 0.1);
+                cross_pairs.push((via, vib));
+            }
+
+            s += col_spacing;
+        }
+
+        // Split main aisle segments at intersections with cross-aisle segments
+        // (and vice versa) so the graph is fully connected at every crossing.
+        split_at_crossings(&mut vertices, &mut interior_pairs, &mut cross_pairs, 0.1);
+    }
+
     // 4. Build perimeter edges with splits spliced in.
     for i in 0..perim_n {
         let j = (i + 1) % perim_n;
@@ -184,14 +251,14 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
         }
     }
 
-    // 6. Build interior aisle edges.
-    for &(via, vib) in &interior_pairs {
+    // 6. Build interior aisle edges (main + cross).
+    for &(via, vib) in interior_pairs.iter().chain(cross_pairs.iter()) {
         edges.push(AisleEdge { start: via, end: vib, width: hw, interior: true, direction: AisleDirection::TwoWay });
         edges.push(AisleEdge { start: vib, end: via, width: hw, interior: true, direction: AisleDirection::TwoWay });
     }
 
     // 7. Connect interior aisle endpoints near holes to nearest hole vertex.
-    for &(via, vib) in &interior_pairs {
+    for &(via, vib) in interior_pairs.iter().chain(cross_pairs.iter()) {
         for &vi in &[via, vib] {
             let v = vertices[vi];
             // Check if this vertex is on the perimeter (already connected via splits).
@@ -332,6 +399,76 @@ pub(crate) fn find_or_add_vertex(vertices: &mut Vec<Vec2>, point: Vec2, toleranc
     let idx = vertices.len();
     vertices.push(point);
     idx
+}
+
+/// Split two sets of segment pairs at their mutual intersections so the graph
+/// is connected at every crossing. Each pair (a, b) is a segment from
+/// vertices[a] to vertices[b]. When a segment from `set_a` crosses one from
+/// `set_b`, a shared vertex is inserted and both segments are replaced by their
+/// two sub-segments.
+fn split_at_crossings(
+    vertices: &mut Vec<Vec2>,
+    set_a: &mut Vec<(usize, usize)>,
+    set_b: &mut Vec<(usize, usize)>,
+    tol: f64,
+) {
+    // Collect crossing splits: for each segment index, the t-values where it
+    // must be split and the vertex index at that point.
+    let mut splits_a: Vec<Vec<(f64, usize)>> = vec![Vec::new(); set_a.len()];
+    let mut splits_b: Vec<Vec<(f64, usize)>> = vec![Vec::new(); set_b.len()];
+
+    for (ai, &(a0, a1)) in set_a.iter().enumerate() {
+        let pa = vertices[a0];
+        let da = vertices[a1] - vertices[a0];
+        let la = da.length();
+        if la < 1e-12 { continue; }
+
+        for (bi, &(b0, b1)) in set_b.iter().enumerate() {
+            let pb = vertices[b0];
+            let db = vertices[b1] - vertices[b0];
+            let lb = db.length();
+            if lb < 1e-12 { continue; }
+
+            let denom = da.cross(db);
+            if denom.abs() < 1e-12 { continue; }
+
+            let h = pb - pa;
+            let ta = h.cross(db) / denom;
+            let tb = h.cross(da) / denom;
+
+            if ta > tol / la && ta < 1.0 - tol / la && tb > tol / lb && tb < 1.0 - tol / lb {
+                let pt = pa + da * ta;
+                let vi = find_or_add_vertex(vertices, pt, tol);
+                splits_a[ai].push((ta, vi));
+                splits_b[bi].push((tb, vi));
+            }
+        }
+    }
+
+    // Apply splits to produce sub-segments.
+    fn apply_splits(
+        pairs: &[(usize, usize)],
+        splits: &mut [Vec<(f64, usize)>],
+    ) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for (i, &(s, e)) in pairs.iter().enumerate() {
+            if splits[i].is_empty() {
+                out.push((s, e));
+                continue;
+            }
+            splits[i].sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            let mut prev = s;
+            for &(_, vi) in &splits[i] {
+                out.push((prev, vi));
+                prev = vi;
+            }
+            out.push((prev, e));
+        }
+        out
+    }
+
+    *set_a = apply_splits(set_a, &mut splits_a);
+    *set_b = apply_splits(set_b, &mut splits_b);
 }
 
 // ---------------------------------------------------------------------------

@@ -69,6 +69,7 @@ export interface ParkingParams {
   aisle_angle_deg: number;
   aisle_offset: number;
   site_offset: number;
+  cross_aisle_spacing: number;
 }
 
 export interface DebugToggles {

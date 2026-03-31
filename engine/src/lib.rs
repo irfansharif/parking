@@ -37,6 +37,8 @@ fn fmt_coord(v: f64) -> String {
 }
 
 fn format_fixture(input: &GenerateInput) -> String {
+    use crate::types::Annotation;
+
     let mut out = String::new();
 
     // Boundary outer polygon.
@@ -82,8 +84,53 @@ fn format_fixture(input: &GenerateInput) -> String {
     if (p.site_offset - defaults.site_offset).abs() > 1e-6 {
         param_lines.push(format!("set site_offset={}", fmt_coord(p.site_offset)));
     }
+    if (p.cross_aisle_spacing - defaults.cross_aisle_spacing).abs() > 1e-6 {
+        param_lines.push(format!("set cross_aisle_spacing={}", fmt_coord(p.cross_aisle_spacing)));
+    }
     for line in &param_lines {
         out.push_str(&format!("\n{}\n----\n{}\n", line, line));
+    }
+
+    // Drive lines.
+    for dl in &input.drive_lines {
+        out.push_str(&format!(
+            "\ndrive-line\n{},{}\n{},{}\n----\ndrive-line: {},{} -> {},{}\n",
+            fmt_coord(dl.start.x), fmt_coord(dl.start.y),
+            fmt_coord(dl.end.x), fmt_coord(dl.end.y),
+            fmt_coord(dl.start.x), fmt_coord(dl.start.y),
+            fmt_coord(dl.end.x), fmt_coord(dl.end.y),
+        ));
+    }
+
+    // Annotations.
+    for ann in &input.annotations {
+        match ann {
+            Annotation::OneWay { midpoint, travel_dir, chain } => {
+                out.push_str(&format!(
+                    "\nannotation one-way{}\n{},{}\n{},{}\n----\nannotation one-way at {},{}\n",
+                    if *chain { "" } else { " no-chain" },
+                    fmt_coord(midpoint.x), fmt_coord(midpoint.y),
+                    fmt_coord(travel_dir.x), fmt_coord(travel_dir.y),
+                    fmt_coord(midpoint.x), fmt_coord(midpoint.y),
+                ));
+            }
+            Annotation::DeleteVertex { point } => {
+                out.push_str(&format!(
+                    "\nannotation delete-vertex\n{},{}\n----\nannotation delete-vertex at {},{}\n",
+                    fmt_coord(point.x), fmt_coord(point.y),
+                    fmt_coord(point.x), fmt_coord(point.y),
+                ));
+            }
+            Annotation::DeleteEdge { midpoint, edge_dir, chain } => {
+                out.push_str(&format!(
+                    "\nannotation delete-edge{}\n{},{}\n{},{}\n----\nannotation delete-edge at {},{}\n",
+                    if *chain { "" } else { " no-chain" },
+                    fmt_coord(midpoint.x), fmt_coord(midpoint.y),
+                    fmt_coord(edge_dir.x), fmt_coord(edge_dir.y),
+                    fmt_coord(midpoint.x), fmt_coord(midpoint.y),
+                ));
+            }
+        }
     }
 
     // Aisle graph vertices and edges.

@@ -75,6 +75,15 @@ const PARAM_DEFS: ParamDef[] = [
     unit: "ft",
     type: "range",
   },
+  {
+    key: "cross_aisle_spacing",
+    label: "Cross Aisle Spacing",
+    min: 50,
+    max: 400,
+    step: 1,
+    unit: "ft",
+    type: "range",
+  },
 ];
 
 export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () => void): void {

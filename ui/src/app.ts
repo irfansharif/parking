@@ -89,10 +89,10 @@ export class App {
     this.state = {
       boundary: {
         outer: [
-          { x: 0, y: 0 },
+          { x: -48.47, y: 0 },
           { x: 750, y: 0 },
-          { x: 750, y: 500 },
-          { x: 0, y: 500 },
+          { x: 782.80, y: 654.85 },
+          { x: 0, y: 654.85 },
         ],
         holes: [
           [
@@ -111,6 +111,7 @@ export class App {
         aisle_angle_deg: 90,
         aisle_offset: 0,
         site_offset: 0,
+        cross_aisle_spacing: 179,
       },
       debug: {
         miter_fills: true,
@@ -138,7 +139,7 @@ export class App {
       annotations: [],
       aisleVector: aisleVectorFromAngle(90, 0, { x: -80, y: 250 }),
       driveLines: [
-        { start: { x: -50, y: 250 }, end: { x: 800, y: 250 } },
+        { start: { x: 375, y: -13.35 }, end: { x: 139.44, y: 696.35 } },
       ],
       pendingDriveLine: null,
       pendingDriveLinePreview: null,
@@ -282,11 +283,75 @@ export class App {
       this.state.aisleGraph = null;
     } else if (ref.type === "annotation") {
       const ann = this.state.annotations[ref.index];
-      if (ann) {
-        if (ann.kind === "DeleteVertex") {
-          ann.point = pos;
-        } else {
-          ann.midpoint = pos;
+      if (!ann) return;
+      const isDelete = ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
+      const graph = this.getEffectiveAisleGraph();
+
+      if (isDelete && graph) {
+        // Find nearest vertex and nearest edge to decide which kind to be.
+        let bestVtxDist = Infinity;
+        for (const v of graph.vertices) {
+          const d = Math.sqrt((v.x - pos.x) ** 2 + (v.y - pos.y) ** 2);
+          if (d < bestVtxDist) bestVtxDist = d;
+        }
+        let bestEdgeDist = Infinity;
+        let bestEdgeDir: Vec2 | null = null;
+        const seen = new Set<string>();
+        for (const edge of graph.edges) {
+          const key = Math.min(edge.start, edge.end) + "," + Math.max(edge.start, edge.end);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const s = graph.vertices[edge.start];
+          const e = graph.vertices[edge.end];
+          const d = pointToSegmentDist(pos, s, e);
+          if (d < bestEdgeDist) {
+            bestEdgeDist = d;
+            const dx = e.x - s.x, dy = e.y - s.y;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            if (len > 1e-9) bestEdgeDir = { x: dx / len, y: dy / len };
+          }
+        }
+        // Convert to whichever is closer. Vertex needs to be distinctly
+        // closer to win (within 5ft), otherwise default to edge.
+        if (bestVtxDist < 5 && bestVtxDist < bestEdgeDist) {
+          this.state.annotations[ref.index] = {
+            kind: "DeleteVertex",
+            point: pos,
+            _active: ann._active,
+          };
+        } else if (bestEdgeDir) {
+          this.state.annotations[ref.index] = {
+            kind: "DeleteEdge",
+            midpoint: pos,
+            edge_dir: bestEdgeDir,
+            chain: true,
+            _active: ann._active,
+          };
+        }
+      } else if (ann.kind === "OneWay") {
+        ann.midpoint = pos;
+        if (graph) {
+          let bestDist = Infinity;
+          let bestDir: Vec2 | null = null;
+          const seen = new Set<string>();
+          for (const edge of graph.edges) {
+            const key = Math.min(edge.start, edge.end) + "," + Math.max(edge.start, edge.end);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const s = graph.vertices[edge.start];
+            const e = graph.vertices[edge.end];
+            const d = pointToSegmentDist(pos, s, e);
+            if (d < bestDist) {
+              bestDist = d;
+              const dx = e.x - s.x, dy = e.y - s.y;
+              const len = Math.sqrt(dx * dx + dy * dy);
+              if (len > 1e-9) bestDir = { x: dx / len, y: dy / len };
+            }
+          }
+          if (bestDir && bestDist < 10) {
+            ann.travel_dir = bestDir;
+            ann._origDir = bestDir;
+          }
         }
       }
     } else if (ref.type === "drive-line" && ref.endpoint) {

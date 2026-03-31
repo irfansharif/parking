@@ -185,6 +185,8 @@ pub struct ParkingParams {
     pub aisle_angle_deg: f64,
     pub aisle_offset: f64,
     pub site_offset: f64,
+    #[serde(default)]
+    pub cross_aisle_spacing: f64,
 }
 
 impl Default for ParkingParams {
@@ -197,6 +199,7 @@ impl Default for ParkingParams {
             aisle_angle_deg: 90.0,
             aisle_offset: 0.0,
             site_offset: 0.0,
+            cross_aisle_spacing: 200.0,
         }
     }
 }
