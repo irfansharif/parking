@@ -115,6 +115,7 @@ export class App {
       },
       debug: {
         miter_fills: true,
+        boundary_only_miters: true,
         spike_removal: false,
         hole_filtering: false,
         face_extraction: true,

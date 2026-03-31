@@ -612,7 +612,7 @@ fn generate_miter_fills(graph: &DriveAisleGraph, debug: &DebugToggles) -> Vec<Ve
         std::collections::HashSet::new();
 
     let nv = graph.vertices.len();
-    let mut adj: Vec<Vec<(Vec2, f64)>> = vec![vec![]; nv];
+    let mut adj: Vec<Vec<(Vec2, f64, bool)>> = vec![vec![]; nv];
 
     for edge in &graph.edges {
         let key = if edge.start < edge.end {
@@ -628,12 +628,18 @@ fn generate_miter_fills(graph: &DriveAisleGraph, debug: &DebugToggles) -> Vec<Ve
         let dir = (e - s).normalize();
         let w = edge.width;
 
-        adj[edge.start].push((dir, w));
-        adj[edge.end].push((Vec2::new(-dir.x, -dir.y), w));
+        adj[edge.start].push((dir, w, edge.interior));
+        adj[edge.end].push((Vec2::new(-dir.x, -dir.y), w, edge.interior));
     }
 
     for vi in 0..nv {
         if adj[vi].len() < 2 {
+            continue;
+        }
+
+        // Skip vertices where all edges are interior — miter fills are
+        // only needed at boundary/hole aisle junctions.
+        if debug.boundary_only_miters && adj[vi].iter().all(|(_, _, int)| *int) {
             continue;
         }
 
@@ -642,7 +648,7 @@ fn generate_miter_fills(graph: &DriveAisleGraph, debug: &DebugToggles) -> Vec<Ve
         // Sort edges by outgoing angle from the vertex.
         let mut edges_sorted: Vec<(f64, Vec2, f64)> = adj[vi]
             .iter()
-            .map(|(d, w)| (d.y.atan2(d.x), *d, *w))
+            .map(|(d, w, _)| (d.y.atan2(d.x), *d, *w))
             .collect();
         edges_sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 

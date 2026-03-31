@@ -277,6 +277,8 @@ pub struct DebugToggles {
     #[serde(default = "default_true")]
     pub miter_fills: bool,
     #[serde(default = "default_true")]
+    pub boundary_only_miters: bool,
+    #[serde(default = "default_true")]
     pub spike_removal: bool,
     #[serde(default = "default_true")]
     pub hole_filtering: bool,
@@ -322,6 +324,7 @@ impl Default for DebugToggles {
     fn default() -> Self {
         Self {
             miter_fills: true,
+            boundary_only_miters: true,
             spike_removal: false,
             hole_filtering: true,
             face_extraction: true,

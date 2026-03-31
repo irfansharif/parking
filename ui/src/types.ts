@@ -77,6 +77,7 @@ export interface ParkingParams {
 export interface DebugToggles {
   // Corridor merging
   miter_fills: boolean;
+  boundary_only_miters: boolean;
   spike_removal: boolean;
   hole_filtering: boolean;
   // Face extraction
