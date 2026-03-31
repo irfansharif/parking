@@ -116,7 +116,7 @@ export class App {
       debug: {
         miter_fills: true,
         spike_removal: false,
-        hole_filtering: true,
+        hole_filtering: false,
         face_extraction: true,
         face_simplification: true,
         edge_classification: true,
