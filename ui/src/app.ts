@@ -28,6 +28,7 @@ export interface VertexRef {
 export interface EdgeRef {
   index: number; // seed edge index
   chain: number[]; // all deduplicated edge indices in the collinear chain
+  mode: "chain" | "segment"; // chain = full line, segment = single edge
 }
 
 export type EditMode =
@@ -426,7 +427,7 @@ export class App {
       }
     }
     if (bestIdx >= 0 && bestDist < 5) {
-      this.state.selectedEdge = { index: bestIdx, chain: findCollinearChain(graph, bestIdx) };
+      this.state.selectedEdge = { index: bestIdx, chain: findCollinearChain(graph, bestIdx), mode: "chain" };
     }
   }
 
@@ -471,6 +472,7 @@ export class App {
         Math.sqrt((a.midpoint.x - mid.x) ** 2 + (a.midpoint.y - mid.y) ** 2) < tolerance
     );
 
+    const isChainMode = this.state.selectedEdge?.mode !== "segment";
     let annIdx: number;
     if (existing < 0) {
       // No annotation → create OneWay in start→end direction.
@@ -479,6 +481,7 @@ export class App {
         kind: "OneWay",
         midpoint: mid,
         travel_dir: edgeDir,
+        chain: isChainMode,
         _origDir: edgeDir,
         _active: true,
       });

@@ -355,7 +355,7 @@ fn apply_annotations(
 
     for ann in annotations {
         match ann {
-            Annotation::OneWay { midpoint, travel_dir } => {
+            Annotation::OneWay { midpoint, travel_dir, chain: expand_chain } => {
                 // Find the edge that passes closest to the annotation point.
                 let mut best: Option<(usize, f64)> = None;
                 for info in &edge_infos {
@@ -373,8 +373,12 @@ fn apply_annotations(
                 }
                 let Some((matched_idx, _dist)) = best else { continue };
 
-                // Expand to the full collinear chain.
-                let chain = find_collinear_chain(graph, matched_idx);
+                // Expand to the full collinear chain, or stay on single segment.
+                let chain = if *expand_chain {
+                    find_collinear_chain(graph, matched_idx)
+                } else {
+                    vec![matched_idx]
+                };
 
                 // Apply direction to every edge in the chain.
                 for &chain_idx in &chain {

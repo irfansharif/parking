@@ -349,9 +349,12 @@ pub struct DriveLine {
 #[serde(tag = "kind")]
 pub enum Annotation {
     /// Mark the nearest aisle edge as one-way in the given travel direction.
+    /// When `chain` is true (default), expands to the full collinear chain.
     OneWay {
         midpoint: Vec2,
         travel_dir: Vec2,
+        #[serde(default = "default_true")]
+        chain: bool,
     },
 }
 

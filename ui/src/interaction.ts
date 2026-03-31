@@ -12,6 +12,8 @@ export function setupInteraction(
   const EDGE_HIT_RADIUS = 6; // screen pixels for edge hit testing
   let isPanning = false;
   let panStart: Vec2 = { x: 0, y: 0 };
+  let lastEdgeClickTime = 0;
+  let lastEdgeClickIdx = -1;
 
   canvas.addEventListener("mousedown", (e) => {
     const rect = canvas.getBoundingClientRect();
@@ -105,7 +107,7 @@ export function setupInteraction(
               if (dist < bestDist) { bestDist = dist; bestIdx = i; }
             }
             if (bestIdx >= 0 && bestDist < 5) {
-              app.state.selectedEdge = { index: bestIdx, chain: findCollinearChain(graph, bestIdx) };
+              app.state.selectedEdge = { index: bestIdx, chain: findCollinearChain(graph, bestIdx), mode: "chain" };
             }
           }
         }
@@ -115,6 +117,17 @@ export function setupInteraction(
       // No vertex hit — try edge hit test.
       const edgeHit = hitTestEdge(worldPos, app, EDGE_HIT_RADIUS / app.state.camera.zoom);
       if (edgeHit) {
+        // Double-click (within 400ms) on same chain → narrow to segment.
+        const now = Date.now();
+        if (app.state.selectedEdge?.chain.includes(edgeHit.index)
+            && app.state.selectedEdge.mode === "chain"
+            && edgeHit.index === lastEdgeClickIdx
+            && now - lastEdgeClickTime < 400) {
+          edgeHit.mode = "segment";
+          edgeHit.chain = [edgeHit.index];
+        }
+        lastEdgeClickTime = now;
+        lastEdgeClickIdx = edgeHit.index;
         app.state.selectedEdge = edgeHit;
         // Sync: also select annotation on this edge if one exists.
         const graph = app.getEffectiveAisleGraph();
@@ -390,7 +403,7 @@ function hitTestEdge(worldPos: Vec2, app: App, worldRadius: number): EdgeRef | n
   }
 
   if (!best) return null;
-  return { index: best.index, chain: findCollinearChain(graph, best.index) };
+  return { index: best.index, chain: findCollinearChain(graph, best.index), mode: "chain" };
 }
 
 /// Find all deduplicated edge indices in the same collinear chain as the seed.

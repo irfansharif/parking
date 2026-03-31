@@ -104,6 +104,7 @@ export interface Annotation {
   kind: "OneWay";
   midpoint: Vec2;
   travel_dir: Vec2;
+  chain?: boolean; // true (default) = apply to full collinear chain, false = single segment
   _origDir?: Vec2; // UI-only: original edge direction for cycle state tracking
   _active?: boolean; // UI-only: false = tombstone (visible but no effect). Default true.
 }
