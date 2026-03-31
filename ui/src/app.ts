@@ -125,7 +125,7 @@ export class App {
         spine_merging: true,
         short_spine_filter: false,
         stall_face_clipping: true,
-        boundary_clipping: true,
+        boundary_clipping: false,
         conflict_removal: true,
         skeleton_debug: false,
       },
