@@ -257,18 +257,19 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
         edges.push(AisleEdge { start: vib, end: via, width: hw, interior: true, direction: AisleDirection::TwoWay });
     }
 
-    // 7. Connect interior aisle endpoints near holes to nearest hole vertex.
+    // 7. Hole-to-interior connectivity edges removed — they created
+    // diagonal aisle rectangles at arbitrary angles, causing miter fill
+    // artifacts, face slivers, and boundary misclassification around holes.
+    if false {
     for &(via, vib) in interior_pairs.iter().chain(cross_pairs.iter()) {
         for &vi in &[via, vib] {
             let v = vertices[vi];
-            // Check if this vertex is on the perimeter (already connected via splits).
             let on_perim = perim_splits.iter().any(|splits| {
                 splits.iter().any(|&(_, svi)| svi == vi)
             });
             if on_perim {
                 continue;
             }
-            // Not on perimeter — connect to nearest hole vertex.
             let mut best_dist = f64::INFINITY;
             let mut best_vi = 0;
             for (hi, hl) in hole_loops.iter().enumerate() {
@@ -287,6 +288,7 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
             }
         }
     }
+    } // end if false
 
     // Perimeter vertices are the first perim_n + all hole loop vertices.
     // Split vertices (interior aisle endpoints on the perimeter) are NOT
