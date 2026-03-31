@@ -37,20 +37,12 @@ pub fn fill_strip(
     let normal = Vec2::new(-edge_dir.y, edge_dir.x) * side;
 
     let stall_pitch = params.stall_width / sin_a;
-    let stall_count = (edge_len / stall_pitch).floor() as usize;
-    if stall_count == 0 {
-        return Vec::new();
-    }
-
-    let padding = (edge_len - stall_count as f64 * stall_pitch) / 2.0;
 
     // Depth direction: the direction a car drives into the stall.
     // At 90° this is the normal; at smaller angles it leans toward edge_dir.
     let depth_dir = normal * sin_a + edge_dir * cos_a;
     // Width direction: perpendicular to depth_dir within the plane.
     let width_dir = edge_dir * sin_a - normal * cos_a;
-
-    let mut stalls = Vec::with_capacity(stall_count);
 
     // For boundary spines (angle overridden to 90°), the stall depth
     // matches the effective_depth (spine-to-corridor gap) so 90° stalls
@@ -62,11 +54,23 @@ pub fn fill_strip(
         params.stall_depth
     };
 
-    for i in 0..stall_count {
-        // Midpoint of the stall's back (deep) side sits on the spine.
-        let mid = edge_start
-            + edge_dir * (padding + (i as f64 + 0.5) * stall_pitch)
-            + normal * edge_width;
+    // Snap stall midpoints to a global grid along the spine direction.
+    // This ensures back-to-back spines (different lengths, opposite
+    // normals) place stalls at the same positions, so angled stalls
+    // interleave instead of conflicting.
+    let proj_start = edge_start.dot(edge_dir);
+    let k_min = (proj_start / stall_pitch).ceil() as i64;
+    let k_max = ((proj_start + edge_len) / stall_pitch - 1.0).floor() as i64;
+
+    if k_max < k_min {
+        return Vec::new();
+    }
+
+    let mut stalls = Vec::with_capacity((k_max - k_min + 1) as usize);
+
+    for k in k_min..=k_max {
+        let t = (k as f64 + 0.5) * stall_pitch - proj_start;
+        let mid = edge_start + edge_dir * t + normal * edge_width;
         let p0 = mid - width_dir * (params.stall_width / 2.0);
         let p1 = mid + width_dir * (params.stall_width / 2.0);
         let p2 = p1 + depth_dir * stall_depth;
