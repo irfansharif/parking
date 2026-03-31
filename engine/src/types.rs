@@ -302,6 +302,10 @@ pub struct DebugToggles {
     #[serde(default = "default_true")]
     pub boundary_clipping: bool,
 
+    // Conflict removal
+    #[serde(default = "default_true")]
+    pub conflict_removal: bool,
+
     // Skeleton debug visualization
     #[serde(default)]
     pub skeleton_debug: bool,
@@ -321,6 +325,7 @@ impl Default for DebugToggles {
             short_spine_filter: true,
             stall_face_clipping: true,
             boundary_clipping: true,
+            conflict_removal: true,
             skeleton_debug: false,
         }
     }

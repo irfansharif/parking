@@ -1263,7 +1263,11 @@ pub fn generate_from_spines(
     } else {
         tagged_stalls
     };
-    let tagged_stalls = remove_conflicting_stalls(tagged_stalls);
+    let tagged_stalls = if debug.conflict_removal {
+        remove_conflicting_stalls(tagged_stalls)
+    } else {
+        tagged_stalls
+    };
 
     // Rebuild the 3-tuple list from surviving stalls to compute envelopes.
     // Match surviving stalls back to their spine_idx by corner identity.

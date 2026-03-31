@@ -212,6 +212,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       label: "Boundary",
       toggles: [
         { key: "boundary_clipping", label: "Boundary Clipping" },
+        { key: "conflict_removal", label: "Conflict Removal" },
       ],
     },
   ];

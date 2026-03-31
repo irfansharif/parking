@@ -90,6 +90,8 @@ export interface DebugToggles {
   stall_face_clipping: boolean;
   // Boundary
   boundary_clipping: boolean;
+  // Conflict removal
+  conflict_removal: boolean;
   // Skeleton debug visualization
   skeleton_debug: boolean;
 }
