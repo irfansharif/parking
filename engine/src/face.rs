@@ -898,7 +898,21 @@ fn place_stalls_on_spines(
                 eff_dir.dot(*td) > 0.0
             }
         };
-        for quad in fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle) {
+        // Stagger grid by half a pitch for one-way spines whose
+        // outward_normal points to the right of the travel direction
+        // (cross product >= 0). This offsets the one-way spine relative
+        // to the opposing spine in the same face, whether that opposing
+        // spine is two-way (offset 0.0) or one-way with the opposite
+        // cross sign (also offset 0.0). The result: stalls interleave
+        // instead of overlapping whenever same-direction lean would
+        // cause conflict.
+        let grid_offset = match &seg.travel_dir {
+            None => 0.0,
+            Some(td) => {
+                if td.cross(seg.outward_normal) >= 0.0 { 0.5 } else { 0.0 }
+            }
+        };
+        for quad in fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle, grid_offset) {
             stalls.push((quad, seg.face_idx, spine_idx));
         }
     }

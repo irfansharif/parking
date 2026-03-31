@@ -429,9 +429,16 @@ export class App {
       // Simplest: swap start/end on this edge, swap on reverse too, keeping
       // OneWay. But if we already flipped once, go back to TwoWay.
       if (edge._flipped) {
+        // Swap back to original orientation before returning to TwoWay.
+        const tmp = edge.start;
+        edge.start = edge.end;
+        edge.end = tmp;
         edge.direction = "TwoWay";
         delete edge._flipped;
         if (reverseIdx >= 0) {
+          const tmp2 = g.edges[reverseIdx].start;
+          g.edges[reverseIdx].start = g.edges[reverseIdx].end;
+          g.edges[reverseIdx].end = tmp2;
           g.edges[reverseIdx].direction = "TwoWay";
           delete g.edges[reverseIdx]._flipped;
         }

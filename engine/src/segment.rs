@@ -8,6 +8,8 @@ use crate::types::*;
 /// `angle_override` overrides `params.stall_angle_deg` when set.
 /// `flip_angle` negates the cosine component, reversing the stall lean
 /// direction. Used for one-way aisles where both sides lean the same way.
+/// `grid_offset` shifts the global grid by a fraction of stall_pitch (0.0–1.0)
+/// to stagger stalls from opposing spines in same-direction one-way faces.
 pub fn fill_strip(
     edge_start: Vec2,
     edge_end: Vec2,
@@ -16,6 +18,7 @@ pub fn fill_strip(
     params: &ParkingParams,
     angle_override: Option<f64>,
     flip_angle: bool,
+    grid_offset: f64,
 ) -> Vec<StallQuad> {
     let angle_deg = angle_override.unwrap_or(params.stall_angle_deg);
     let angle_rad = angle_deg.to_radians();
@@ -57,10 +60,12 @@ pub fn fill_strip(
     // Snap stall midpoints to a global grid along the spine direction.
     // This ensures back-to-back spines (different lengths, opposite
     // normals) place stalls at the same positions, so angled stalls
-    // interleave instead of conflicting.
+    // interleave instead of conflicting. The grid_offset shifts the grid
+    // by a fraction of stall_pitch for staggering same-direction spines.
     let proj_start = edge_start.dot(edge_dir);
-    let k_min = (proj_start / stall_pitch).ceil() as i64;
-    let k_max = ((proj_start + edge_len) / stall_pitch - 1.0).floor() as i64;
+    let offset_proj = proj_start - grid_offset * stall_pitch;
+    let k_min = (offset_proj / stall_pitch).ceil() as i64;
+    let k_max = ((offset_proj + edge_len) / stall_pitch - 1.0).floor() as i64;
 
     if k_max < k_min {
         return Vec::new();
@@ -69,7 +74,7 @@ pub fn fill_strip(
     let mut stalls = Vec::with_capacity((k_max - k_min + 1) as usize);
 
     for k in k_min..=k_max {
-        let t = (k as f64 + 0.5) * stall_pitch - proj_start;
+        let t = (k as f64 + 0.5) * stall_pitch - offset_proj;
         let mid = edge_start + edge_dir * t + normal * edge_width;
         let p0 = mid - width_dir * (params.stall_width / 2.0);
         let p1 = mid + width_dir * (params.stall_width / 2.0);

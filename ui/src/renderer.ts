@@ -157,10 +157,9 @@ export class Renderer {
 
     }
 
-    // 6. Vertex network overlay
-    if (state.layers.vertices) {
-      this.drawVertexNetwork(state);
-    }
+    // 6. Vertex network overlay (always called; individual sections
+    //    check their own layer flags inside).
+    this.drawVertexNetwork(state);
 
     // 6b. Skeleton source vertices drawn after vertex network so they
     //     aren't hidden by boundary vertex markers at the same position.
@@ -415,7 +414,7 @@ export class Renderer {
     const isManualGraph = state.aisleGraph != null;
 
     // Draw aisle graph edges (dashed lines)
-    if (graph) {
+    if (graph && state.layers.vertices) {
       const seen = new Set<string>();
       for (let ei = 0; ei < graph.edges.length; ei++) {
         const edge = graph.edges[ei];
@@ -536,21 +535,24 @@ export class Renderer {
       },
     ]);
 
-    // Draw vertices
+    // Draw vertices — boundary/aisle verts gated by layers.vertices,
+    // drive-line verts gated by layers.driveLines.
     const allVerts = [
-      ...state.boundary.outer.map((v, i) => ({
-        pos: v,
-        ref: { type: "boundary-outer" as const, index: i },
-        color: "rgba(255, 160, 50, 0.9)",
-      })),
-      ...state.boundary.holes.flatMap((hole, hi) =>
-        hole.map((v, vi) => ({
+      ...(state.layers.vertices ? [
+        ...state.boundary.outer.map((v, i) => ({
           pos: v,
-          ref: { type: "boundary-hole" as const, index: vi, holeIndex: hi },
-          color: "rgba(255, 120, 50, 0.9)",
+          ref: { type: "boundary-outer" as const, index: i },
+          color: "rgba(255, 160, 50, 0.9)",
         })),
-      ),
-      ...aisleVerts,
+        ...state.boundary.holes.flatMap((hole, hi) =>
+          hole.map((v, vi) => ({
+            pos: v,
+            ref: { type: "boundary-hole" as const, index: vi, holeIndex: hi },
+            color: "rgba(255, 120, 50, 0.9)",
+          })),
+        ),
+        ...aisleVerts,
+      ] : []),
       ...driveLineVerts,
     ];
 
