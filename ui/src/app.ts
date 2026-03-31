@@ -152,7 +152,7 @@ export class App {
         vertices: true,
         driveLines: true,
         spines: false,
-        faces: true,
+        faces: false,
         faceColors: false,
         miterFills: false,
         skeletonDebug: false,
