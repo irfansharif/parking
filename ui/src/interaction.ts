@@ -85,8 +85,8 @@ export function setupInteraction(
     if (closest) {
       app.state.selectedVertex = closest.ref;
       app.state.selectedEdge = null;
-      // Annotation and aisle vertices are fixed — don't start dragging.
-      app.state.isDragging = closest.ref.type !== "annotation" && closest.ref.type !== "aisle";
+      // Aisle vertices are fixed — don't start dragging.
+      app.state.isDragging = closest.ref.type !== "aisle";
       // Sync: when clicking an annotation, also select its edge.
       if (closest.ref.type === "annotation") {
         const ann = app.state.annotations[closest.ref.index];

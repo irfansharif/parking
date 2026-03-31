@@ -280,6 +280,15 @@ export class App {
     } else if (ref.type === "boundary-hole" && ref.holeIndex !== undefined) {
       this.state.boundary.holes[ref.holeIndex][ref.index] = pos;
       this.state.aisleGraph = null;
+    } else if (ref.type === "annotation") {
+      const ann = this.state.annotations[ref.index];
+      if (ann) {
+        if (ann.kind === "DeleteVertex") {
+          ann.point = pos;
+        } else {
+          ann.midpoint = pos;
+        }
+      }
     } else if (ref.type === "drive-line" && ref.endpoint) {
       this.state.driveLines[ref.index][ref.endpoint] = pos;
       this.state.aisleGraph = null;

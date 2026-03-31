@@ -363,13 +363,12 @@ fn compute_face_spines(
         }
     }
 
-    // If every edge of the face is aisle-facing, the face is fully enclosed
-    // by corridors (no boundary/hole wall). All its spines should be
-    // interior/angled, even if one of the corridors is a perimeter corridor.
+    // If any edge is a boundary wall (not aisle-facing), the face touches
+    // the site boundary. All spines in such faces produce 90° stalls.
     let has_boundary_wall = aisle_facing_flat.iter().any(|&af| !af);
-    if !has_boundary_wall {
+    if has_boundary_wall {
         for v in interior_flat.iter_mut() {
-            *v = true;
+            *v = false;
         }
     }
 
