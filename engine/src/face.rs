@@ -895,7 +895,7 @@ fn place_stalls_on_spines(
             None => false,
             Some(td) => {
                 let eff_dir = (end - start).normalize();
-                eff_dir.dot(*td) < 0.0
+                eff_dir.dot(*td) > 0.0
             }
         };
         for quad in fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle) {
@@ -916,7 +916,7 @@ fn stall_key(s: &StallQuad) -> [u64; 8] {
 }
 
 /// Build strip envelopes from stalls grouped by spine_idx. Each envelope
-/// is a hexagon tracing the first and last stall in the group.
+/// is the convex hull of all stall corners in the group.
 fn build_strip_envelopes(stalls: &[(StallQuad, usize, usize)]) -> Vec<(Vec<Vec2>, usize)> {
     // Group stalls by spine_idx, preserving order.
     let mut by_spine: std::collections::BTreeMap<usize, (usize, Vec<&StallQuad>)> =
@@ -930,19 +930,62 @@ fn build_strip_envelopes(stalls: &[(StallQuad, usize, usize)]) -> Vec<(Vec<Vec2>
     let mut envelopes = Vec::new();
     for (_spine_idx, (face_idx, quads)) in &by_spine {
         if quads.is_empty() { continue; }
-        let first = quads[0];
-        let last = quads[quads.len() - 1];
-        let envelope = vec![
-            first.corners[0],  // first back-left
-            first.corners[1],  // first back-right
-            last.corners[1],   // last back-right (along spine)
-            last.corners[2],   // last front-right
-            last.corners[3],   // last front-left
-            first.corners[3],  // first front-left (along spine)
-        ];
-        envelopes.push((envelope, *face_idx));
+        let points: Vec<Vec2> = quads.iter()
+            .flat_map(|q| q.corners.iter().copied())
+            .collect();
+        let hull = convex_hull(&points);
+        if hull.len() >= 3 {
+            envelopes.push((hull, *face_idx));
+        }
     }
     envelopes
+}
+
+/// Compute the convex hull of a set of points using Andrew's monotone chain.
+/// Returns vertices in CCW order.
+fn convex_hull(points: &[Vec2]) -> Vec<Vec2> {
+    let mut pts: Vec<Vec2> = points.to_vec();
+    pts.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap().then(a.y.partial_cmp(&b.y).unwrap()));
+    pts.dedup_by(|a, b| (a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9);
+
+    let n = pts.len();
+    if n < 3 {
+        return pts;
+    }
+
+    let mut hull: Vec<Vec2> = Vec::with_capacity(2 * n);
+
+    // Lower hull.
+    for &p in &pts {
+        while hull.len() >= 2 {
+            let a = hull[hull.len() - 2];
+            let b = hull[hull.len() - 1];
+            if (b - a).cross(p - a) <= 0.0 {
+                hull.pop();
+            } else {
+                break;
+            }
+        }
+        hull.push(p);
+    }
+
+    // Upper hull.
+    let lower_len = hull.len();
+    for &p in pts.iter().rev().skip(1) {
+        while hull.len() > lower_len {
+            let a = hull[hull.len() - 2];
+            let b = hull[hull.len() - 1];
+            if (b - a).cross(p - a) <= 0.0 {
+                hull.pop();
+            } else {
+                break;
+            }
+        }
+        hull.push(p);
+    }
+
+    hull.pop(); // Remove the duplicate of the first point.
+    hull
 }
 
 

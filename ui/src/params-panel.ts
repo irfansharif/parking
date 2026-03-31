@@ -58,6 +58,15 @@ const PARAM_DEFS: ParamDef[] = [
     type: "range",
   },
   {
+    key: "aisle_offset",
+    label: "Aisle Offset",
+    min: -200,
+    max: 200,
+    step: 0.5,
+    unit: "ft",
+    type: "range",
+  },
+  {
     key: "site_offset",
     label: "Site Offset",
     min: 0,

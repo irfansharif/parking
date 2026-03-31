@@ -114,6 +114,7 @@ export function setupInteraction(
         panStart = { x: sx, y: sy };
       }
     }
+    updateModeHint(app);
     renderer.render(app.state);
   });
 
@@ -399,8 +400,17 @@ function hitTestEdge(worldPos: Vec2, app: App, worldRadius: number): EdgeRef | n
 export function updateModeHint(app: App): void {
   const hint = document.getElementById("mode-hint");
   if (!hint) return;
+  if (app.state.editMode === "select") {
+    if (app.state.selectedEdge) {
+      hint.textContent = "Edge selected. F to cycle direction (two-way → one-way → reverse → two-way). Esc to deselect.";
+    } else if (app.state.selectedVertex) {
+      hint.textContent = "Drag to move. Delete to remove. Right-drag to pan.";
+    } else {
+      hint.textContent = "Click vertices to drag, or click aisle edges to select. Right-drag to pan.";
+    }
+    return;
+  }
   const hints: Record<string, string> = {
-    select: "Click to select/drag vertices or aisle edges. F cycles edge direction. Delete removes vertex. Right-drag to pan.",
     "add-aisle-vertex": "Click to place aisle vertices. Press Esc to return to select mode.",
     "add-aisle-edge": "Click two aisle vertices to connect them. Press Esc to cancel.",
     "add-hole": "Click to place hole vertices. Press Esc to finish the hole (needs 3+ vertices).",

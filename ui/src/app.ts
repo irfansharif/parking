@@ -119,6 +119,7 @@ export class App {
         short_spine_filter: false,
         stall_face_clipping: true,
         boundary_clipping: true,
+        conflict_removal: true,
         skeleton_debug: false,
       },
       layout: null,
