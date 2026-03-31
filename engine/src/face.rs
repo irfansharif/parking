@@ -1118,7 +1118,7 @@ fn dedup_overlapping_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<Sp
 /// render on top, covering the ring's stall areas.
 fn compute_islands(
     faces: &[Vec<Vec<Vec2>>],
-    tagged_stalls: &[(StallQuad, usize)],
+    _tagged_stalls: &[(StallQuad, usize)],
     all_stalls: &[StallQuad],
     strip_envelopes: &[(Vec<Vec2>, usize)],
     min_area: f64,
@@ -2027,6 +2027,7 @@ mod tests {
             },
             aisle_graph: None,
             drive_lines: vec![],
+            annotations: vec![],
             params: ParkingParams::default(),
             debug: DebugToggles::default(),
         };
@@ -2118,6 +2119,7 @@ mod tests {
             },
             aisle_graph: None,
             drive_lines: vec![],
+            annotations: vec![],
             params: ParkingParams::default(),
             debug: DebugToggles::default(),
         };
@@ -2211,9 +2213,9 @@ mod tests {
                 DriveLine {
                     start: Vec2::new(-50.0, 250.0),
                     end: Vec2::new(800.0, 250.0),
-                    direction: AisleDirection::default(),
                 },
             ],
+            annotations: vec![],
             params: ParkingParams::default(),
             debug: DebugToggles::default(),
         };

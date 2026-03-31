@@ -490,28 +490,9 @@ export class Renderer {
       ctx.beginPath();
       ctx.moveTo(dl.start.x, dl.start.y);
       ctx.lineTo(dl.end.x, dl.end.y);
-      ctx.strokeStyle = dl.direction === "OneWay" ? "rgba(255, 180, 50, 0.9)" : "rgba(50, 200, 100, 0.8)";
+      ctx.strokeStyle = "rgba(50, 200, 100, 0.8)";
       ctx.lineWidth = 1.0;
       ctx.stroke();
-
-      // Draw arrows for one-way drive lines
-      if (dl.direction === "OneWay" && len > 1e-9) {
-        const nx = dir.x / len;
-        const ny = dir.y / len;
-        const arrowSize = 6;
-        // Draw arrows at 25%, 50%, 75% along the line
-        for (const t of [0.25, 0.5, 0.75]) {
-          const ax = dl.start.x + dir.x * t;
-          const ay = dl.start.y + dir.y * t;
-          ctx.beginPath();
-          ctx.moveTo(ax + nx * arrowSize, ay + ny * arrowSize);
-          ctx.lineTo(ax - nx * arrowSize * 0.5 + ny * arrowSize * 0.5, ay - ny * arrowSize * 0.5 - nx * arrowSize * 0.5);
-          ctx.lineTo(ax - nx * arrowSize * 0.5 - ny * arrowSize * 0.5, ay - ny * arrowSize * 0.5 + nx * arrowSize * 0.5);
-          ctx.closePath();
-          ctx.fillStyle = "rgba(255, 180, 50, 0.9)";
-          ctx.fill();
-        }
-      }
     }
 
     const aisleVerts = (graph?.vertices ?? []).map((v, i) => ({
@@ -537,6 +518,12 @@ export class Renderer {
 
     // Draw vertices — boundary/aisle verts gated by layers.vertices,
     // drive-line verts gated by layers.driveLines.
+    const annotationVerts = state.annotations.map((ann, i) => ({
+      pos: ann.midpoint,
+      ref: { type: "annotation" as const, index: i },
+      color: "rgba(255, 180, 50, 0.95)",
+    }));
+
     const allVerts = [
       ...(state.layers.vertices ? [
         ...state.boundary.outer.map((v, i) => ({
@@ -554,23 +541,36 @@ export class Renderer {
         ...aisleVerts,
       ] : []),
       ...driveLineVerts,
+      ...annotationVerts,
     ];
 
     const radius = 3;
     for (const vert of allVerts) {
       const isSelected = this.vertexRefsEqual(vert.ref, state.selectedVertex);
       const isHovered = this.vertexRefsEqual(vert.ref, state.hoveredVertex);
+      const isAnnotation = vert.ref.type === "annotation";
       const isDriveLine = vert.ref.type === "drive-line";
-      const baseRadius = isDriveLine ? radius * 1.5 : radius;
+      const baseRadius = (isAnnotation || isDriveLine) ? radius * 1.5 : radius;
 
-      ctx.beginPath();
-      ctx.arc(
-        vert.pos.x,
-        vert.pos.y,
-        isSelected || isHovered ? baseRadius * 1.5 : baseRadius,
-        0,
-        Math.PI * 2,
-      );
+      if (isAnnotation) {
+        // Draw diamond shape for annotation anchors.
+        const r = isSelected || isHovered ? baseRadius * 1.8 : baseRadius * 1.3;
+        ctx.beginPath();
+        ctx.moveTo(vert.pos.x, vert.pos.y - r);
+        ctx.lineTo(vert.pos.x + r, vert.pos.y);
+        ctx.lineTo(vert.pos.x, vert.pos.y + r);
+        ctx.lineTo(vert.pos.x - r, vert.pos.y);
+        ctx.closePath();
+      } else {
+        ctx.beginPath();
+        ctx.arc(
+          vert.pos.x,
+          vert.pos.y,
+          isSelected || isHovered ? baseRadius * 1.5 : baseRadius,
+          0,
+          Math.PI * 2,
+        );
+      }
       ctx.fillStyle = isSelected
         ? "#ffffff"
         : isHovered

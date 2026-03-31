@@ -9,12 +9,14 @@ use crate::types::*;
 /// 3. Interior parallel aisles at stall_angle_deg, clipped to perimeter minus holes
 /// 4. Interior aisle endpoints spliced into perimeter edges for full connectivity
 pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGraph {
-    let hw = params.aisle_width / 2.0;
+    // aisle_width is one driving lane. Auto-generated edges are two-way
+    // (two lanes), so their half-width is one full lane width.
+    let hw = params.aisle_width;
     let stall_angle_rad = params.stall_angle_deg.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin()
         + stall_angle_rad.cos() * params.stall_width / 2.0;
     let inset_d = effective_depth + hw;
-    let row_spacing = 2.0 * effective_depth + params.aisle_width;
+    let row_spacing = 2.0 * effective_depth + 2.0 * params.aisle_width;
 
     // Apply site_offset to get the effective outer polygon.
     let effective = if params.site_offset > 0.0 {

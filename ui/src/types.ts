@@ -48,7 +48,6 @@ export interface AisleEdge {
   end: number;
   width: number;
   direction?: AisleDirection;
-  _flipped?: boolean; // UI-only: tracks cycle state for direction toggling
 }
 
 export interface DriveAisleGraph {
@@ -99,14 +98,20 @@ export interface DebugToggles {
 export interface DriveLine {
   start: Vec2;
   end: Vec2;
-  direction?: AisleDirection;
-  _reversed?: boolean; // UI-only: tracks cycle state for direction toggling
+}
+
+export interface Annotation {
+  kind: "OneWay";
+  midpoint: Vec2;
+  travel_dir: Vec2;
+  _origDir?: Vec2; // UI-only: original edge direction for cycle state tracking
 }
 
 export interface GenerateInput {
   boundary: Polygon;
   aisle_graph: DriveAisleGraph | null;
   drive_lines: DriveLine[];
+  annotations: Annotation[];
   params: ParkingParams;
   debug: DebugToggles;
 }

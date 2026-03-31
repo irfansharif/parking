@@ -50,9 +50,9 @@ const PARAM_DEFS: ParamDef[] = [
   },
   {
     key: "aisle_width",
-    label: "Aisle Width",
+    label: "Lane Width",
     min: 8,
-    max: 50,
+    max: 24,
     step: 0.5,
     unit: "ft",
     type: "range",

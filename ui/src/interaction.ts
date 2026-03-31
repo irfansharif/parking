@@ -100,7 +100,8 @@ export function setupInteraction(
     if (closest) {
       app.state.selectedVertex = closest.ref;
       app.state.selectedEdge = null;
-      app.state.isDragging = true;
+      // Annotation anchors are fixed — don't start dragging.
+      app.state.isDragging = closest.ref.type !== "annotation";
     } else {
       app.state.selectedVertex = null;
       // No vertex hit — try edge hit test.
@@ -309,21 +310,17 @@ export function setupInteraction(
       updateModeHint(app);
       renderer.render(app.state);
     } else if (e.key === "f" || e.key === "F") {
-      // Cycle direction on selected edge or drive line.
+      // Cycle direction on selected aisle graph edge.
       if (app.state.selectedEdge) {
         app.cycleEdgeDirection(app.state.selectedEdge.index);
         renderer.render(app.state);
-      } else {
-        const sel = app.state.selectedVertex;
-        if (sel?.type === "drive-line") {
-          app.cycleDriveLineDirection(sel.index);
-          renderer.render(app.state);
-        }
       }
     } else if (e.key === "Delete" || e.key === "Backspace") {
       const sel = app.state.selectedVertex;
       if (!sel) return;
-      if (sel.type === "boundary-outer") {
+      if (sel.type === "annotation") {
+        app.deleteAnnotation(sel.index);
+      } else if (sel.type === "boundary-outer") {
         app.deleteBoundaryVertex(sel.index);
       } else if (sel.type === "boundary-hole" && sel.holeIndex !== undefined) {
         app.deleteHoleVertex(sel.holeIndex, sel.index);
@@ -403,6 +400,8 @@ export function updateModeHint(app: App): void {
   if (app.state.editMode === "select") {
     if (app.state.selectedEdge) {
       hint.textContent = "Edge selected. F to cycle direction (two-way → one-way → reverse → two-way). Esc to deselect.";
+    } else if (app.state.selectedVertex?.type === "annotation") {
+      hint.textContent = "Annotation selected. Delete to remove. Right-drag to pan.";
     } else if (app.state.selectedVertex) {
       hint.textContent = "Drag to move. Delete to remove. Right-drag to pan.";
     } else {

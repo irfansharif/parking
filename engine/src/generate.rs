@@ -17,6 +17,10 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         graph = append_graph(graph, drive_graph);
     }
 
+    // Apply spatial annotations to the resolved graph. Annotations are
+    // matched by proximity so they survive graph regeneration.
+    apply_annotations(&mut graph, &input.annotations, &input.params);
+
     let (stalls, aisle_polygons, spines, faces, miter_fills, skeleton_debug, islands) =
         generate_from_spines(&graph, &input.boundary, &input.params, &input.debug);
 
@@ -53,9 +57,8 @@ fn clip_drive_lines(
 
     let stall_angle_rad = params.stall_angle_deg.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin();
-    // Use the widest possible aisle width for the inset computation so that
-    // the clipping perimeter works for both one-way and two-way drive lines.
-    let hw = params.aisle_width / 2.0;
+    // Use two-way width (widest) for clipping perimeter computation.
+    let hw = params.aisle_width;
     let inset_d = effective_depth + hw;
 
     // Compute the same inset perimeter and expanded holes as auto_generate.
@@ -135,15 +138,40 @@ fn clip_drive_lines(
             })
             .collect();
 
-        // Create edges for surviving intervals.
-        let edge_hw = hw;
+        // Create edges for surviving intervals. Drive lines are always
+        // two-way; direction is applied later via annotations.
+        // Split each interval at interior graph edge crossings so vertices
+        // land exactly on graph edges regardless of control point placement.
         for &(ta, tb) in &intervals {
-            let pa = origin + dir_norm * ta;
-            let pb = origin + dir_norm * tb;
-            let via = find_or_add_vertex(&mut vertices, pa, 1.0);
-            let vib = find_or_add_vertex(&mut vertices, pb, 1.0);
-            edges.push(AisleEdge { start: via, end: vib, width: edge_hw, interior: true, direction: dl.direction.clone() });
-            edges.push(AisleEdge { start: vib, end: via, width: edge_hw, interior: true, direction: dl.direction.clone() });
+            // Use graph edge crossings as split points — both interior
+            // and perimeter. This avoids polygon intersection positions
+            // which can differ slightly from graph edges.
+            let mut splits: Vec<f64> = Vec::new();
+            for &t in &graph_hits {
+                if t >= ta - 3.0 && t <= tb + 3.0 {
+                    splits.push(t);
+                }
+            }
+            if splits.is_empty() { continue; }
+            splits.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            // Deduplicate nearby splits.
+            let mut deduped = vec![splits[0]];
+            for &s in &splits[1..] {
+                if s - *deduped.last().unwrap() > 1.0 {
+                    deduped.push(s);
+                }
+            }
+
+            for pair in deduped.windows(2) {
+                let pa = origin + dir_norm * pair[0];
+                let pb = origin + dir_norm * pair[1];
+                let via = find_or_add_vertex(&mut vertices, pa, 1.0);
+                let vib = find_or_add_vertex(&mut vertices, pb, 1.0);
+                if via != vib {
+                    edges.push(AisleEdge { start: via, end: vib, width: hw, interior: true, direction: AisleDirection::TwoWay });
+                    edges.push(AisleEdge { start: vib, end: via, width: hw, interior: true, direction: AisleDirection::TwoWay });
+                }
+            }
         }
     }
 
@@ -281,5 +309,90 @@ fn append_graph(a: DriveAisleGraph, b: DriveAisleGraph) -> DriveAisleGraph {
         vertices,
         edges,
         perim_vertex_count: a.perim_vertex_count,
+    }
+}
+
+/// Apply spatial annotations to a resolved graph. Each annotation is matched
+/// to the nearest graph edge by midpoint proximity and angle compatibility.
+fn apply_annotations(
+    graph: &mut DriveAisleGraph,
+    annotations: &[Annotation],
+    params: &ParkingParams,
+) {
+    if annotations.is_empty() {
+        return;
+    }
+
+    // Precompute edge midpoints and directions (one per undirected edge).
+    struct EdgeInfo {
+        mid: Vec2,
+        dir: Vec2,
+        idx: usize,
+    }
+    let mut edge_infos: Vec<EdgeInfo> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (i, edge) in graph.edges.iter().enumerate() {
+        let key = if edge.start < edge.end {
+            (edge.start, edge.end)
+        } else {
+            (edge.end, edge.start)
+        };
+        if !seen.insert(key) {
+            continue;
+        }
+        let s = graph.vertices[edge.start];
+        let e = graph.vertices[edge.end];
+        let mid = (s + e) * 0.5;
+        let dir = (e - s).normalize();
+        edge_infos.push(EdgeInfo { mid, dir, idx: i });
+    }
+
+    let one_way_hw = params.aisle_width / 2.0;
+
+    for ann in annotations {
+        match ann {
+            Annotation::OneWay { midpoint, travel_dir } => {
+                // Find the closest edge whose midpoint is near and direction
+                // is roughly parallel to the travel direction.
+                let mut best: Option<(usize, f64)> = None;
+                for info in &edge_infos {
+                    let dist = (info.mid - *midpoint).length();
+                    // Edge must be roughly parallel to travel direction.
+                    if info.dir.dot(*travel_dir).abs() < 0.7 {
+                        continue;
+                    }
+                    if best.is_none() || dist < best.unwrap().1 {
+                        best = Some((info.idx, dist));
+                    }
+                }
+                let Some((matched_idx, _dist)) = best else { continue };
+
+                // Orient the matched edge so start→end aligns with travel_dir.
+                let edge = &graph.edges[matched_idx];
+                let s = edge.start;
+                let e = edge.end;
+                let edge_dir = (graph.vertices[e] - graph.vertices[s]).normalize();
+                let needs_flip = edge_dir.dot(*travel_dir) < 0.0;
+
+                // Apply to the matched edge and its reverse.
+                for i in 0..graph.edges.len() {
+                    let ei = &graph.edges[i];
+                    let is_forward = ei.start == s && ei.end == e;
+                    let is_reverse = ei.start == e && ei.end == s;
+                    if !is_forward && !is_reverse {
+                        continue;
+                    }
+                    graph.edges[i].direction = AisleDirection::OneWay;
+                    graph.edges[i].width = one_way_hw;
+                    if needs_flip && is_forward {
+                        graph.edges[i].start = e;
+                        graph.edges[i].end = s;
+                    } else if needs_flip && is_reverse {
+                        graph.edges[i].start = s;
+                        graph.edges[i].end = e;
+                    }
+                }
+            }
+        }
     }
 }

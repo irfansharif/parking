@@ -192,7 +192,7 @@ impl Default for ParkingParams {
         Self {
             stall_width: 9.0,
             stall_depth: 18.0,
-            aisle_width: 24.0,
+            aisle_width: 12.0,
             stall_angle_deg: 45.0,
             aisle_angle_deg: 90.0,
             aisle_offset: 0.0,
@@ -339,8 +339,20 @@ impl Default for DebugToggles {
 pub struct DriveLine {
     pub start: Vec2,
     pub end: Vec2,
-    #[serde(default)]
-    pub direction: AisleDirection,
+}
+
+// ---------------------------------------------------------------------------
+// Annotations (spatial intents that survive graph regeneration)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum Annotation {
+    /// Mark the nearest aisle edge as one-way in the given travel direction.
+    OneWay {
+        midpoint: Vec2,
+        travel_dir: Vec2,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +365,8 @@ pub struct GenerateInput {
     pub aisle_graph: Option<DriveAisleGraph>,
     #[serde(default)]
     pub drive_lines: Vec<DriveLine>,
+    #[serde(default)]
+    pub annotations: Vec<Annotation>,
     pub params: ParkingParams,
     #[serde(default)]
     pub debug: DebugToggles,

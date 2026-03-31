@@ -1,0 +1,65 @@
+# Test that drive line intersection vertices land exactly on graph edges,
+# regardless of whether the drive line endpoint is before or after the edge.
+
+polygon outer
+0,0
+300,0
+300,200
+0,200
+----
+polygon outer: 4 vertices
+
+generate
+----
+total_stalls: 121
+
+# Dump the auto graph to identify the vertical edge we'll cross.
+# At 90° default angle, interior aisles run vertically.
+# Vertical edge at x≈180.3 between vertices 7 (180.3,39.9) and 8 (180.3,160.1).
+graph
+----
+0: 28,28
+1: 272,28
+2: 272,172
+3: 28,172
+4: 230,122
+5: 520,122
+6: 375,412
+7: 216,28
+8: 216,172
+9: 160,28
+10: 160,172
+11: 105,28
+12: 105,172
+
+# Short drive line: endpoint BEFORE the vertical edge at x≈180.
+# Must project outward → t_end captures the crossing.
+# Vertex 10 should land exactly on the vertical edge at x≈180.3.
+drive-line
+50,100
+130,100
+----
+drive-line: 50,100 -> 130,100
+
+graph precise
+----
+0: 27.9,27.9
+1: 272.1,27.9
+2: 272.1,172.1
+3: 27.9,172.1
+4: 229.8,122.1
+5: 520.2,122.1
+6: 375.0,412.4
+7: 216.3,27.9
+8: 216.3,172.1
+9: 160.5,27.9
+10: 160.5,172.1
+11: 104.6,27.9
+12: 104.6,172.1
+13: 27.9,100.0
+14: 104.6,100.0
+15: 160.5,100.0
+
+screenshot drive-line-intersection-short.png
+----
+

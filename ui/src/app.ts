@@ -7,6 +7,7 @@ import {
   ParkingLayout,
   GenerateInput,
   DebugToggles,
+  Annotation,
 } from "./types";
 import { SnapGuide, SnapState, emptySnapState } from "./snap";
 
@@ -17,7 +18,7 @@ export interface Camera {
 }
 
 export interface VertexRef {
-  type: "boundary-outer" | "boundary-hole" | "aisle" | "drive-line";
+  type: "boundary-outer" | "boundary-hole" | "aisle" | "drive-line" | "annotation";
   index: number;
   holeIndex?: number;
   endpoint?: "start" | "end";
@@ -62,6 +63,8 @@ export interface AppState {
   editMode: EditMode;
   // For add-hole mode: vertices being placed
   pendingHole: Vec2[];
+  // Spatial annotations (survive graph regeneration)
+  annotations: Annotation[];
   // For add-drive-line mode
   driveLines: DriveLine[];
   pendingDriveLine: Vec2 | null;
@@ -101,7 +104,7 @@ export class App {
       params: {
         stall_width: 9,
         stall_depth: 18,
-        aisle_width: 24,
+        aisle_width: 12,
         stall_angle_deg: 45,
         aisle_angle_deg: 90,
         aisle_offset: 0,
@@ -131,6 +134,7 @@ export class App {
       camera: { offsetX: 30, offsetY: 60, zoom: 1.3 },
       editMode: "select",
       pendingHole: [],
+      annotations: [],
       driveLines: [
         { start: { x: -50, y: 250 }, end: { x: 800, y: 250 } },
       ],
@@ -158,6 +162,7 @@ export class App {
       boundary: this.state.boundary,
       aisle_graph: this.state.aisleGraph,
       drive_lines: this.state.driveLines,
+      annotations: this.state.annotations,
       params: this.state.params,
       debug: this.state.debug,
     };
@@ -204,7 +209,11 @@ export class App {
 
   getAllVertices(): { ref: VertexRef; pos: Vec2 }[] {
     const result: { ref: VertexRef; pos: Vec2 }[] = [];
-    // Drive-line vertices first so they win hit-tests over overlapping
+    // Annotation anchors first — highest hit-test priority.
+    this.state.annotations.forEach((ann, i) => {
+      result.push({ ref: { type: "annotation", index: i }, pos: ann.midpoint });
+    });
+    // Drive-line vertices next so they win hit-tests over overlapping
     // resolved-graph aisle vertices at the same position.
     this.state.driveLines.forEach((dl, i) => {
       result.push({
@@ -398,85 +407,63 @@ export class App {
     this.generate();
   }
 
+  deleteAnnotation(index: number): void {
+    this.state.annotations.splice(index, 1);
+    this.state.selectedVertex = null;
+    this.generate();
+  }
+
   deleteDriveLine(index: number): void {
     this.state.driveLines.splice(index, 1);
     this.state.selectedVertex = null;
     this.generate();
   }
 
+  /// Cycle an aisle edge's direction via annotations.
+  /// TwoWay → OneWay(forward) → OneWay(reversed) → TwoWay.
+  /// Creates, updates, or removes a OneWay annotation at the edge midpoint.
   cycleEdgeDirection(edgeIndex: number): void {
-    this.materializeAisleGraph();
-    const g = this.state.aisleGraph;
-    if (!g) return;
-
-    // Find the edge and its reverse (edges are stored bidirectionally).
-    const edge = g.edges[edgeIndex];
+    const graph = this.getEffectiveAisleGraph();
+    if (!graph) return;
+    const edge = graph.edges[edgeIndex];
     if (!edge) return;
-    const reverseIdx = g.edges.findIndex(
-      (e, i) => i !== edgeIndex && e.start === edge.end && e.end === edge.start
+
+    const s = graph.vertices[edge.start];
+    const e = graph.vertices[edge.end];
+    const mid = { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 };
+    const len = Math.sqrt((e.x - s.x) ** 2 + (e.y - s.y) ** 2);
+    if (len < 1e-9) return;
+    const edgeDir = { x: (e.x - s.x) / len, y: (e.y - s.y) / len };
+
+    // Find existing annotation for this edge (by midpoint proximity).
+    const tolerance = 5.0;
+    const existing = this.state.annotations.findIndex(
+      (a) => a.kind === "OneWay" &&
+        Math.sqrt((a.midpoint.x - mid.x) ** 2 + (a.midpoint.y - mid.y) ** 2) < tolerance
     );
 
-    const dir = edge.direction ?? "TwoWay";
-    if (dir === "TwoWay") {
-      // TwoWay → OneWay (forward = start→end direction)
-      edge.direction = "OneWay";
-      if (reverseIdx >= 0) g.edges[reverseIdx].direction = "OneWay";
+    if (existing < 0) {
+      // No annotation → create OneWay in start→end direction.
+      // Store the original direction so we can detect the flip→remove cycle
+      // even after the engine reorients the edge to match travel_dir.
+      this.state.annotations.push({
+        kind: "OneWay",
+        midpoint: mid,
+        travel_dir: edgeDir,
+        _origDir: edgeDir,
+      });
     } else {
-      // OneWay → flip direction by swapping start/end on the forward edge.
-      // Since we have bidirectional pairs, "flipping" means the forward edge
-      // was (A→B, OneWay), reverse was (B→A, OneWay). The canonical travel
-      // direction is taken from whichever edge is first seen in dedup.
-      // Simplest: swap start/end on this edge, swap on reverse too, keeping
-      // OneWay. But if we already flipped once, go back to TwoWay.
-      if (edge._flipped) {
-        // Swap back to original orientation before returning to TwoWay.
-        const tmp = edge.start;
-        edge.start = edge.end;
-        edge.end = tmp;
-        edge.direction = "TwoWay";
-        delete edge._flipped;
-        if (reverseIdx >= 0) {
-          const tmp2 = g.edges[reverseIdx].start;
-          g.edges[reverseIdx].start = g.edges[reverseIdx].end;
-          g.edges[reverseIdx].end = tmp2;
-          g.edges[reverseIdx].direction = "TwoWay";
-          delete g.edges[reverseIdx]._flipped;
-        }
+      const ann = this.state.annotations[existing];
+      const orig = ann._origDir ?? ann.travel_dir;
+      // Compare current travel_dir against original to determine cycle state.
+      const dot = ann.travel_dir.x * orig.x + ann.travel_dir.y * orig.y;
+      if (dot > 0) {
+        // Currently forward → flip to reversed.
+        ann.travel_dir = { x: -orig.x, y: -orig.y };
       } else {
-        // Swap start/end to reverse the one-way direction.
-        const tmp = edge.start;
-        edge.start = edge.end;
-        edge.end = tmp;
-        edge._flipped = true;
-        if (reverseIdx >= 0) {
-          const tmp2 = g.edges[reverseIdx].start;
-          g.edges[reverseIdx].start = g.edges[reverseIdx].end;
-          g.edges[reverseIdx].end = tmp2;
-          g.edges[reverseIdx]._flipped = true;
-        }
+        // Currently reversed → remove (back to TwoWay).
+        this.state.annotations.splice(existing, 1);
       }
-    }
-    this.generate();
-  }
-
-  /// Cycle drive line direction: TwoWay → OneWay → OneWay(reversed) → TwoWay.
-  /// "Reversed" swaps start/end so the arrow flips.
-  cycleDriveLineDirection(index: number): void {
-    const dl = this.state.driveLines[index];
-    if (!dl) return;
-    if (!dl.direction || dl.direction === "TwoWay") {
-      // TwoWay → OneWay (start→end direction)
-      dl.direction = "OneWay";
-    } else if (!dl._reversed) {
-      // OneWay → swap endpoints (reverse the one-way direction)
-      const tmp = dl.start;
-      dl.start = dl.end;
-      dl.end = tmp;
-      dl._reversed = true;
-    } else {
-      // OneWay(reversed) → TwoWay
-      dl.direction = "TwoWay";
-      delete dl._reversed;
     }
     this.generate();
   }

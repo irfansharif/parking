@@ -128,8 +128,10 @@ export function createCommandAPI(app: App): CommandAPI {
           // Dump the effective aisle graph vertex positions.
           const graph = app.getEffectiveAisleGraph();
           if (!graph) return "error: no graph";
+          const precision = parts[1] === "precise" ? 1 : 0;
+          const fmt = (n: number) => precision ? n.toFixed(1) : String(Math.round(n));
           const lines = graph.vertices.map((v, i) =>
-            `${i}: ${Math.round(v.x)},${Math.round(v.y)}`
+            `${i}: ${fmt(v.x)},${fmt(v.y)}`
           );
           return lines.join("\n");
         }
@@ -139,6 +141,14 @@ export function createCommandAPI(app: App): CommandAPI {
           const points = parsePoints(body);
           app.state.boundary.holes.push(points);
           return `hole: ${points.length} vertices`;
+        }
+
+        case "drive-line": {
+          if (!body) return "error: drive-line requires body with start and end points";
+          const points = parsePoints(body);
+          if (points.length < 2) return "error: drive-line requires 2 points";
+          app.addDriveLine(points[0], points[1]);
+          return `drive-line: ${points[0].x},${points[0].y} -> ${points[1].x},${points[1].y}`;
         }
 
         case "layers": {
