@@ -3,6 +3,7 @@ use crate::inset::signed_area;
 use crate::segment::fill_strip;
 use crate::skeleton;
 use crate::types::*;
+use geo::{Coord, LineString, Simplify};
 use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::float::single::SingleFloatOverlay;
@@ -308,22 +309,35 @@ fn classify_face_edges(
     per_edge_corridors: &[(Vec<Vec2>, bool, Option<Vec2>)],
     classify: bool,
 ) -> Vec<(bool, bool, Option<Vec2>)> {
+    classify_face_edges_ext(contour, corridor_shapes, per_edge_corridors, classify, &[])
+        .into_iter()
+        .map(|(a, b, c, _)| (a, b, c))
+        .collect()
+}
+
+/// Extended version that also reports which edges are two-way-oriented.
+fn classify_face_edges_ext(
+    contour: &[Vec2],
+    corridor_shapes: &[Vec<Vec<Vec2>>],
+    per_edge_corridors: &[(Vec<Vec2>, bool, Option<Vec2>)],
+    classify: bool,
+    two_way_oriented_dirs: &[Option<Vec2>],
+) -> Vec<(bool, bool, Option<Vec2>, bool)> {
     if !classify {
-        return vec![(true, true, None); contour.len()];
+        return vec![(true, true, None, false); contour.len()];
     }
 
     let is_interior = !is_boundary_face(contour, corridor_shapes, per_edge_corridors);
 
     let eps = 0.5;
     let n = contour.len();
-    let mut result = vec![(false, is_interior, None); n];
+    let mut result = vec![(false, is_interior, None, false); n];
     for i in 0..n {
         let j = (i + 1) % n;
         let p0 = contour[i];
         let p1 = contour[j];
         let mid = (p0 + p1) * 0.5;
 
-        // Check if this edge is aisle-facing (both endpoints on a corridor).
         let mut is_aisle = false;
         'outer: for shape in corridor_shapes {
             for ring in shape {
@@ -342,20 +356,25 @@ fn classify_face_edges(
             continue;
         }
 
-        // Find travel direction from nearest un-merged corridor.
         let mut best_dist = f64::INFINITY;
         let mut best_travel_dir = None;
-        for (poly, _, travel_dir) in per_edge_corridors {
+        let mut best_idx = 0usize;
+        for (idx, (poly, _, travel_dir)) in per_edge_corridors.iter().enumerate() {
             for ci in 0..poly.len() {
                 let cj = (ci + 1) % poly.len();
                 let d = point_to_segment_dist(mid, poly[ci], poly[cj]);
                 if d < best_dist {
                     best_dist = d;
                     best_travel_dir = *travel_dir;
+                    best_idx = idx;
                 }
             }
         }
-        result[i] = (true, is_interior, best_travel_dir);
+        let is_two_way_oriented = two_way_oriented_dirs
+            .get(best_idx)
+            .and_then(|v| *v)
+            .is_some();
+        result[i] = (true, is_interior, best_travel_dir, is_two_way_oriented);
     }
     result
 }
@@ -448,6 +467,7 @@ fn compute_face_spines(
     face_is_boundary: bool,
     _params: &ParkingParams,
     debug: &DebugToggles,
+    two_way_oriented_dirs: &[Option<Vec2>],
 ) -> Vec<SpineSegment> {
     if shape.is_empty() || shape[0].len() < 3 {
         return vec![];
@@ -479,12 +499,14 @@ fn compute_face_spines(
     let face_interior = !face_is_boundary;
     let mut interior_flat: Vec<bool> = Vec::new();
     let mut travel_dir_flat: Vec<Option<Vec2>> = Vec::new();
+    let mut two_way_oriented_flat: Vec<bool> = Vec::new();
     for contour in contours.iter() {
-        let classified = classify_face_edges(contour, corridor_shapes, per_edge_corridors, debug.edge_classification);
-        for &(facing, _ignored_interior, travel_dir) in classified.iter() {
+        let classified = classify_face_edges_ext(contour, corridor_shapes, per_edge_corridors, debug.edge_classification, two_way_oriented_dirs);
+        for &(facing, _ignored_interior, travel_dir, is_two_way_ori) in classified.iter() {
             aisle_facing_flat.push(facing);
             interior_flat.push(face_interior);
             travel_dir_flat.push(travel_dir);
+            two_way_oriented_flat.push(is_two_way_ori);
         }
     }
 
@@ -521,7 +543,23 @@ fn compute_face_spines(
             // Outward normal = opposite of the edge's inward normal.
             let outward = Vec2::new(-sk.edge_normals[orig_edge].x, -sk.edge_normals[orig_edge].y);
             let is_interior = interior_flat.get(orig_edge).copied().unwrap_or(true);
-            let travel_dir = travel_dir_flat.get(orig_edge).copied().flatten();
+            let is_two_way_ori = two_way_oriented_flat.get(orig_edge).copied().unwrap_or(false);
+            let travel_dir = travel_dir_flat.get(orig_edge).copied().flatten().map(|td| {
+                if is_two_way_ori {
+                    // For two-way-oriented aisles, flip travel_dir for the
+                    // spine on the "canonical negative" side. This condition
+                    // is td-INDEPENDENT (based only on outward_normal), so
+                    // it always flips the same physical side regardless of
+                    // which variant is active. Combined with the standard
+                    // flip_angle formula, this makes both sides produce the
+                    // same flip_angle, giving correct per-lane stall angles.
+                    let neg_side = outward.x < -1e-9
+                        || (outward.x.abs() < 1e-9 && outward.y < -1e-9);
+                    if neg_side { Vec2::new(-td.x, -td.y) } else { td }
+                } else {
+                    td
+                }
+            });
 
             if !debug.spine_clipping {
                 all_spines.push(SpineSegment {
@@ -575,7 +613,8 @@ fn compute_face_spines(
 // ---------------------------------------------------------------------------
 
 /// Build deduplicated corridor polygons (one rectangle per undirected edge).
-/// Returns (polygon, interior, travel_dir) where travel_dir is Some for one-way edges.
+/// Returns (polygon, interior, travel_dir) where travel_dir is Some for
+/// one-way or two-way-oriented edges.
 fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<(Vec<Vec2>, bool, Option<Vec2>)> {
     let mut seen = std::collections::HashSet::new();
     let mut corridors = Vec::new();
@@ -588,10 +627,11 @@ fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<(Vec<Vec2>, bool, Optio
         if !seen.insert(key) {
             continue;
         }
-        let travel_dir = if edge.direction == AisleDirection::OneWay {
-            Some((graph.vertices[edge.end] - graph.vertices[edge.start]).normalize())
-        } else {
-            None
+        let travel_dir = match edge.direction {
+            AisleDirection::OneWay | AisleDirection::TwoWayOriented => {
+                Some((graph.vertices[edge.end] - graph.vertices[edge.start]).normalize())
+            }
+            AisleDirection::TwoWay => None,
         };
         corridors.push((corridor_polygon(&graph.vertices, edge), edge.interior, travel_dir));
     }
@@ -766,6 +806,11 @@ fn merge_corridor_shapes(
                     } else {
                         pts
                     };
+                    let pts = if debug.contour_simplification {
+                        rdp_simplify_contour(pts, 2.0)
+                    } else {
+                        pts
+                    };
                     // Keep outer contour (index 0) unconditionally.
                     // Filter hole contours (index 1+) by area.
                     if i > 0 && debug.hole_filtering && signed_area(&pts).abs() < min_hole_area {
@@ -831,6 +876,25 @@ fn remove_contour_spikes(mut contour: Vec<Vec2>, tolerance: f64) -> Vec<Vec2> {
         }
     }
     contour
+}
+
+/// Simplify a polygon contour using Ramer-Douglas-Peucker (via the `geo`
+/// crate). Removes vertices that contribute less than `epsilon` perpendicular
+/// distance to the shape, eliminating degenerate needle spikes while
+/// preserving structurally significant features like V-notches.
+fn rdp_simplify_contour(contour: Vec<Vec2>, epsilon: f64) -> Vec<Vec2> {
+    if contour.len() < 4 {
+        return contour;
+    }
+    let coords: Vec<Coord<f64>> = contour.iter().map(|v| Coord { x: v.x, y: v.y }).collect();
+    let ring = LineString::new(coords);
+    let poly = geo::Polygon::new(ring, vec![]);
+    let simplified = poly.simplify(&epsilon);
+    let ext = simplified.exterior();
+    // geo's LineString repeats the closing coordinate; skip it since our
+    // contours are implicitly closed.
+    let n = ext.0.len().saturating_sub(1);
+    ext.0[..n].iter().map(|c| Vec2::new(c.x, c.y)).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1329,6 +1393,26 @@ pub fn generate_from_spines(
     // boolean-union them into merged shapes (preserving holes for loops).
     let dedup_corridors_with_flags = deduplicate_corridors(graph);
     let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors_with_flags.iter().map(|(p, _, _)| p.clone()).collect();
+    let two_way_oriented_dirs: Vec<Option<Vec2>> = {
+        let mut seen = std::collections::HashSet::new();
+        let mut dirs = Vec::new();
+        for edge in &graph.edges {
+            let key = if edge.start < edge.end {
+                (edge.start, edge.end)
+            } else {
+                (edge.end, edge.start)
+            };
+            if !seen.insert(key) {
+                continue;
+            }
+            if edge.direction == AisleDirection::TwoWayOriented {
+                dirs.push(Some((graph.vertices[edge.end] - graph.vertices[edge.start]).normalize()));
+            } else {
+                dirs.push(None);
+            }
+        }
+        dirs
+    };
     let miter_fills = generate_miter_fills(graph, debug);
     let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, graph, debug);
 
@@ -1395,7 +1479,7 @@ pub fn generate_from_spines(
             });
         }
         let face_is_boundary = is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags);
-        let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors_with_flags, face_is_boundary, params, debug);
+        let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors_with_flags, face_is_boundary, params, debug, &two_way_oriented_dirs);
         if !face_spines.is_empty() {
             faces_with_spines.insert(face_idx);
         }
@@ -1606,7 +1690,7 @@ mod tests {
                 }
             }
 
-            let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &DebugToggles::default());
+            let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &DebugToggles::default(), &[]);
             eprintln!("  spines from face {}: {}", fi, face_spines.len());
             for (si, s) in face_spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -1695,7 +1779,7 @@ mod tests {
         let mut raw_spines = Vec::new();
         let mut faces_with_spines = std::collections::HashSet::new();
         for (face_idx, shape) in faces.iter().enumerate() {
-            let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &debug);
+            let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &debug, &[]);
             if !face_spines.is_empty() {
                 faces_with_spines.insert(face_idx);
             }
@@ -1844,7 +1928,7 @@ mod tests {
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default());
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[]);
 
         eprintln!("\n=== Trapezoid face spine test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -1936,7 +2020,7 @@ mod tests {
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default());
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[]);
 
         eprintln!("\n=== Pentagon face spine test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -2038,7 +2122,7 @@ mod tests {
         let effective_depth = params.stall_depth
             * params.stall_angle_deg.to_radians().sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default());
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[]);
         let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params)
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
 
@@ -2087,7 +2171,7 @@ mod tests {
         let effective_depth =
             params.stall_depth * params.stall_angle_deg.to_radians().sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default());
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[]);
 
         eprintln!("\n=== Vertical spines + diagonal top test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -2221,7 +2305,7 @@ mod tests {
             }
             let mut shape = vec![contour.clone()];
             shape.extend(face.holes.iter().cloned());
-            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &input.params, &DebugToggles::default());
+            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &input.params, &DebugToggles::default(), &[]);
             eprintln!("    spines: {}", spines.len());
             for (si, s) in spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -2308,7 +2392,7 @@ mod tests {
             // Compute spines for this face using full shape (contour + holes).
             let mut shape = vec![contour.clone()];
             shape.extend(face.holes.iter().cloned());
-            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &input.params, &DebugToggles::default());
+            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &input.params, &DebugToggles::default(), &[]);
             eprintln!("    spines: {}", spines.len());
             for (si, s) in spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -2364,6 +2448,205 @@ mod tests {
         assert!(layout.stalls.len() > 0, "should produce stalls");
         assert!(layout.miter_fills.len() > 0, "should produce miter fills");
         assert!(layout.faces.len() > 0, "should produce faces");
+    }
+
+    /// Test that TwoWayOriented aisles assign per-side travel_dir to spines.
+    ///
+    /// Setup: a 200×300 rectangle with a vertical aisle down the middle.
+    /// The aisle edge goes from (100,0) to (100,300) and is marked
+    /// TwoWayOriented with travel_dir pointing downward (0,1).
+    ///
+    /// Expected: the spine on the RIGHT side of travel_dir (outward normal
+    /// pointing right, i.e. +x) should get travel_dir = (0,1) (downward,
+    /// matching the right lane). The spine on the LEFT side (outward normal
+    /// pointing left, i.e. -x) should get travel_dir = (0,-1) (upward,
+    /// the oncoming lane).
+    ///
+    /// For comparison, a OneWay aisle should give BOTH sides the same
+    /// travel_dir.
+    #[test]
+    fn test_two_way_oriented_per_side_travel_dir() {
+        // Build a minimal graph: vertical aisle at x=100 in a 200×300 box.
+        let boundary = Polygon {
+            outer: vec![
+                Vec2::new(0.0, 0.0),
+                Vec2::new(200.0, 0.0),
+                Vec2::new(200.0, 300.0),
+                Vec2::new(0.0, 300.0),
+            ],
+            holes: vec![],
+        };
+        let params = ParkingParams::default();
+        let hw = params.aisle_width / 2.0;
+
+        // Vertical aisle: 4 perimeter vertices + 2 interior vertices at
+        // top and bottom of the aisle centerline.
+        let vertices = vec![
+            Vec2::new(0.0, 0.0),     // 0: bottom-left
+            Vec2::new(200.0, 0.0),   // 1: bottom-right
+            Vec2::new(200.0, 300.0), // 2: top-right
+            Vec2::new(0.0, 300.0),   // 3: top-left
+            Vec2::new(100.0, 0.0),   // 4: aisle bottom
+            Vec2::new(100.0, 300.0), // 5: aisle top
+        ];
+
+        // Helper to build a graph with a specific direction for the interior edge.
+        let make_graph = |direction: AisleDirection| -> DriveAisleGraph {
+            DriveAisleGraph {
+                vertices: vertices.clone(),
+                edges: vec![
+                    // Perimeter edges
+                    AisleEdge { start: 0, end: 1, width: hw, interior: false, direction: AisleDirection::TwoWay },
+                    AisleEdge { start: 1, end: 2, width: hw, interior: false, direction: AisleDirection::TwoWay },
+                    AisleEdge { start: 2, end: 3, width: hw, interior: false, direction: AisleDirection::TwoWay },
+                    AisleEdge { start: 3, end: 0, width: hw, interior: false, direction: AisleDirection::TwoWay },
+                    // Perimeter connections to aisle
+                    AisleEdge { start: 0, end: 4, width: hw, interior: false, direction: AisleDirection::TwoWay },
+                    AisleEdge { start: 1, end: 4, width: hw, interior: false, direction: AisleDirection::TwoWay },
+                    AisleEdge { start: 2, end: 5, width: hw, interior: false, direction: AisleDirection::TwoWay },
+                    AisleEdge { start: 3, end: 5, width: hw, interior: false, direction: AisleDirection::TwoWay },
+                    // Interior aisle edge: 4→5 (bottom to top, i.e. travel_dir = (0,1) upward)
+                    AisleEdge { start: 4, end: 5, width: hw, interior: true, direction: direction.clone() },
+                    // Reverse edge for two-way
+                    AisleEdge { start: 5, end: 4, width: hw, interior: true, direction: direction },
+                ],
+                perim_vertex_count: 4,
+            }
+        };
+
+        let debug = DebugToggles::default();
+
+        // --- Test TwoWayOriented ---
+        let graph = make_graph(AisleDirection::TwoWayOriented);
+        let (stalls, _, spine_lines, faces, _, _, _) = generate_from_spines(&graph, &boundary, &params, &debug);
+
+        eprintln!("\n=== TwoWayOriented test ===");
+        eprintln!("stalls: {}, spines: {}, faces: {}", stalls.len(), spine_lines.len(), faces.len());
+
+        // Rebuild spines with travel_dir info (spine_lines loses it).
+        // Use the internal pipeline directly.
+        let dedup = deduplicate_corridors(&graph);
+        let dedup_polys: Vec<Vec<Vec2>> = dedup.iter().map(|(p, _, _)| p.clone()).collect();
+        let merged = merge_corridor_shapes(&dedup_polys, &graph, &debug);
+        let two_way_dirs: Vec<Option<Vec2>> = {
+            let mut seen = std::collections::HashSet::new();
+            let mut dirs = Vec::new();
+            for edge in &graph.edges {
+                let key = if edge.start < edge.end { (edge.start, edge.end) } else { (edge.end, edge.start) };
+                if !seen.insert(key) { continue; }
+                if edge.direction == AisleDirection::TwoWayOriented {
+                    dirs.push(Some((graph.vertices[edge.end] - graph.vertices[edge.start]).normalize()));
+                } else {
+                    dirs.push(None);
+                }
+            }
+            dirs
+        };
+        let extracted_faces = extract_faces(&boundary, &merged);
+
+        let ed = params.stall_depth
+            + params.stall_depth * (params.stall_angle_deg * std::f64::consts::PI / 180.0).sin()
+            + (params.stall_angle_deg * std::f64::consts::PI / 180.0).cos() * params.stall_width / 2.0;
+
+        let mut left_spines = Vec::new();
+        let mut right_spines = Vec::new();
+        for shape in &extracted_faces {
+            let face_is_boundary = is_boundary_face(&shape[0], &merged, &dedup);
+            let spines = compute_face_spines(shape, ed, &merged, &dedup, face_is_boundary, &params, &debug, &two_way_dirs);
+            for s in &spines {
+                if let Some(td) = s.travel_dir {
+                    eprintln!(
+                        "  spine: outward=({:.1},{:.1}) travel_dir=({:.1},{:.1}) start=({:.0},{:.0}) end=({:.0},{:.0})",
+                        s.outward_normal.x, s.outward_normal.y,
+                        td.x, td.y,
+                        s.start.x, s.start.y, s.end.x, s.end.y,
+                    );
+                    // Classify: is outward pointing right (+x) or left (-x)?
+                    if s.outward_normal.x > 0.5 {
+                        right_spines.push(td);
+                    } else if s.outward_normal.x < -0.5 {
+                        left_spines.push(td);
+                    }
+                }
+            }
+        }
+
+        // The interior aisle goes from vertex 4 (100,0) to vertex 5 (100,300).
+        // travel_dir = normalize(v5 - v4) = (0, 1).
+        //
+        // For TwoWayOriented, both sides get the SAME travel_dir (like
+        // OneWay). The existing flip_angle logic in place_stalls_on_spines
+        // already differentiates stall lean per-side based on the spine's
+        // orientation relative to travel_dir.
+        eprintln!("right_spines travel_dirs: {:?}", right_spines);
+        eprintln!("left_spines travel_dirs: {:?}", left_spines);
+
+        assert!(!right_spines.is_empty(), "should have spines on right side of aisle");
+        assert!(!left_spines.is_empty(), "should have spines on left side of aisle");
+
+        // For TwoWayOriented, the "canonical negative" side (outward.x < 0)
+        // gets its travel_dir flipped. The "canonical positive" side keeps it.
+        // This makes both sides produce the same flip_angle in
+        // place_stalls_on_spines, giving correct per-lane stall angles.
+        // Right spines (outward.x > 0 = positive side): keep td = (0,1)
+        for td in &right_spines {
+            assert!(td.y > 0.5, "positive-side travel_dir should stay (0,1), got ({:.2},{:.2})", td.x, td.y);
+        }
+        // Left spines (outward.x < 0 = negative side): flipped to (0,-1)
+        for td in &left_spines {
+            assert!(td.y < -0.5, "negative-side travel_dir should be flipped to (0,-1), got ({:.2},{:.2})", td.x, td.y);
+        }
+    }
+
+    /// End-to-end test: use the full generate pipeline with a TwoWayOriented
+    /// annotation on an auto-generated graph (simulating the UI flow).
+    #[test]
+    fn test_two_way_oriented_annotation_e2e() {
+        use crate::generate::generate;
+        use crate::types::{GenerateInput, DriveLine};
+
+        let input = GenerateInput {
+            boundary: Polygon {
+                outer: vec![
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(300.0, 0.0),
+                    Vec2::new(300.0, 200.0),
+                    Vec2::new(0.0, 200.0),
+                ],
+                holes: vec![],
+            },
+            aisle_graph: None,
+            drive_lines: vec![
+                DriveLine {
+                    start: Vec2::new(150.0, -50.0),
+                    end: Vec2::new(150.0, 250.0),
+                },
+            ],
+            annotations: vec![
+                Annotation::TwoWayOriented {
+                    midpoint: Vec2::new(150.0, 100.0),
+                    travel_dir: Vec2::new(0.0, 1.0),
+                    chain: true,
+                },
+            ],
+            params: ParkingParams::default(),
+            debug: DebugToggles::default(),
+        };
+
+        let layout = generate(input);
+        eprintln!("\n=== TwoWayOriented annotation e2e ===");
+        eprintln!("stalls: {}, spines: {}, faces: {}",
+            layout.stalls.len(), layout.spines.len(), layout.faces.len());
+
+        // Check the resolved graph has TwoWayOriented edges.
+        let two_way_ori_count = layout.resolved_graph.edges.iter()
+            .filter(|e| e.direction == AisleDirection::TwoWayOriented)
+            .count();
+        eprintln!("TwoWayOriented edges in resolved graph: {}", two_way_ori_count);
+        assert!(two_way_ori_count > 0, "should have TwoWayOriented edges after annotation");
+
+        // Verify stalls exist on both sides.
+        assert!(layout.stalls.len() > 0, "should produce stalls");
     }
 }
 

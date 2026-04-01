@@ -407,6 +407,56 @@ fn apply_annotations(
                     }
                 }
             }
+            Annotation::TwoWayOriented { midpoint, travel_dir, chain: expand_chain } => {
+                // Same edge-matching logic as OneWay, but we preserve full
+                // aisle width and set TwoWayOriented direction.
+                let mut best: Option<(usize, f64)> = None;
+                for info in &edge_infos {
+                    if info.dir.dot(*travel_dir).abs() < 0.7 {
+                        continue;
+                    }
+                    let dist = point_to_segment_dist(*midpoint, info.start, info.end);
+                    if dist > max_dist {
+                        continue;
+                    }
+                    if best.is_none() || dist < best.unwrap().1 {
+                        best = Some((info.idx, dist));
+                    }
+                }
+                let Some((matched_idx, _dist)) = best else { continue };
+
+                let chain = if *expand_chain {
+                    find_collinear_chain(graph, matched_idx)
+                } else {
+                    vec![matched_idx]
+                };
+
+                for &chain_idx in &chain {
+                    let edge = &graph.edges[chain_idx];
+                    let s = edge.start;
+                    let e = edge.end;
+                    let edge_dir = (graph.vertices[e] - graph.vertices[s]).normalize();
+                    let needs_flip = edge_dir.dot(*travel_dir) < 0.0;
+
+                    for i in 0..graph.edges.len() {
+                        let ei = &graph.edges[i];
+                        let is_forward = ei.start == s && ei.end == e;
+                        let is_reverse = ei.start == e && ei.end == s;
+                        if !is_forward && !is_reverse {
+                            continue;
+                        }
+                        graph.edges[i].direction = AisleDirection::TwoWayOriented;
+                        // Keep full width — don't halve like OneWay.
+                        if needs_flip && is_forward {
+                            graph.edges[i].start = e;
+                            graph.edges[i].end = s;
+                        } else if needs_flip && is_reverse {
+                            graph.edges[i].start = s;
+                            graph.edges[i].end = e;
+                        }
+                    }
+                }
+            }
             _ => {} // DeleteVertex/DeleteEdge handled in second pass
         }
     }

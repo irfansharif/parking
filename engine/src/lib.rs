@@ -114,6 +114,15 @@ fn format_fixture(input: &GenerateInput) -> String {
                     fmt_coord(midpoint.x), fmt_coord(midpoint.y),
                 ));
             }
+            Annotation::TwoWayOriented { midpoint, travel_dir, chain } => {
+                out.push_str(&format!(
+                    "\nannotation two-way-oriented{}\n{},{}\n{},{}\n----\nannotation two-way-oriented at {},{}\n",
+                    if *chain { "" } else { " no-chain" },
+                    fmt_coord(midpoint.x), fmt_coord(midpoint.y),
+                    fmt_coord(travel_dir.x), fmt_coord(travel_dir.y),
+                    fmt_coord(midpoint.x), fmt_coord(midpoint.y),
+                ));
+            }
             Annotation::DeleteVertex { point } => {
                 out.push_str(&format!(
                     "\nannotation delete-vertex\n{},{}\n----\nannotation delete-vertex at {},{}\n",

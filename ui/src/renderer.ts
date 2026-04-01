@@ -1,5 +1,5 @@
 import { AppState, Camera, VertexRef } from "./app";
-import { Vec2, StallQuad, DriveAisleGraph, SpineLine, Face } from "./types";
+import { Vec2, StallQuad, DriveAisleGraph, SpineLine, Face, AisleDirection } from "./types";
 import { SnapGuide } from "./snap";
 
 export class Renderer {
@@ -450,45 +450,100 @@ export class Renderer {
         const isSelected = state.selectedEdge?.chain.includes(ei) ?? false;
         const isSegmentSelected = isSelected && state.selectedEdge?.mode === "segment" && state.selectedEdge?.index === ei;
         const isChainSelected = isSelected && !isSegmentSelected;
-        const isOneWay = edge.direction === "OneWay";
+        // Find the annotation (if any) that applies to this edge.
+        const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+        const matchedAnn = state.annotations.find((a) => {
+          if (a.kind !== "OneWay" && a.kind !== "TwoWayOriented") return false;
+          if (a._active === false) return false;
+          const d = Math.sqrt((a.midpoint.x - mid.x) ** 2 + (a.midpoint.y - mid.y) ** 2);
+          return d < 5.0;
+        });
+        const direction = (matchedAnn?.kind ?? edge.direction ?? "TwoWay") as AisleDirection;
+        const isOneWay = direction === "OneWay";
+        const isTwoWayOriented = direction === "TwoWayOriented";
+        const isDirected = isOneWay || isTwoWayOriented;
 
         // Edge line — segment selection is solid+thick, chain selection is dashed+thick.
-        ctx.setLineDash(isSegmentSelected ? [] : isOneWay ? [] : [2, 2]);
+        ctx.setLineDash(isSegmentSelected ? [] : isDirected ? [] : [2, 2]);
         const isPerimeter = edge.interior === false;
         ctx.strokeStyle = isSelected
           ? "rgba(255, 220, 50, 0.9)"
-          : isOneWay
-            ? "rgba(255, 180, 50, 0.7)"
+          : isDirected
+            ? isTwoWayOriented ? "rgba(100, 200, 255, 0.7)" : "rgba(255, 180, 50, 0.7)"
             : isPerimeter
               ? "rgba(255, 100, 100, 0.5)"
               : isManualGraph
                 ? "rgba(100, 150, 255, 0.5)"
                 : "rgba(100, 150, 255, 0.3)";
-        ctx.lineWidth = isSegmentSelected ? 2.5 : isSelected ? 1.5 : isOneWay ? 1.0 : 0.5;
+        ctx.lineWidth = isSegmentSelected ? 2.5 : isSelected ? 1.5 : isDirected ? 1.0 : 0.5;
         ctx.beginPath();
         ctx.moveTo(start.x, start.y);
         ctx.lineTo(end.x, end.y);
         ctx.stroke();
 
-        // Draw arrows on one-way edges
-        if (isOneWay) {
+        // Draw arrows on directed edges, using the annotation's travel_dir.
+        if (isDirected && matchedAnn && (matchedAnn.kind === "OneWay" || matchedAnn.kind === "TwoWayOriented")) {
+          const td = matchedAnn.travel_dir;
+          const tdLen = Math.sqrt(td.x * td.x + td.y * td.y);
+          if (tdLen < 1e-9) continue;
+          // travel_dir unit vector
+          const tnx = td.x / tdLen;
+          const tny = td.y / tdLen;
+          // Edge vector for positioning along the edge
           const dx = end.x - start.x;
           const dy = end.y - start.y;
           const len = Math.sqrt(dx * dx + dy * dy);
           if (len > 1) {
-            const nx = dx / len;
-            const ny = dy / len;
             const arrowSize = 5;
-            for (const t of [0.33, 0.66]) {
-              const ax = start.x + dx * t;
-              const ay = start.y + dy * t;
-              ctx.beginPath();
-              ctx.moveTo(ax + nx * arrowSize, ay + ny * arrowSize);
-              ctx.lineTo(ax - nx * arrowSize * 0.5 + ny * arrowSize * 0.5, ay - ny * arrowSize * 0.5 - nx * arrowSize * 0.5);
-              ctx.lineTo(ax - nx * arrowSize * 0.5 - ny * arrowSize * 0.5, ay - ny * arrowSize * 0.5 + nx * arrowSize * 0.5);
-              ctx.closePath();
-              ctx.fillStyle = isSelected ? "rgba(255, 220, 50, 0.9)" : "rgba(255, 180, 50, 0.8)";
-              ctx.fill();
+            const color = isSelected
+              ? "rgba(255, 220, 50, 0.9)"
+              : isTwoWayOriented ? "rgba(100, 200, 255, 0.8)" : "rgba(255, 180, 50, 0.8)";
+
+            if (isTwoWayOriented) {
+              // Two lanes with arrows in opposite directions.
+              // Use a CANONICAL edge direction for the perpendicular offset
+              // so "side=1" always maps to the same physical side regardless
+              // of which variant is active (the resolved graph flips edge
+              // start/end between variants).
+              const cdx = dx > 0 || (dx === 0 && dy > 0) ? dx : -dx;
+              const cdy = dx > 0 || (dx === 0 && dy > 0) ? dy : -dy;
+              const enx = cdx / len;
+              const eny = cdy / len;
+              const perpx = -eny;
+              const perpy = enx;
+              const offset = 3;
+              for (const side of [1, -1] as const) {
+                const ox = perpx * offset * side;
+                const oy = perpy * offset * side;
+                // side=1 (right of edge): travel_dir; side=-1 (left): reverse
+                const dirNx = side === 1 ? tnx : -tnx;
+                const dirNy = side === 1 ? tny : -tny;
+                const sideColor = side === 1 ? "rgba(100, 200, 255, 0.95)" : "rgba(255, 160, 80, 0.95)";
+                for (const t of [0.33, 0.66]) {
+                  const ax = start.x + dx * t + ox;
+                  const ay = start.y + dy * t + oy;
+                  ctx.beginPath();
+                  ctx.moveTo(ax + dirNx * arrowSize, ay + dirNy * arrowSize);
+                  ctx.lineTo(ax - dirNx * arrowSize * 0.5 + dirNy * arrowSize * 0.5, ay - dirNy * arrowSize * 0.5 - dirNx * arrowSize * 0.5);
+                  ctx.lineTo(ax - dirNx * arrowSize * 0.5 - dirNy * arrowSize * 0.5, ay - dirNy * arrowSize * 0.5 + dirNx * arrowSize * 0.5);
+                  ctx.closePath();
+                  ctx.fillStyle = sideColor;
+                  ctx.fill();
+                }
+              }
+            } else {
+              // Single direction arrows for one-way: use travel_dir.
+              for (const t of [0.33, 0.66]) {
+                const ax = start.x + dx * t;
+                const ay = start.y + dy * t;
+                ctx.beginPath();
+                ctx.moveTo(ax + tnx * arrowSize, ay + tny * arrowSize);
+                ctx.lineTo(ax - tnx * arrowSize * 0.5 + tny * arrowSize * 0.5, ay - tny * arrowSize * 0.5 - tnx * arrowSize * 0.5);
+                ctx.lineTo(ax - tnx * arrowSize * 0.5 - tny * arrowSize * 0.5, ay - tny * arrowSize * 0.5 + tnx * arrowSize * 0.5);
+                ctx.closePath();
+                ctx.fillStyle = color;
+                ctx.fill();
+              }
             }
           }
         }
@@ -549,8 +604,9 @@ export class Renderer {
     const annotationVerts = state.annotations.map((ann, i) => {
       const pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
       const isDelete = ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
-      const activeColor = isDelete ? "rgba(255, 80, 80, 0.95)" : "rgba(255, 180, 50, 0.95)";
-      const inactiveColor = isDelete ? "rgba(255, 80, 80, 0.3)" : "rgba(255, 180, 50, 0.3)";
+      const isTwoWayOri = ann.kind === "TwoWayOriented";
+      const activeColor = isDelete ? "rgba(255, 80, 80, 0.95)" : isTwoWayOri ? "rgba(100, 200, 255, 0.95)" : "rgba(255, 180, 50, 0.95)";
+      const inactiveColor = isDelete ? "rgba(255, 80, 80, 0.3)" : isTwoWayOri ? "rgba(100, 200, 255, 0.3)" : "rgba(255, 180, 50, 0.3)";
       return {
         pos,
         ref: { type: "annotation" as const, index: i },

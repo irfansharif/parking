@@ -213,6 +213,7 @@ impl Default for ParkingParams {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum AisleDirection {
     TwoWay,
+    TwoWayOriented,
     OneWay,
 }
 
@@ -280,6 +281,8 @@ pub struct DebugToggles {
     pub boundary_only_miters: bool,
     #[serde(default = "default_true")]
     pub spike_removal: bool,
+    #[serde(default)]
+    pub contour_simplification: bool,
     #[serde(default = "default_true")]
     pub hole_filtering: bool,
 
@@ -326,6 +329,7 @@ impl Default for DebugToggles {
             miter_fills: true,
             boundary_only_miters: true,
             spike_removal: false,
+            contour_simplification: true,
             hole_filtering: true,
             face_extraction: true,
             face_simplification: false,
@@ -362,6 +366,16 @@ pub enum Annotation {
     /// Mark the nearest aisle edge as one-way in the given travel direction.
     /// When `chain` is true (default), expands to the full collinear chain.
     OneWay {
+        midpoint: Vec2,
+        travel_dir: Vec2,
+        #[serde(default = "default_true")]
+        chain: bool,
+    },
+    /// Mark the nearest aisle edge as two-way with oriented lanes. The
+    /// `travel_dir` determines which side gets which lane direction, which
+    /// in turn affects stall angles on adjacent faces. Full aisle width is
+    /// preserved (unlike OneWay).
+    TwoWayOriented {
         midpoint: Vec2,
         travel_dir: Vec2,
         #[serde(default = "default_true")]

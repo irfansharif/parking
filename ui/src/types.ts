@@ -42,7 +42,7 @@ export interface ParkingLayout {
   islands: Island[];
 }
 
-export type AisleDirection = "TwoWay" | "OneWay";
+export type AisleDirection = "TwoWay" | "TwoWayOriented" | "OneWay";
 
 export interface AisleEdge {
   start: number;
@@ -79,6 +79,7 @@ export interface DebugToggles {
   miter_fills: boolean;
   boundary_only_miters: boolean;
   spike_removal: boolean;
+  contour_simplification: boolean;
   hole_filtering: boolean;
   // Face extraction
   face_extraction: boolean;
@@ -105,7 +106,7 @@ export interface DriveLine {
   end: Vec2;
 }
 
-export type Annotation = OneWayAnnotation | DeleteVertexAnnotation | DeleteEdgeAnnotation;
+export type Annotation = OneWayAnnotation | TwoWayOrientedAnnotation | DeleteVertexAnnotation | DeleteEdgeAnnotation;
 
 export interface OneWayAnnotation {
   kind: "OneWay";
@@ -114,6 +115,15 @@ export interface OneWayAnnotation {
   chain?: boolean;
   _origDir?: Vec2;
   _active?: boolean; // false = tombstone
+}
+
+export interface TwoWayOrientedAnnotation {
+  kind: "TwoWayOriented";
+  midpoint: Vec2;
+  travel_dir: Vec2;
+  chain?: boolean;
+  _origDir?: Vec2;
+  _active?: boolean;
 }
 
 export interface DeleteVertexAnnotation {

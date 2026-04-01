@@ -117,6 +117,7 @@ export class App {
         miter_fills: true,
         boundary_only_miters: true,
         spike_removal: false,
+        contour_simplification: true,
         hole_filtering: false,
         face_extraction: true,
         face_simplification: false,
@@ -330,7 +331,7 @@ export class App {
             _active: ann._active,
           };
         }
-      } else if (ann.kind === "OneWay") {
+      } else if (ann.kind === "OneWay" || ann.kind === "TwoWayOriented") {
         ann.midpoint = pos;
         if (graph) {
           let bestDist = Infinity;
@@ -465,22 +466,37 @@ export class App {
 
   cycleAnnotationDirection(index: number): void {
     const ann = this.state.annotations[index];
-    if (!ann || ann.kind !== "OneWay") return;
+    if (!ann || (ann.kind !== "OneWay" && ann.kind !== "TwoWayOriented")) return;
     const orig = ann._origDir ?? ann.travel_dir;
 
-    if (ann._active === false) {
-      ann._active = true;
-      ann.travel_dir = { x: orig.x, y: orig.y };
-    } else {
+    if (ann.kind === "TwoWayOriented") {
+      // TwoWayOriented(A) → TwoWayOriented(B) → OneWay(fwd) → OneWay(rev) → tombstone
       const dot = ann.travel_dir.x * orig.x + ann.travel_dir.y * orig.y;
       if (dot > 0) {
+        // Variant A → variant B: flip direction.
         ann.travel_dir = { x: -orig.x, y: -orig.y };
       } else {
-        ann._active = false;
+        // Variant B → OneWay(fwd): change kind, restore forward direction.
+        (ann as any).kind = "OneWay";
+        ann.travel_dir = { x: orig.x, y: orig.y };
+      }
+    } else {
+      // OneWay cycling: fwd → rev → tombstone
+      if (ann._active === false) {
+        // Tombstone → TwoWayOriented(A): restart cycle.
+        (ann as any).kind = "TwoWayOriented";
+        ann._active = true;
+        ann.travel_dir = { x: orig.x, y: orig.y };
+      } else {
+        const dot = ann.travel_dir.x * orig.x + ann.travel_dir.y * orig.y;
+        if (dot > 0) {
+          ann.travel_dir = { x: -orig.x, y: -orig.y };
+        } else {
+          ann._active = false;
+        }
       }
     }
     this.generate();
-    // Sync: also select the matching edge so it highlights.
     this.syncEdgeSelectionFromAnnotation(ann);
   }
 
@@ -568,8 +584,7 @@ export class App {
   }
 
   /// Cycle an aisle edge's direction via annotations.
-  /// TwoWay → OneWay(forward) → OneWay(reversed) → TwoWay.
-  /// Creates, updates, or removes a OneWay annotation at the edge midpoint.
+  /// TwoWayOriented(A) → TwoWayOriented(B) → OneWay(fwd) → OneWay(rev) → TwoWay.
   cycleEdgeDirection(edgeIndex: number): void {
     const graph = this.getEffectiveAisleGraph();
     if (!graph) return;
@@ -586,17 +601,17 @@ export class App {
     // Find existing annotation for this edge (by midpoint proximity).
     const tolerance = 5.0;
     const existing = this.state.annotations.findIndex(
-      (a) => a.kind === "OneWay" &&
+      (a) => (a.kind === "OneWay" || a.kind === "TwoWayOriented") &&
         Math.sqrt((a.midpoint.x - mid.x) ** 2 + (a.midpoint.y - mid.y) ** 2) < tolerance
     );
 
     const isChainMode = this.state.selectedEdge?.mode !== "segment";
     let annIdx: number;
     if (existing < 0) {
-      // No annotation → create OneWay in start→end direction.
+      // No annotation → create TwoWayOriented in start→end direction.
       annIdx = this.state.annotations.length;
       this.state.annotations.push({
-        kind: "OneWay",
+        kind: "TwoWayOriented",
         midpoint: mid,
         travel_dir: edgeDir,
         chain: isChainMode,
@@ -605,23 +620,10 @@ export class App {
       });
     } else {
       annIdx = existing;
-      const ann = this.state.annotations[existing];
-      if (ann.kind !== "OneWay") return;
-      if (ann._active === false) {
-        const orig = ann._origDir ?? ann.travel_dir;
-        ann._active = true;
-        ann.travel_dir = { x: orig.x, y: orig.y };
-      } else {
-        const orig = ann._origDir ?? ann.travel_dir;
-        const dot = ann.travel_dir.x * orig.x + ann.travel_dir.y * orig.y;
-        if (dot > 0) {
-          ann.travel_dir = { x: -orig.x, y: -orig.y };
-        } else {
-          ann._active = false;
-        }
-      }
+      this.cycleAnnotationDirection(annIdx);
+      this.state.selectedVertex = { type: "annotation", index: annIdx };
+      return;
     }
-    // Keep edge and annotation selections in sync.
     this.state.selectedVertex = { type: "annotation", index: annIdx };
     this.generate();
   }

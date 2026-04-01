@@ -470,7 +470,7 @@ export function updateModeHint(app: App): void {
   if (!hint) return;
   if (app.state.editMode === "select") {
     if (app.state.selectedEdge) {
-      hint.textContent = "Edge selected. F to cycle direction (two-way → one-way → reverse → two-way). Esc to deselect.";
+      hint.textContent = "Edge selected. F to cycle direction (two-way-A → two-way-B → one-way → reverse → two-way). Esc to deselect.";
     } else if (app.state.selectedVertex?.type === "annotation") {
       hint.textContent = "Annotation selected. F to cycle direction. Delete to remove.";
     } else if (app.state.selectedVertex) {
