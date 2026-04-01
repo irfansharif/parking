@@ -1502,8 +1502,8 @@ fn extend_spines_to_faces(
     extensions
 }
 
-/// Cast a ray from `origin` in `dir` and return the (contour_index,
-/// edge_index) of the nearest face boundary edge it crosses.
+/// Cast a ray from `origin` in `dir` and return (contour_index, edge_index)
+/// of the nearest face boundary edge it crosses.
 fn ray_hit_face_edge(
     origin: Vec2,
     dir: Vec2,
@@ -1687,7 +1687,27 @@ fn place_extension_stalls_greedy(
                 }
             }
             //
-            // TODO: corner check disabled — needs rethink.
+            // Corner check: rays from p2 (dir p1→p2) and p3 (dir p0→p3).
+            // Both must hit the same face boundary edge. Origins are
+            // pulled 20% inward toward centroid to avoid starting outside
+            // the face (angled stall corners can protrude).
+            if face_idx < faces.len() && !faces[face_idx].is_empty() {
+                let cx = (quad.corners[0].x + quad.corners[1].x + quad.corners[2].x + quad.corners[3].x) / 4.0;
+                let cy = (quad.corners[0].y + quad.corners[1].y + quad.corners[2].y + quad.corners[3].y) / 4.0;
+                let centroid = Vec2::new(cx, cy);
+                let origin_a = quad.corners[2] + (centroid - quad.corners[2]) * 0.2;
+                let origin_b = quad.corners[3] + (centroid - quad.corners[3]) * 0.2;
+                let dir_a = (quad.corners[2] - quad.corners[1]).normalize();
+                let dir_b = (quad.corners[3] - quad.corners[0]).normalize();
+                let hit_a = ray_hit_face_edge(origin_a, dir_a, &faces[face_idx]);
+                let hit_b = ray_hit_face_edge(origin_b, dir_b, &faces[face_idx]);
+                match (hit_a, hit_b) {
+                    (Some((ci_a, ei_a)), Some((ci_b, ei_b))) => {
+                        if ci_a != ci_b || ei_a != ei_b { continue; }
+                    }
+                    _ => { continue; }
+                }
+            }
 
             // Conflict check against all occupied stalls in the same face.
             let shrunk = shrink_toward_centroid(&quad.corners, 0.1);
