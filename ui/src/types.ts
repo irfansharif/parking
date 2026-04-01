@@ -23,7 +23,8 @@ export interface Face {
   contour: Vec2[];
   holes?: Vec2[][];
   is_boundary?: boolean;
-  wall_edges?: number[];
+  edge_sources?: string[];
+  hole_edge_sources?: string[][];
 }
 
 export interface Island {

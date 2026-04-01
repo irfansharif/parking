@@ -341,21 +341,6 @@ export class Renderer {
     ctx.lineWidth = 0.5;
     ctx.stroke();
 
-    // Highlight wall edges in magenta for debugging.
-    if (face.wall_edges && face.wall_edges.length > 0) {
-      const c = face.contour;
-      for (const ei of face.wall_edges) {
-        const a = c[ei];
-        const b = c[(ei + 1) % c.length];
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.strokeStyle = "rgba(255, 0, 255, 0.9)";
-        ctx.lineWidth = 3;
-        ctx.stroke();
-      }
-    }
-
     if (face.is_boundary) {
       ctx.save();
       ctx.beginPath();
@@ -377,6 +362,39 @@ export class Renderer {
       }
       ctx.stroke();
       ctx.restore();
+    }
+
+    // Edge provenance coloring: magenta=wall, cyan=interior, yellow=perimeter.
+    const drawEdgeSources = (contour: Vec2[], sources: string[]) => {
+      for (let ei = 0; ei < sources.length; ei++) {
+        const src = sources[ei];
+        const a = contour[ei];
+        const b = contour[(ei + 1) % contour.length];
+        let color: string;
+        if (src === "wall") {
+          color = "rgba(255, 0, 255, 0.9)";
+        } else if (src === "interior") {
+          color = "rgba(0, 200, 255, 0.9)";
+        } else {
+          color = "rgba(255, 200, 50, 0.9)";
+        }
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    };
+    if (face.edge_sources && face.edge_sources.length > 0) {
+      drawEdgeSources(face.contour, face.edge_sources);
+    }
+    if (face.hole_edge_sources && face.holes) {
+      for (let hi = 0; hi < face.hole_edge_sources.length; hi++) {
+        if (face.holes[hi] && face.hole_edge_sources[hi].length > 0) {
+          drawEdgeSources(face.holes[hi], face.hole_edge_sources[hi]);
+        }
+      }
     }
   }
 

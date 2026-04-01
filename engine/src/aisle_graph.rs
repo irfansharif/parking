@@ -62,6 +62,46 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
         hole_loops.push(expanded);
     }
 
+    // Snap hole loop vertices onto nearby outer perimeter edges. When a hole
+    // is close to the boundary, the expanded hole loop and the inset perimeter
+    // produce near-duplicate parallel edges. Snapping collapses them.
+    let snap_tol = hw; // aisle half-width — generous enough to catch overlaps.
+    for hi in 0..hole_loops.len() {
+        let base = hole_bases[hi];
+        let hn = hole_loops[hi].len();
+        for hvi in 0..hn {
+            let hp = hole_loops[hi][hvi];
+            // Find the closest outer perimeter edge.
+            let mut best_dist = f64::INFINITY;
+            let mut _best_edge = 0usize;
+            let mut best_proj = hp;
+            for pi in 0..perim_n {
+                let pj = (pi + 1) % perim_n;
+                let a = outer_loop[pi];
+                let b = outer_loop[pj];
+                let d = point_to_segment_dist_with_proj(hp, a, b);
+                if d.0 < best_dist {
+                    best_dist = d.0;
+                    _best_edge = pi;
+                    best_proj = d.1;
+                }
+            }
+            if best_dist < snap_tol {
+                // Snap: reuse or create a vertex at the projected point on the
+                // perimeter edge. Update both the hole loop and the vertex list.
+                let vi = find_or_add_vertex(&mut vertices, best_proj, 0.5);
+                vertices[base + hvi] = best_proj;
+                // If find_or_add_vertex returned a different index, record a
+                // mapping so that hole edge building can remap.
+                if vi != base + hvi {
+                    // Point the hole vertex at the shared location.
+                    vertices[base + hvi] = vertices[vi];
+                }
+                hole_loops[hi][hvi] = best_proj;
+            }
+        }
+    }
+
     // Per-edge split tracking for hole loops (mirrors perim_splits).
     let mut hole_splits: Vec<Vec<Vec<(f64, usize)>>> = hole_loops
         .iter()
@@ -123,11 +163,11 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
 
         // Record ALL outer perimeter intersection points as splits (even if
         // holes later trim some segments — extra vertices on the perimeter
-        // are harmless).
+        // are harmless). Use find_or_add_vertex so that snapped hole vertices
+        // and nearby split points get merged.
         for hit in &outer_hits {
             let pt = origin + aisle_dir * hit.t_line;
-            let vi = vertices.len();
-            vertices.push(pt);
+            let vi = find_or_add_vertex(&mut vertices, pt, 0.5);
             perim_splits[hit.edge_idx].push((hit.t_edge, vi));
         }
 
@@ -414,6 +454,18 @@ fn ensure_ccw(mut poly: Vec<Vec2>) -> Vec<Vec2> {
     poly
 }
 
+
+/// Distance from point to segment, plus the closest point on the segment.
+fn point_to_segment_dist_with_proj(p: Vec2, a: Vec2, b: Vec2) -> (f64, Vec2) {
+    let ab = b - a;
+    let len_sq = ab.dot(ab);
+    if len_sq < 1e-12 {
+        return ((p - a).length(), a);
+    }
+    let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
+    let proj = a + ab * t;
+    ((p - proj).length(), proj)
+}
 
 /// Find an existing vertex within tolerance, or add a new one.
 pub(crate) fn find_or_add_vertex(vertices: &mut Vec<Vec2>, point: Vec2, tolerance: f64) -> usize {

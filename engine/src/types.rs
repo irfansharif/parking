@@ -113,6 +113,36 @@ pub struct StallQuad {
 // Faces (positive-space regions between corridors)
 // ---------------------------------------------------------------------------
 
+/// Source of a face edge: either a site boundary wall or an aisle corridor.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum EdgeSource {
+    Wall,
+    Aisle {
+        corridor_idx: usize,
+        interior: bool,
+        travel_dir: Option<Vec2>,
+        is_two_way_oriented: bool,
+    },
+}
+
+/// A single edge of a face contour with its provenance.
+#[derive(Clone, Debug)]
+pub struct FaceEdge {
+    pub start: Vec2,
+    pub end: Vec2,
+    pub source: EdgeSource,
+}
+
+/// A face with per-edge provenance tags. Computed once after `extract_faces()`
+/// and consumed by all downstream classification/spine logic.
+#[derive(Clone, Debug)]
+pub struct TaggedFace {
+    pub edges: Vec<FaceEdge>,
+    pub hole_edges: Vec<Vec<FaceEdge>>,
+    pub is_boundary: bool,
+    pub wall_edge_indices: Vec<usize>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Face {
     pub contour: Vec<Vec2>,
@@ -120,8 +150,12 @@ pub struct Face {
     pub holes: Vec<Vec<Vec2>>,
     #[serde(default)]
     pub is_boundary: bool,
+    /// Per-edge source labels for debug visualization ("wall", "interior", "perimeter").
     #[serde(default)]
-    pub wall_edges: Vec<usize>,
+    pub edge_sources: Vec<String>,
+    /// Per-hole per-edge source labels.
+    #[serde(default)]
+    pub hole_edge_sources: Vec<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +361,18 @@ pub struct DebugToggles {
     #[serde(default = "default_true")]
     pub conflict_removal: bool,
 
+    // Edge provenance (tag face edges with source corridor/wall)
+    #[serde(default = "default_true")]
+    pub edge_provenance: bool,
+
+    // Use tagged edges for boundary classification instead of distance matching
+    #[serde(default = "default_true")]
+    pub use_tagged_boundary: bool,
+
+    // Use tagged edges for edge classification in compute_face_spines
+    #[serde(default = "default_true")]
+    pub use_tagged_classification: bool,
+
     // Skeleton debug visualization
     #[serde(default)]
     pub skeleton_debug: bool,
@@ -337,7 +383,7 @@ impl Default for DebugToggles {
         Self {
             miter_fills: true,
             boundary_only_miters: true,
-            spike_removal: false,
+            spike_removal: true,
             contour_simplification: true,
             hole_filtering: true,
             face_extraction: true,
@@ -351,6 +397,9 @@ impl Default for DebugToggles {
             stall_face_clipping: true,
             boundary_clipping: true,
             conflict_removal: true,
+            edge_provenance: true,
+            use_tagged_boundary: true,
+            use_tagged_classification: true,
             skeleton_debug: false,
         }
     }

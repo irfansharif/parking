@@ -249,11 +249,9 @@ fn is_boundary_face(
     contour: &[Vec2],
     merged_aisle_shapes: &[Vec<Vec<Vec2>>],
     per_edge_aisles: &[(Vec<Vec2>, bool, Option<Vec2>)],
-) -> (bool, Vec<usize>) {
+) -> bool {
     let eps = 0.5;
     let n = contour.len();
-    let mut wall_edges = Vec::new();
-    let mut has_interior = false;
     for i in 0..n {
         let j = (i + 1) % n;
         let p0 = contour[i];
@@ -282,8 +280,7 @@ fn is_boundary_face(
             }
         }
         if !on_merged {
-            wall_edges.push(i);
-            continue;
+            return true; // Wall edge.
         }
 
         // Condition 2: check which un-merged aisle this edge belongs to.
@@ -301,11 +298,188 @@ fn is_boundary_face(
             }
         }
         if best_interior {
-            has_interior = true;
+            return false; // Has an interior aisle edge.
         }
     }
-    let is_boundary = !wall_edges.is_empty() || !has_interior;
-    (is_boundary, wall_edges)
+    true
+}
+
+/// Check whether a point is within `eps` of any merged aisle segment.
+fn point_on_merged_aisle(pt: Vec2, merged: &[Vec<Vec<Vec2>>], eps: f64) -> bool {
+    for shape in merged {
+        for ring in shape {
+            for ci in 0..ring.len() {
+                let cj = (ci + 1) % ring.len();
+                if point_to_segment_dist(pt, ring[ci], ring[cj]) < eps {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Find the best-matching un-merged corridor for a face edge sub-segment.
+/// Returns corridor index using segment-overlap scoring.
+fn best_corridor_for_edge(
+    p0: Vec2,
+    p1: Vec2,
+    per_edge_aisles: &[(Vec<Vec2>, bool, Option<Vec2>)],
+) -> usize {
+    let eps = 0.5;
+    let mid = Vec2 { x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5 };
+    let face_dir = p1 - p0;
+    let face_len = face_dir.length();
+    let mut best_score = f64::NEG_INFINITY;
+    let mut best_idx = 0usize;
+    for (idx, (poly, _, _)) in per_edge_aisles.iter().enumerate() {
+        for ci in 0..poly.len() {
+            let cj = (ci + 1) % poly.len();
+            let ca = poly[ci];
+            let cb = poly[cj];
+            let perp = point_to_segment_dist(mid, ca, cb);
+            if perp > eps * 2.0 {
+                continue;
+            }
+            if face_len > 1e-9 {
+                let fd = face_dir * (1.0 / face_len);
+                let t0: f64 = 0.0;
+                let t1 = face_len;
+                let s0 = (ca - p0).dot(fd);
+                let s1 = (cb - p0).dot(fd);
+                let (smin, smax) = if s0 < s1 { (s0, s1) } else { (s1, s0) };
+                let overlap = (t1.min(smax) - t0.max(smin)).max(0.0);
+                let score = overlap - perp * 10.0;
+                if score > best_score {
+                    best_score = score;
+                    best_idx = idx;
+                }
+            } else {
+                let score = -perp;
+                if score > best_score {
+                    best_score = score;
+                    best_idx = idx;
+                }
+            }
+        }
+    }
+    best_idx
+}
+
+/// Tag each edge of a face with its source (wall or aisle corridor).
+/// Runs once after `extract_faces()` so downstream code can read tags
+/// instead of re-doing distance-based matching. Edges that span an
+/// aisle/wall junction are split at the transition point.
+fn tag_face_edges(
+    shape: &[Vec<Vec2>],
+    merged_aisle_shapes: &[Vec<Vec<Vec2>>],
+    per_edge_aisles: &[(Vec<Vec2>, bool, Option<Vec2>)],
+    two_way_oriented_dirs: &[Option<Vec2>],
+) -> TaggedFace {
+    let tag_contour = |contour: &[Vec2]| -> Vec<FaceEdge> {
+        let eps = 0.5;
+        let n = contour.len();
+        let mut edges = Vec::with_capacity(n);
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let p0 = contour[i];
+            let p1 = contour[j];
+
+            let p0_on = point_on_merged_aisle(p0, merged_aisle_shapes, eps);
+            let p1_on = point_on_merged_aisle(p1, merged_aisle_shapes, eps);
+
+            if !p0_on && !p1_on {
+                // Both endpoints off merged aisle — pure wall.
+                let mid = Vec2 { x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5 };
+                if !point_on_merged_aisle(mid, merged_aisle_shapes, eps) {
+                    edges.push(FaceEdge { start: p0, end: p1, source: EdgeSource::Wall });
+                    continue;
+                }
+                // Midpoint is on aisle but endpoints aren't — rare, treat as
+                // aisle (conservative; could split further but unlikely to matter).
+            }
+
+            if p0_on && p1_on {
+                // Both endpoints on merged aisle — pure aisle edge.
+                let idx = best_corridor_for_edge(p0, p1, per_edge_aisles);
+                let (_, interior, travel_dir) = &per_edge_aisles[idx];
+                let is_two_way_oriented = two_way_oriented_dirs
+                    .get(idx).and_then(|v| *v).is_some();
+                edges.push(FaceEdge {
+                    start: p0, end: p1,
+                    source: EdgeSource::Aisle {
+                        corridor_idx: idx, interior: *interior,
+                        travel_dir: *travel_dir, is_two_way_oriented,
+                    },
+                });
+                continue;
+            }
+
+            // One endpoint on aisle, the other on wall — find the split point
+            // via binary search along the edge.
+            let (on_pt, off_pt, on_first) = if p0_on { (p0, p1, true) } else { (p1, p0, false) };
+            let mut lo = 0.0_f64;
+            let mut hi = 1.0_f64;
+            for _ in 0..16 {
+                let t = (lo + hi) * 0.5;
+                let pt = on_pt + (off_pt - on_pt) * t;
+                if point_on_merged_aisle(pt, merged_aisle_shapes, eps) {
+                    lo = t;
+                } else {
+                    hi = t;
+                }
+            }
+            let split_t = (lo + hi) * 0.5;
+            let split_pt = on_pt + (off_pt - on_pt) * split_t;
+
+            // Create two sub-edges in the correct winding order.
+            let (aisle_start, aisle_end, wall_start, wall_end) = if on_first {
+                (p0, split_pt, split_pt, p1)
+            } else {
+                (split_pt, p1, p0, split_pt)
+            };
+
+            // Tag aisle sub-edge.
+            let idx = best_corridor_for_edge(aisle_start, aisle_end, per_edge_aisles);
+            let (_, interior, travel_dir) = &per_edge_aisles[idx];
+            let is_two_way_oriented = two_way_oriented_dirs
+                .get(idx).and_then(|v| *v).is_some();
+
+            if on_first {
+                edges.push(FaceEdge {
+                    start: aisle_start, end: aisle_end,
+                    source: EdgeSource::Aisle {
+                        corridor_idx: idx, interior: *interior,
+                        travel_dir: *travel_dir, is_two_way_oriented,
+                    },
+                });
+                edges.push(FaceEdge { start: wall_start, end: wall_end, source: EdgeSource::Wall });
+            } else {
+                edges.push(FaceEdge { start: wall_start, end: wall_end, source: EdgeSource::Wall });
+                edges.push(FaceEdge {
+                    start: aisle_start, end: aisle_end,
+                    source: EdgeSource::Aisle {
+                        corridor_idx: idx, interior: *interior,
+                        travel_dir: *travel_dir, is_two_way_oriented,
+                    },
+                });
+            }
+        }
+        edges
+    };
+
+    let edges = if !shape.is_empty() { tag_contour(&shape[0]) } else { vec![] };
+    let hole_edges: Vec<Vec<FaceEdge>> = shape[1..].iter().map(|h| tag_contour(h)).collect();
+
+    // Derive is_boundary and wall_edge_indices.
+    let wall_edge_indices: Vec<usize> = edges.iter().enumerate()
+        .filter(|(_, e)| matches!(e.source, EdgeSource::Wall))
+        .map(|(i, _)| i)
+        .collect();
+    let has_interior_aisle = edges.iter().any(|e| matches!(e.source, EdgeSource::Aisle { interior: true, .. }));
+    let is_boundary = !wall_edge_indices.is_empty() || !has_interior_aisle;
+
+    TaggedFace { edges, hole_edges, is_boundary, wall_edge_indices }
 }
 
 /// Classify each edge of a face contour as (aisle_facing, is_interior, travel_dir).
@@ -338,7 +512,7 @@ fn classify_face_edges_ext(
         return vec![(true, true, None, false); contour.len()];
     }
 
-    let is_interior = !is_boundary_face(contour, corridor_shapes, per_edge_corridors).0;
+    let is_interior = !is_boundary_face(contour, corridor_shapes, per_edge_corridors);
 
     let eps = 0.5;
     let n = contour.len();
@@ -479,6 +653,7 @@ fn compute_face_spines(
     _params: &ParkingParams,
     debug: &DebugToggles,
     two_way_oriented_dirs: &[Option<Vec2>],
+    tagged: Option<&TaggedFace>,
 ) -> Vec<SpineSegment> {
     if shape.is_empty() || shape[0].len() < 3 {
         return vec![];
@@ -511,13 +686,63 @@ fn compute_face_spines(
     let mut interior_flat: Vec<bool> = Vec::new();
     let mut travel_dir_flat: Vec<Option<Vec2>> = Vec::new();
     let mut two_way_oriented_flat: Vec<bool> = Vec::new();
-    for contour in contours.iter() {
-        let classified = classify_face_edges_ext(contour, corridor_shapes, per_edge_corridors, debug.edge_classification, two_way_oriented_dirs);
-        for &(facing, _ignored_interior, travel_dir, is_two_way_ori) in classified.iter() {
-            aisle_facing_flat.push(facing);
-            interior_flat.push(face_interior);
-            travel_dir_flat.push(travel_dir);
-            two_way_oriented_flat.push(is_two_way_ori);
+
+    // Use tagged classification when available and face_simplification is off
+    // (simplification changes vertex count, breaking tag alignment).
+    let use_tags = tagged.is_some() && debug.use_tagged_classification && !debug.face_simplification;
+    if use_tags {
+        let tf = tagged.unwrap();
+        // Build list of (contour, tagged_edges) pairs to classify.
+        let mut pairs: Vec<(&[Vec2], &[FaceEdge])> = Vec::new();
+        if !contours.is_empty() {
+            pairs.push((&contours[0], &tf.edges));
+        }
+        for (ci, contour) in contours.iter().enumerate().skip(1) {
+            let hi = ci - 1;
+            if hi < tf.hole_edges.len() {
+                pairs.push((contour, &tf.hole_edges[hi]));
+            }
+        }
+        for (contour, tagged_edges) in pairs {
+            let n = contour.len();
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let mid = (contour[i] + contour[j]) * 0.5;
+                let mut best_dist = f64::INFINITY;
+                let mut best_source: &EdgeSource = &EdgeSource::Wall;
+                for te in tagged_edges {
+                    let te_mid = (te.start + te.end) * 0.5;
+                    let d = (te_mid - mid).length();
+                    if d < best_dist {
+                        best_dist = d;
+                        best_source = &te.source;
+                    }
+                }
+                match best_source {
+                    EdgeSource::Wall => {
+                        aisle_facing_flat.push(false);
+                        interior_flat.push(face_interior);
+                        travel_dir_flat.push(None);
+                        two_way_oriented_flat.push(false);
+                    }
+                    EdgeSource::Aisle { travel_dir, is_two_way_oriented, .. } => {
+                        aisle_facing_flat.push(true);
+                        interior_flat.push(face_interior);
+                        travel_dir_flat.push(*travel_dir);
+                        two_way_oriented_flat.push(*is_two_way_oriented);
+                    }
+                }
+            }
+        }
+    } else {
+        for contour in contours.iter() {
+            let classified = classify_face_edges_ext(contour, corridor_shapes, per_edge_corridors, debug.edge_classification, two_way_oriented_dirs);
+            for &(facing, _ignored_interior, travel_dir, is_two_way_ori) in classified.iter() {
+                aisle_facing_flat.push(facing);
+                interior_flat.push(face_interior);
+                travel_dir_flat.push(travel_dir);
+                two_way_oriented_flat.push(is_two_way_ori);
+            }
         }
     }
 
@@ -1644,6 +1869,7 @@ fn place_extension_stalls_greedy(
     _merged_corridors: &[Vec<Vec<Vec2>>],
     params: &ParkingParams,
     debug: &DebugToggles,
+    tagged_faces: &[TaggedFace],
 ) -> Vec<(StallQuad, usize, usize)> {
     use crate::clip::polygons_overlap;
 
@@ -1714,6 +1940,30 @@ fn place_extension_stalls_greedy(
                 match (hit_a, hit_b) {
                     (Some((ci_a, ei_a)), Some((ci_b, ei_b))) => {
                         if ci_a != ci_b || ei_a != ei_b { continue; }
+                        // Reject extensions aimed at wall edges.
+                        if debug.edge_provenance && face_idx < tagged_faces.len() {
+                            let tf = &tagged_faces[face_idx];
+                            let edges = if ci_a == 0 { &tf.edges } else if ci_a - 1 < tf.hole_edges.len() { &tf.hole_edges[ci_a - 1] } else { &tf.edges };
+                            // Find the tagged edge closest to the hit edge midpoint.
+                            if !faces[face_idx].is_empty() && ci_a < faces[face_idx].len() {
+                                let contour = &faces[face_idx][ci_a];
+                                if ei_a < contour.len() {
+                                    let ej = (ei_a + 1) % contour.len();
+                                    let mid = (contour[ei_a] + contour[ej]) * 0.5;
+                                    let mut best_dist = f64::INFINITY;
+                                    let mut is_wall = false;
+                                    for te in edges {
+                                        let te_mid = (te.start + te.end) * 0.5;
+                                        let d = (te_mid - mid).length();
+                                        if d < best_dist {
+                                            best_dist = d;
+                                            is_wall = matches!(te.source, EdgeSource::Wall);
+                                        }
+                                    }
+                                    if is_wall { continue; }
+                                }
+                            }
+                        }
                     }
                     _ => { continue; }
                 }
@@ -1811,6 +2061,23 @@ pub fn generate_from_spines(
         vec![]
     };
 
+    // Tag each face edge with its source corridor/wall for provenance.
+    // Indexed by face_idx (parallel to `faces`); empty/small faces get a
+    // default empty TaggedFace.
+    let tagged_faces: Vec<TaggedFace> = if debug.edge_provenance {
+        faces.iter()
+            .map(|shape| {
+                if !shape.is_empty() && shape[0].len() >= 3 {
+                    tag_face_edges(shape, &merged_corridors, &dedup_corridors_with_flags, &two_way_oriented_dirs)
+                } else {
+                    TaggedFace { edges: vec![], hole_edges: vec![], is_boundary: true, wall_edge_indices: vec![] }
+                }
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+
     // Collect spines from all faces, then merge collinear segments across
     // face boundaries so stalls flow continuously along shared aisle edges.
     let mut raw_spines = Vec::new();
@@ -1832,12 +2099,48 @@ pub fn generate_from_spines(
             }
             // Build edge weights matching the spine computation: aisle-facing
             // edges shrink (1.0), boundary edges stay fixed (0.0).
-            let debug_weights: Vec<f64> = normalized.iter().flat_map(|contour| {
-                let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors_with_flags, debug.edge_classification);
-                classified.into_iter().map(|(facing, _, _)| {
-                    if facing { 1.0 } else { 0.0 }
-                })
-            }).collect();
+            let debug_weights: Vec<f64> = if debug.use_tagged_classification && face_idx < tagged_faces.len() && !debug.face_simplification {
+                let tf = &tagged_faces[face_idx];
+                // Match each normalized contour edge to its closest tagged edge.
+                let mut weights = Vec::new();
+                let classify_weights = |contour: &[Vec2], tagged_edges: &[FaceEdge]| -> Vec<f64> {
+                    let n = contour.len();
+                    (0..n).map(|i| {
+                        let j = (i + 1) % n;
+                        let mid = (contour[i] + contour[j]) * 0.5;
+                        let mut best_dist = f64::INFINITY;
+                        let mut best_aisle = false;
+                        for te in tagged_edges {
+                            let te_mid = (te.start + te.end) * 0.5;
+                            let d = (te_mid - mid).length();
+                            if d < best_dist {
+                                best_dist = d;
+                                best_aisle = matches!(te.source, EdgeSource::Aisle { .. });
+                            }
+                        }
+                        if best_aisle { 1.0 } else { 0.0 }
+                    }).collect()
+                };
+                if !normalized.is_empty() {
+                    weights.extend(classify_weights(&normalized[0], &tf.edges));
+                }
+                for (ci, contour) in normalized.iter().enumerate().skip(1) {
+                    let hi = ci - 1;
+                    if hi < tf.hole_edges.len() {
+                        weights.extend(classify_weights(contour, &tf.hole_edges[hi]));
+                    } else {
+                        weights.extend(vec![0.0; contour.len()]);
+                    }
+                }
+                weights
+            } else {
+                normalized.iter().flat_map(|contour| {
+                    let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors_with_flags, debug.edge_classification);
+                    classified.into_iter().map(|(facing, _, _)| {
+                        if facing { 1.0 } else { 0.0 }
+                    })
+                }).collect()
+            };
             let sk = skeleton::compute_skeleton_multi(&normalized, &debug_weights);
             let sources: Vec<Vec2> = normalized.iter().flat_map(|c| c.iter().copied()).collect();
             skeleton_debugs.push(SkeletonDebug {
@@ -1857,8 +2160,13 @@ pub fn generate_from_spines(
                 sources,
             });
         }
-        let (face_is_boundary, _) = is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags);
-        let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors_with_flags, face_is_boundary, params, debug, &two_way_oriented_dirs);
+        let face_is_boundary = if debug.use_tagged_boundary && face_idx < tagged_faces.len() {
+            tagged_faces[face_idx].is_boundary
+        } else {
+            is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags)
+        };
+        let tagged_ref = if !tagged_faces.is_empty() { Some(&tagged_faces[face_idx]) } else { None };
+        let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors_with_flags, face_is_boundary, params, debug, &two_way_oriented_dirs, tagged_ref);
         if !face_spines.is_empty() {
             faces_with_spines.insert(face_idx);
         }
@@ -1928,13 +2236,16 @@ pub fn generate_from_spines(
                 .collect()
         };
         // Build per-face boundary flags.
-        let face_boundary: Vec<bool> = faces
-            .iter()
-            .map(|shape| {
-                !shape.is_empty() && shape[0].len() >= 3
-                    && is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags).0
-            })
-            .collect();
+        let face_boundary: Vec<bool> = if debug.use_tagged_boundary && !tagged_faces.is_empty() {
+            tagged_faces.iter().map(|tf| tf.is_boundary).collect()
+        } else {
+            faces.iter()
+                .map(|shape| {
+                    !shape.is_empty() && shape[0].len() >= 3
+                        && is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags)
+                })
+                .collect()
+        };
         remove_conflicting_stalls(tagged_stalls, &stall_spine_lengths, &face_boundary)
     } else {
         tagged_stalls
@@ -1957,7 +2268,7 @@ pub fn generate_from_spines(
     let (ext_stalls_tagged, ext_spines) = if debug.spine_extensions {
         let ext_spines_with_src = extend_spines_to_faces(&all_spines, &faces, effective_depth, params);
         let ext_tagged = place_extension_stalls_greedy(
-            &ext_spines_with_src, &all_spines, &tagged_stalls, &faces, boundary, &merged_corridors, params, debug,
+            &ext_spines_with_src, &all_spines, &tagged_stalls, &faces, boundary, &merged_corridors, params, debug, &tagged_faces,
         );
         let ext_spines: Vec<SpineSegment> = ext_spines_with_src.into_iter().map(|(s, _)| s).collect();
         (ext_tagged, ext_spines)
@@ -2002,14 +2313,42 @@ pub fn generate_from_spines(
 
     let face_list: Vec<Face> = faces
         .iter()
-        .filter(|shape| !shape.is_empty() && shape[0].len() >= 3)
-        .map(|shape| {
-            let (ib, we) = is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags);
+        .enumerate()
+        .filter(|(_, shape)| !shape.is_empty() && shape[0].len() >= 3)
+        .map(|(face_idx, shape)| {
+            let ib = if debug.use_tagged_boundary && face_idx < tagged_faces.len() {
+                tagged_faces[face_idx].is_boundary
+            } else {
+                is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags)
+            };
+            let source_label = |e: &FaceEdge| -> String {
+                match &e.source {
+                    EdgeSource::Wall => "wall".to_string(),
+                    EdgeSource::Aisle { interior: true, .. } => "interior".to_string(),
+                    EdgeSource::Aisle { interior: false, .. } => "perimeter".to_string(),
+                }
+            };
+            let (contour, holes, edge_sources, hole_edge_sources) = if debug.edge_provenance && face_idx < tagged_faces.len() {
+                let tf = &tagged_faces[face_idx];
+                // Use tagged edge start points as contour — accounts for split edges.
+                let c: Vec<Vec2> = tf.edges.iter().map(|e| e.start).collect();
+                let es: Vec<String> = tf.edges.iter().map(&source_label).collect();
+                let h: Vec<Vec<Vec2>> = tf.hole_edges.iter()
+                    .map(|hole| hole.iter().map(|e| e.start).collect())
+                    .collect();
+                let hes: Vec<Vec<String>> = tf.hole_edges.iter()
+                    .map(|hole| hole.iter().map(&source_label).collect())
+                    .collect();
+                (c, h, es, hes)
+            } else {
+                (shape[0].clone(), shape[1..].iter().cloned().collect(), vec![], vec![])
+            };
             Face {
-                contour: shape[0].clone(),
-                holes: shape[1..].iter().cloned().collect(),
+                contour,
+                holes,
                 is_boundary: ib,
-                wall_edges: we,
+                edge_sources,
+                hole_edge_sources,
             }
         })
         .collect();
@@ -2130,7 +2469,7 @@ mod tests {
                 }
             }
 
-            let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &DebugToggles::default(), &[]);
+            let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &DebugToggles::default(), &[], None);
             eprintln!("  spines from face {}: {}", fi, face_spines.len());
             for (si, s) in face_spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -2219,7 +2558,7 @@ mod tests {
         let mut raw_spines = Vec::new();
         let mut faces_with_spines = std::collections::HashSet::new();
         for (face_idx, shape) in faces.iter().enumerate() {
-            let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &debug, &[]);
+            let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &debug, &[], None);
             if !face_spines.is_empty() {
                 faces_with_spines.insert(face_idx);
             }
@@ -2293,7 +2632,7 @@ mod tests {
         // Generate spines and stalls.
         let mut all_spines = Vec::new();
         for (fi, shape) in faces.iter().enumerate() {
-            let spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &DebugToggles::default(), &[]);
+            let spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &DebugToggles::default(), &[], None);
             for s in spines {
                 all_spines.push(SpineSegment {
                     start: s.start,
@@ -2447,7 +2786,7 @@ mod tests {
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[]);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[], None);
 
         eprintln!("\n=== Trapezoid face spine test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -2539,7 +2878,7 @@ mod tests {
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[]);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[], None);
 
         eprintln!("\n=== Pentagon face spine test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -2641,7 +2980,7 @@ mod tests {
         let effective_depth = params.stall_depth
             * params.stall_angle_deg.to_radians().sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[]);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[], None);
         let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params)
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
 
@@ -2690,7 +3029,7 @@ mod tests {
         let effective_depth =
             params.stall_depth * params.stall_angle_deg.to_radians().sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[]);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[], None);
 
         eprintln!("\n=== Vertical spines + diagonal top test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -2824,7 +3163,7 @@ mod tests {
             }
             let mut shape = vec![contour.clone()];
             shape.extend(face.holes.iter().cloned());
-            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &input.params, &DebugToggles::default(), &[]);
+            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &input.params, &DebugToggles::default(), &[], None);
             eprintln!("    spines: {}", spines.len());
             for (si, s) in spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -2911,7 +3250,7 @@ mod tests {
             // Compute spines for this face using full shape (contour + holes).
             let mut shape = vec![contour.clone()];
             shape.extend(face.holes.iter().cloned());
-            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &input.params, &DebugToggles::default(), &[]);
+            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &input.params, &DebugToggles::default(), &[], None);
             eprintln!("    spines: {}", spines.len());
             for (si, s) in spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -3070,8 +3409,8 @@ mod tests {
         let mut left_spines = Vec::new();
         let mut right_spines = Vec::new();
         for shape in &extracted_faces {
-            let (face_is_boundary, _) = is_boundary_face(&shape[0], &merged, &dedup);
-            let spines = compute_face_spines(shape, ed, &merged, &dedup, face_is_boundary, &params, &debug, &two_way_dirs);
+            let face_is_boundary = is_boundary_face(&shape[0], &merged, &dedup);
+            let spines = compute_face_spines(shape, ed, &merged, &dedup, face_is_boundary, &params, &debug, &two_way_dirs, None);
             for s in &spines {
                 if let Some(td) = s.travel_dir {
                     eprintln!(
