@@ -1125,17 +1125,8 @@ fn stall_key(s: &StallQuad) -> [u64; 8] {
     ]
 }
 
-/// Build strip envelopes from stalls grouped by spine_idx.
-///
-/// Each envelope is convex on the aisle-facing side (corners 0,1) so
-/// inter-stall zigzag gaps don't leak through as islands, but follows
-/// the actual stall back edges on the interior side (corners 2,3) so
-/// the island can fill into the sawtooth gaps between stall backs.
-///
-/// Construction: compute the full convex hull of all stall corners,
-/// then replace the back-side chain of that hull with the actual
-/// back-corner sawtooth trace. The aisle-side chain is preserved from
-/// the hull (smooth), giving a half-hull polygon.
+/// Build strip envelopes from stalls grouped by spine_idx. Each envelope
+/// is the convex hull of all stall corners in the group.
 fn build_strip_envelopes(stalls: &[(StallQuad, usize, usize)]) -> Vec<(Vec<Vec2>, usize)> {
     // Group stalls by spine_idx, preserving order.
     let mut by_spine: std::collections::BTreeMap<usize, (usize, Vec<&StallQuad>)> =
@@ -1149,96 +1140,12 @@ fn build_strip_envelopes(stalls: &[(StallQuad, usize, usize)]) -> Vec<(Vec<Vec2>
     let mut envelopes = Vec::new();
     for (_spine_idx, (face_idx, quads)) in &by_spine {
         if quads.is_empty() { continue; }
-
-        // Infer directions from stall geometry.
-        let depth_dir = {
-            let mut d = Vec2::new(0.0, 0.0);
-            for q in quads.iter() {
-                let aisle_mid = (q.corners[0] + q.corners[1]) * 0.5;
-                let back_mid = (q.corners[2] + q.corners[3]) * 0.5;
-                d = d + (back_mid - aisle_mid);
-            }
-            d.normalize()
-        };
-        let spine_dir = Vec2::new(-depth_dir.y, depth_dir.x);
-
-        // Sort stalls along spine direction.
-        let mut sorted: Vec<&StallQuad> = quads.clone();
-        sorted.sort_by(|a, b| {
-            let ca = (a.corners[0] + a.corners[1] + a.corners[2] + a.corners[3]) * 0.25;
-            let cb = (b.corners[0] + b.corners[1] + b.corners[2] + b.corners[3]) * 0.25;
-            ca.dot(spine_dir).partial_cmp(&cb.dot(spine_dir)).unwrap()
-        });
-
-        // Full convex hull of ALL corners (original behavior = smooth
-        // on both sides).
-        let all_points: Vec<Vec2> = quads.iter()
+        let points: Vec<Vec2> = quads.iter()
             .flat_map(|q| q.corners.iter().copied())
             .collect();
-        let hull = convex_hull(&all_points);
-        if hull.len() < 3 { continue; }
-
-        // Back-side sawtooth: trace corners 2,3 in spine order.
-        let mut back_trace: Vec<Vec2> = Vec::new();
-        for q in &sorted {
-            if q.corners[3].dot(spine_dir) < q.corners[2].dot(spine_dir) {
-                back_trace.push(q.corners[3]);
-                back_trace.push(q.corners[2]);
-            } else {
-                back_trace.push(q.corners[2]);
-                back_trace.push(q.corners[3]);
-            }
-        }
-
-        // Split the full hull into aisle-side and back-side chains at
-        // the leftmost/rightmost vertices along spine_dir. The back-
-        // side chain (larger avg depth) gets replaced with back_trace.
-        let hull_n = hull.len();
-        let (mut li, mut ri) = (0, 0);
-        let (mut lo, mut hi) = (f64::MAX, f64::MIN);
-        for (i, v) in hull.iter().enumerate() {
-            let p = v.dot(spine_dir);
-            if p < lo { lo = p; li = i; }
-            if p > hi { hi = p; ri = i; }
-        }
-
-        let walk = |from: usize, to: usize| -> Vec<Vec2> {
-            let mut chain = Vec::new();
-            let mut i = from;
-            loop {
-                chain.push(hull[i]);
-                if i == to { break; }
-                i = (i + 1) % hull_n;
-            }
-            chain
-        };
-        let chain_a = walk(ri, li); // right → left (CCW)
-        let chain_b = walk(li, ri); // left → right (CCW)
-
-        let avg_depth = |c: &[Vec2]| -> f64 {
-            c.iter().map(|v| v.dot(depth_dir)).sum::<f64>() / c.len() as f64
-        };
-
-        // The aisle chain has SMALLER depth (closer to spine/aisle).
-        // With the full hull, the depth difference between chains spans
-        // the full stall depth, making this comparison robust.
-        // We need it going right → left.
-        let aisle_chain: Vec<Vec2> = if avg_depth(&chain_a) < avg_depth(&chain_b) {
-            chain_a
-        } else {
-            chain_b.into_iter().rev().collect()
-        };
-
-        // Assemble: back_trace (left→right) + aisle_chain (right→left).
-        let mut envelope: Vec<Vec2> = back_trace;
-        envelope.extend(aisle_chain);
-
-        if signed_area(&envelope) < 0.0 {
-            envelope.reverse();
-        }
-
-        if envelope.len() >= 3 {
-            envelopes.push((envelope, *face_idx));
+        let hull = convex_hull(&points);
+        if hull.len() >= 3 {
+            envelopes.push((hull, *face_idx));
         }
     }
     envelopes
