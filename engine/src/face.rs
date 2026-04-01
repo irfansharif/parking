@@ -9,6 +9,10 @@ use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::float::single::SingleFloatOverlay;
 
+/// Minimum number of stalls a spine (including extensions) must have
+/// to survive the short-segment filter.
+const MIN_STALLS_PER_SPINE: usize = 3;
+
 // ---------------------------------------------------------------------------
 // Corridor polygons
 // ---------------------------------------------------------------------------
@@ -1343,19 +1347,53 @@ fn compute_centering_shift(proj_start: f64, edge_len: f64, pitch: f64) -> f64 {
     current_gap_start - desired_gap_start
 }
 
+/// Place stalls on spine segments, returning stalls tagged with
+/// (face_idx, spine_idx) and per-spine centering shifts (indexed by
+/// spine position in the input slice). When `extensions` is provided,
+/// centering uses the full projected range (primary + extensions) for
+/// each spine instead of just the primary length.
 fn place_stalls_on_spines(
     spines: &[SpineSegment],
     params: &ParkingParams,
     center: bool,
-) -> Vec<(StallQuad, usize, usize)> {
+    extensions: Option<&[(SpineSegment, usize)]>,
+) -> (Vec<(StallQuad, usize, usize)>, Vec<f64>) {
     let angle_rad = params.stall_angle_deg.to_radians();
     let sin_a = angle_rad.sin();
     let stall_pitch = if sin_a.abs() > 1e-12 { params.stall_width / sin_a } else { params.stall_width };
 
-    // Sort spines longest-first. Process in this order so the longest
-    // spine gets centered, and its opposing spine grid-locks to it.
+    // Pre-compute the full projected range (min, max) along each spine's
+    // oriented direction, incorporating any extensions.
+    let extended_ranges: Vec<Option<(f64, f64)>> = spines.iter().enumerate().map(|(i, seg)| {
+        let exts = extensions?;
+        let dir = (seg.end - seg.start).normalize();
+        let left = Vec2::new(-dir.y, dir.x);
+        let oriented = if left.dot(seg.outward_normal) > 0.0 { dir } else { dir * -1.0 };
+        let p0 = seg.start.dot(oriented);
+        let p1 = seg.end.dot(oriented);
+        let mut lo = p0.min(p1);
+        let mut hi = p0.max(p1);
+        let mut found = false;
+        for (ext, src_idx) in exts {
+            if *src_idx != i { continue; }
+            found = true;
+            let e0 = ext.start.dot(oriented);
+            let e1 = ext.end.dot(oriented);
+            lo = lo.min(e0.min(e1));
+            hi = hi.max(e0.max(e1));
+        }
+        if found { Some((lo, hi)) } else { None }
+    }).collect();
+
+    // Sort spines longest-first (using extended range when available).
     let mut order: Vec<(usize, f64)> = spines.iter().enumerate()
-        .map(|(i, s)| (i, (s.end - s.start).length()))
+        .map(|(i, s)| {
+            let len = match &extended_ranges[i] {
+                Some((lo, hi)) => hi - lo,
+                None => (s.end - s.start).length(),
+            };
+            (i, len)
+        })
         .collect();
     order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
@@ -1365,6 +1403,7 @@ fn place_stalls_on_spines(
     // instead of centering independently.
     // Tuple: (spine_idx, oriented_edge_dir, centering_shift).
     let mut claimed: Vec<(usize, Vec2, f64)> = Vec::new();
+    let mut shifts = vec![0.0_f64; spines.len()];
 
     let mut stalls = Vec::new();
     for (spine_idx, _) in &order {
@@ -1422,16 +1461,24 @@ fn place_stalls_on_spines(
         } else if let Some(shift) = find_opposing_shift(&claimed, spines, spine_idx, oriented_dir, eff_pitch, params.aisle_width + 2.0 * params.stall_depth) {
             shift
         } else {
-            compute_centering_shift(proj_start, edge_len, eff_pitch)
+            // Use the full extended range for centering when available,
+            // so stalls are centered across the whole extent (primary +
+            // extensions), not just the primary spine.
+            let (center_proj, center_len) = match &extended_ranges[spine_idx] {
+                Some((lo, hi)) => (*lo, hi - lo),
+                None => (proj_start, edge_len),
+            };
+            compute_centering_shift(center_proj, center_len, eff_pitch)
         };
 
         claimed.push((spine_idx, oriented_dir, centering));
+        shifts[spine_idx] = centering;
 
         for quad in fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle, grid_offset, centering) {
             stalls.push((quad, seg.face_idx, spine_idx));
         }
     }
-    stalls
+    (stalls, shifts)
 }
 
 /// Find the centering shift to use for grid-locking to an already-processed
@@ -1482,6 +1529,27 @@ fn find_opposing_shift(
         }
     }
     None
+}
+
+/// Compute the centering shift for an extension spine that should be
+/// contiguous with its source primary spine. The extension is collinear
+/// with the source but may have a different oriented direction after the
+/// standard orientation step.
+fn compute_extension_shift(ext: &SpineSegment, src: &SpineSegment, src_shift: f64, params: &ParkingParams) -> f64 {
+    let sin_a = params.stall_angle_deg.to_radians().sin();
+    let pitch = if sin_a.abs() > 1e-12 { params.stall_width / sin_a } else { params.stall_width };
+    let oriented_dir = |seg: &SpineSegment| -> Vec2 {
+        let d = (seg.end - seg.start).normalize();
+        let left = Vec2::new(-d.y, d.x);
+        if left.dot(seg.outward_normal) > 0.0 { d } else { d * -1.0 }
+    };
+    let src_dir = oriented_dir(src);
+    let ext_dir = oriented_dir(ext);
+    if src_dir.dot(ext_dir) > 0.0 {
+        src_shift
+    } else {
+        (-src_shift).rem_euclid(pitch)
+    }
 }
 
 /// Hash key for a stall quad based on its corner coordinates.
@@ -2009,6 +2077,7 @@ fn place_extension_stalls_greedy(
     ext_spines_with_src: &[(SpineSegment, usize)],
     primary_spines: &[SpineSegment],
     primary_stalls: &[(StallQuad, usize)],
+    primary_shifts: &[f64],
     faces: &[Vec<Vec<Vec2>>],
     raw_outer: &[Vec2],
     raw_holes: &[Vec<Vec2>],
@@ -2047,8 +2116,27 @@ fn place_extension_stalls_greedy(
     for (spine_idx, _, _) in ordered {
         let (seg, src_idx) = &ext_spines_with_src[spine_idx];
 
-        // Place stalls on this extension spine.
-        let candidates = place_stalls_on_spines(std::slice::from_ref(seg), params, debug.stall_centering);
+        // Place stalls on this extension spine using the source primary
+        // spine's centering shift so extension stalls are contiguous.
+        let ext_shift = compute_extension_shift(seg, &primary_spines[*src_idx], primary_shifts[*src_idx], params);
+        let candidates: Vec<(StallQuad, usize, usize)> = {
+            let ext_dir = (seg.end - seg.start).normalize();
+            let left_normal = Vec2::new(-ext_dir.y, ext_dir.x);
+            let dot = left_normal.dot(seg.outward_normal);
+            let (start, end) = if dot > 0.0 { (seg.start, seg.end) } else { (seg.end, seg.start) };
+            let oriented_dir = (end - start).normalize();
+            let angle_override = if seg.is_interior { None } else { Some(90.0) };
+            let flip_angle = match &seg.travel_dir {
+                None => false,
+                Some(td) => oriented_dir.dot(*td) > 0.0,
+            };
+            let grid_offset = match &seg.travel_dir {
+                None => 0.0,
+                Some(td) => if td.cross(seg.outward_normal) >= 0.0 { 0.5 } else { 0.0 },
+            };
+            fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle, grid_offset, ext_shift)
+                .into_iter().map(|q| (q, seg.face_idx, 0)).collect()
+        };
 
         for (mut quad, face_idx, _) in candidates {
             quad.kind = StallKind::Extension;
@@ -2337,8 +2425,21 @@ pub fn generate_from_spines(
         all_spines
     };
 
+    // Compute extension spines early so we know the full extended length
+    // of each primary spine for centering. The extensions themselves will
+    // be used later for greedy stall placement.
+    let ext_spines_with_src = if debug.spine_extensions {
+        extend_spines_to_faces(&all_spines, &faces, effective_depth, params)
+    } else {
+        vec![]
+    };
+
     // Place stalls on merged spines (tagged with face_idx + spine_idx).
-    let tagged_stalls_3 = place_stalls_on_spines(&all_spines, params, debug.stall_centering);
+    // Pass extension spines so centering uses the full projected range.
+    let ext_ref = if ext_spines_with_src.is_empty() { None } else { Some(ext_spines_with_src.as_slice()) };
+    let (tagged_stalls_3, spine_shifts) = place_stalls_on_spines(
+        &all_spines, params, debug.stall_centering, ext_ref,
+    );
 
     // Convert to (StallQuad, usize) for clipping, preserving spine_idx.
     let tagged_stalls: Vec<(StallQuad, usize)> = tagged_stalls_3.iter()
@@ -2397,15 +2498,15 @@ pub fn generate_from_spines(
     // stalls on the extensions. Stalls are placed greedily in longest-spine-
     // first order: each candidate is checked against all already-placed stalls
     // (primary + earlier extensions) and silently skipped on conflict.
-    let (ext_stalls_tagged, ext_spines) = if debug.spine_extensions {
-        let ext_spines_with_src = extend_spines_to_faces(&all_spines, &faces, effective_depth, params);
+    let (ext_stalls_tagged, ext_spines, ext_spine_src_indices) = if debug.spine_extensions {
         let ext_tagged = place_extension_stalls_greedy(
-            &ext_spines_with_src, &all_spines, &tagged_stalls, &faces, &raw_outer, &raw_holes, &merged_corridors, params, debug, &tagged_faces,
+            &ext_spines_with_src, &all_spines, &tagged_stalls, &spine_shifts, &faces, &raw_outer, &raw_holes, &merged_corridors, params, debug, &tagged_faces,
         );
-        let ext_spines: Vec<SpineSegment> = ext_spines_with_src.into_iter().map(|(s, _)| s).collect();
-        (ext_tagged, ext_spines)
+        let (ext_spines, ext_spine_src_indices): (Vec<SpineSegment>, Vec<usize>) =
+            ext_spines_with_src.into_iter().unzip();
+        (ext_tagged, ext_spines, ext_spine_src_indices)
     } else {
-        (vec![], vec![])
+        (vec![], vec![], vec![])
     };
 
     // Merge primary and extension stalls. Extension stalls carry their
@@ -2421,27 +2522,61 @@ pub fn generate_from_spines(
     let mut all_surviving_3 = surviving_3;
     all_surviving_3.extend(ext_stalls_tagged);
 
+    // --- Short segment filter ---
+    // Remove all stalls belonging to spines with fewer than
+    // MIN_STALLS_PER_SPINE stalls total (primary + extension combined).
+    if debug.short_segment_filter {
+        let mut counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for (_, _, spine_idx) in &all_surviving_3 {
+            *counts.entry(*spine_idx).or_insert(0) += 1;
+        }
+        let keep_spines: std::collections::HashSet<usize> = counts
+            .into_iter()
+            .filter(|(_, count)| *count >= MIN_STALLS_PER_SPINE)
+            .map(|(idx, _)| idx)
+            .collect();
+        all_surviving_3.retain(|(_, _, spine_idx)| keep_spines.contains(spine_idx));
+        let surviving_keys: std::collections::HashSet<[u64; 8]> = all_surviving_3
+            .iter()
+            .map(|(s, _, _)| stall_key(s))
+            .collect();
+        all_tagged.retain(|(s, _)| surviving_keys.contains(&stall_key(s)));
+    }
+
     let all_stalls: Vec<StallQuad> = all_tagged.iter().map(|(s, _)| s.clone()).collect();
     let strip_envelopes = build_strip_envelopes(&all_surviving_3);
 
     let islands = compute_islands(&faces, &all_tagged, &all_stalls, &strip_envelopes, 10.0);
 
     // Build spine lines for visualization: primary + extension.
+    // If the short-segment filter is active, only include spines that
+    // still have stalls.
+    let kept_spines: std::collections::HashSet<usize> = if debug.short_segment_filter {
+        all_surviving_3.iter().map(|(_, _, si)| *si).collect()
+    } else {
+        (0..all_spines.len()).collect()
+    };
     let mut spine_lines: Vec<SpineLine> = all_spines
         .iter()
-        .map(|s| SpineLine {
+        .enumerate()
+        .filter(|(i, _)| kept_spines.contains(i))
+        .map(|(_, s)| SpineLine {
             start: s.start,
             end: s.end,
             normal: s.outward_normal,
             is_extension: false,
         })
         .collect();
-    spine_lines.extend(ext_spines.iter().map(|s| SpineLine {
-        start: s.start,
-        end: s.end,
-        normal: s.outward_normal,
-        is_extension: true,
-    }));
+    spine_lines.extend(
+        ext_spines.iter().zip(ext_spine_src_indices.iter())
+            .filter(|(_, src_idx)| kept_spines.contains(src_idx))
+            .map(|(s, _)| SpineLine {
+                start: s.start,
+                end: s.end,
+                normal: s.outward_normal,
+                is_extension: true,
+            })
+    );
 
     let face_list: Vec<Face> = faces
         .iter()
@@ -2694,7 +2829,7 @@ mod tests {
             .filter(|s| (s.end - s.start).length() >= effective_depth)
             .collect();
 
-        let tagged_stalls_3 = place_stalls_on_spines(&all_spines, &params, true);
+        let (tagged_stalls_3, _) = place_stalls_on_spines(&all_spines, &params, true, None);
         let tagged_stalls: Vec<(StallQuad, usize)> = tagged_stalls_3.iter()
             .map(|(s, fi, _)| (s.clone(), *fi)).collect();
         let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces);
@@ -2765,7 +2900,7 @@ mod tests {
                 });
             }
         }
-        let tagged_stalls_3 = place_stalls_on_spines(&all_spines, &params, true);
+        let (tagged_stalls_3, _) = place_stalls_on_spines(&all_spines, &params, true, None);
 
         // Dump spine and stall info.
         for (si, spine) in all_spines.iter().enumerate() {
@@ -2936,7 +3071,7 @@ mod tests {
         );
 
         // Place stalls and verify ALL stall corners are inside the face.
-        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true)
+        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true, None).0
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
@@ -3044,7 +3179,7 @@ mod tests {
         );
 
         // Place stalls and verify containment.
-        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true)
+        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true, None).0
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
@@ -3101,7 +3236,7 @@ mod tests {
             * params.stall_angle_deg.to_radians().sin();
 
         let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[], None);
-        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true)
+        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true, None).0
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
 
         eprintln!("\n=== Narrow face test (30ft between aisles) ===");
@@ -3169,7 +3304,7 @@ mod tests {
         );
 
         // Place stalls and verify ALL corners are inside the face.
-        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true)
+        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true, None).0
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");

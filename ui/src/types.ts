@@ -105,6 +105,8 @@ export interface DebugToggles {
   boundary_clipping: boolean;
   // Conflict removal
   conflict_removal: boolean;
+  // Short segment filter
+  short_segment_filter: boolean;
   // Skeleton debug visualization
   skeleton_debug: boolean;
 }

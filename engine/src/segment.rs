@@ -10,6 +10,8 @@ use crate::types::*;
 /// direction. Used for one-way aisles where both sides lean the same way.
 /// `grid_offset` shifts the global grid by a fraction of stall_pitch (0.0–1.0)
 /// to stagger stalls from opposing spines in same-direction one-way faces.
+/// `centering_shift` shifts all stall positions along the spine by a fixed
+/// distance (in world units) to center stalls within the spine extent.
 pub fn fill_strip(
     edge_start: Vec2,
     edge_end: Vec2,
@@ -19,6 +21,7 @@ pub fn fill_strip(
     angle_override: Option<f64>,
     flip_angle: bool,
     grid_offset: f64,
+    centering_shift: f64,
 ) -> Vec<StallQuad> {
     let angle_deg = angle_override.unwrap_or(params.stall_angle_deg);
     let angle_rad = angle_deg.to_radians();
@@ -57,12 +60,11 @@ pub fn fill_strip(
         params.stall_depth
     };
 
-    // Snap stall midpoints to a global grid along the spine direction.
-    // This ensures back-to-back spines (different lengths, opposite
-    // normals) place stalls at the same positions, so angled stalls
-    // interleave instead of conflicting. The grid_offset shifts the grid
-    // by a fraction of stall_pitch for staggering same-direction spines.
-    let proj_start = edge_start.dot(edge_dir);
+    // Snap stall midpoints to a grid along the spine direction.
+    // The centering_shift slides the grid origin so stalls are centered
+    // within the spine extent. The grid_offset additionally staggers by
+    // a fraction of stall_pitch for one-way spine interleaving.
+    let proj_start = edge_start.dot(edge_dir) + centering_shift;
     let offset_proj = proj_start - grid_offset * stall_pitch;
     let k_min = (offset_proj / stall_pitch).ceil() as i64;
     let k_max = ((offset_proj + edge_len) / stall_pitch - 1.0).floor() as i64;

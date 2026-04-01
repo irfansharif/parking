@@ -228,6 +228,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     {
       label: "Stall Placement",
       toggles: [
+        { key: "stall_centering", label: "Stall Centering" },
         { key: "stall_face_clipping", label: "Stall-to-Face Clipping" },
       ],
     },
@@ -236,6 +237,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       toggles: [
         { key: "boundary_clipping", label: "Boundary Clipping" },
         { key: "conflict_removal", label: "Conflict Removal" },
+        { key: "short_segment_filter", label: "Short Segment Filter" },
       ],
     },
   ];

@@ -369,6 +369,10 @@ pub struct DebugToggles {
     #[serde(default = "default_true")]
     pub conflict_removal: bool,
 
+    // Short segment filter (remove spines with too few stalls after merge)
+    #[serde(default = "default_true")]
+    pub short_segment_filter: bool,
+
     // Edge provenance (tag face edges with source corridor/wall)
     #[serde(default = "default_true")]
     pub edge_provenance: bool,
@@ -398,6 +402,7 @@ impl Default for DebugToggles {
             stall_face_clipping: true,
             boundary_clipping: true,
             conflict_removal: true,
+            short_segment_filter: true,
             edge_provenance: true,
             skeleton_debug: false,
         }
