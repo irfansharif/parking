@@ -398,58 +398,6 @@ export class Renderer {
     ctx.strokeStyle = c.stroke;
     ctx.lineWidth = 0.3;
     ctx.stroke();
-
-    // Debug: draw colored dots at each corner to identify p0-p3.
-    // p0=red, p1=green, p2=blue, p3=yellow
-    const dotColors = ["red", "lime", "blue", "yellow"];
-    for (let i = 0; i < 4; i++) {
-      ctx.beginPath();
-      ctx.arc(stall.corners[i].x, stall.corners[i].y, 1.0, 0, Math.PI * 2);
-      ctx.fillStyle = dotColors[i];
-      ctx.fill();
-    }
-
-    // Debug: for extension stalls, draw depth rays.
-    // Cyan ray: p1 (green) → p2 (blue) direction, starting from p2
-    // Red ray:  p0 (red)   → p3 (yellow) direction, starting from p3
-    if (stall.kind === "Extension" && highlightExtensions) {
-      const rayLen = 40;
-      const [p0, p1, p2, p3] = stall.corners;
-
-      // p1→p2 direction (cyan)
-      const dx_a = p2.x - p1.x;
-      const dy_a = p2.y - p1.y;
-      const len_a = Math.sqrt(dx_a * dx_a + dy_a * dy_a);
-      if (len_a > 1e-6) {
-        const nx_a = dx_a / len_a;
-        const ny_a = dy_a / len_a;
-        ctx.beginPath();
-        ctx.moveTo(p2.x, p2.y);
-        ctx.lineTo(p2.x + nx_a * rayLen, p2.y + ny_a * rayLen);
-        ctx.strokeStyle = "rgba(0, 255, 255, 0.9)";
-        ctx.lineWidth = 0.5;
-        ctx.setLineDash([1, 1]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-
-      // p0→p3 direction (red)
-      const dx_b = p3.x - p0.x;
-      const dy_b = p3.y - p0.y;
-      const len_b = Math.sqrt(dx_b * dx_b + dy_b * dy_b);
-      if (len_b > 1e-6) {
-        const nx_b = dx_b / len_b;
-        const ny_b = dy_b / len_b;
-        ctx.beginPath();
-        ctx.moveTo(p3.x, p3.y);
-        ctx.lineTo(p3.x + nx_b * rayLen, p3.y + ny_b * rayLen);
-        ctx.strokeStyle = "rgba(255, 50, 50, 0.9)";
-        ctx.lineWidth = 0.5;
-        ctx.setLineDash([1, 1]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-    }
   }
 
   private drawSpine(spine: SpineLine): void {
