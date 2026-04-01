@@ -274,28 +274,29 @@ export class Renderer {
     const { ctx } = this;
     const { boundary } = state;
 
-    // Outer boundary fill
+    // Outer boundary fill at derived (raw) position, stroke at aisle-edge perimeter.
+    const derivedOuter = state.layout?.derived_outer ?? boundary.outer;
     ctx.beginPath();
-    this.tracePath(boundary.outer);
+    this.tracePath(derivedOuter);
     ctx.fillStyle = "rgba(40, 40, 60, 0.8)";
     ctx.fill();
 
-    // Outer boundary stroke
+    // Outer boundary stroke at aisle-edge perimeter (where orange dots are).
     ctx.beginPath();
     this.tracePath(boundary.outer);
     ctx.strokeStyle = "rgba(233, 69, 96, 0.8)";
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Holes (buildings)
-    for (const hole of boundary.holes) {
-      // Solid fill for hole
+    // Holes (buildings): fill at derived (raw) positions, stroke at aisle-edge ring positions.
+    const derivedHoles = state.layout?.derived_holes ?? [];
+    for (const dh of derivedHoles) {
       ctx.beginPath();
-      this.tracePath(hole);
+      this.tracePath(dh);
       ctx.fillStyle = "rgba(30, 30, 50, 0.95)";
       ctx.fill();
-
-      // Hole boundary stroke
+    }
+    for (const hole of boundary.holes) {
       ctx.beginPath();
       this.tracePath(hole);
       ctx.strokeStyle = "rgba(233, 69, 96, 0.6)";

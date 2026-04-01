@@ -6,7 +6,8 @@ use crate::types::*;
 /// The face-index tag on each stall is preserved unchanged.
 pub fn clip_stalls_to_boundary(
     stalls: Vec<(StallQuad, usize)>,
-    boundary: &Polygon,
+    raw_outer: &[Vec2],
+    raw_holes: &[Vec<Vec2>],
 ) -> Vec<(StallQuad, usize)> {
     stalls
         .into_iter()
@@ -16,14 +17,14 @@ pub fn clip_stalls_to_boundary(
             // the corridor and boundary areas. A proportional shrink handles
             // all angles without rejecting stalls whose body is inside.
             let shrunk = shrink_polygon_pct(&stall.corners, 0.3);
-            // Every corner must be inside the outer boundary.
+            // Every corner must be inside the raw outer boundary.
             for c in &shrunk {
-                if !point_in_polygon(c, &boundary.outer) {
+                if !point_in_polygon(c, raw_outer) {
                     return false;
                 }
             }
-            // No corner may be inside any hole.
-            for hole in &boundary.holes {
+            // No corner may be inside any raw building hole.
+            for hole in raw_holes {
                 for c in &shrunk {
                     if point_in_polygon(c, hole) {
                         return false;

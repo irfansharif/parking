@@ -3,38 +3,74 @@ use crate::face::corridor_polygon;
 use crate::inset::{inset_polygon, signed_area};
 use crate::types::*;
 
+/// Compute the inset distance for a given set of parking parameters.
+/// This is the offset from the aisle-edge ring to the raw building boundary,
+/// or equivalently, the offset from the outer boundary to the perimeter loop.
+pub fn compute_inset_d(params: &ParkingParams) -> f64 {
+    let stall_angle_rad = params.stall_angle_deg.to_radians();
+    let effective_depth = params.stall_depth * stall_angle_rad.sin()
+        + stall_angle_rad.cos() * params.stall_width / 2.0;
+    effective_depth + params.aisle_width
+}
+
+/// Expand the aisle-edge perimeter outward by `inset_d` (+ `site_offset`)
+/// to recover the raw lot boundary for clipping and face extraction.
+pub fn derive_raw_outer(outer: &[Vec2], inset_d: f64, site_offset: f64) -> Vec<Vec2> {
+    // Expand outward by inset_d (negative inset = expand).
+    let expanded = inset_polygon(outer, -inset_d);
+    if expanded.is_empty() {
+        return outer.to_vec();
+    }
+    // Then expand further by site_offset if any.
+    if site_offset > 0.0 {
+        let with_offset = inset_polygon(&expanded, -site_offset);
+        if with_offset.is_empty() {
+            return expanded;
+        }
+        return with_offset;
+    }
+    expanded
+}
+
+/// Shrink each aisle-edge ring inward by `inset_d` to recover the raw
+/// building footprint. Rings that collapse to nothing are omitted.
+pub fn derive_raw_holes(holes: &[Vec<Vec2>], inset_d: f64) -> Vec<Vec<Vec2>> {
+    holes
+        .iter()
+        .filter_map(|ring| {
+            let shrunk = inset_polygon(ring, inset_d);
+            if shrunk.is_empty() {
+                None
+            } else {
+                Some(shrunk)
+            }
+        })
+        .collect()
+}
+
 /// Automatically generate a connected drive-aisle graph:
 /// 1. Perimeter loop (single inset of outer boundary) — stalls face outward
-/// 2. Hole loops (expansion around each hole) — stalls face away from hole
+/// 2. Hole loops (aisle-edge rings around each hole) — stalls face away from hole
 /// 3. Interior parallel aisles at stall_angle_deg, clipped to perimeter minus holes
 /// 4. Interior aisle endpoints spliced into perimeter edges for full connectivity
 pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGraph {
     // aisle_width is one driving lane. Auto-generated edges are two-way
     // (two lanes), so their half-width is one full lane width.
     let hw = params.aisle_width;
-    let stall_angle_rad = params.stall_angle_deg.to_radians();
-    let effective_depth = params.stall_depth * stall_angle_rad.sin()
-        + stall_angle_rad.cos() * params.stall_width / 2.0;
-    let inset_d = effective_depth + hw;
+    let inset_d = compute_inset_d(params);
+    let effective_depth = inset_d - hw;
     let row_spacing = 2.0 * effective_depth + 2.0 * params.aisle_width;
 
-    // Apply site_offset to get the effective outer polygon.
-    let effective = if params.site_offset > 0.0 {
+    // boundary.outer is the aisle-edge perimeter. Apply site_offset if any.
+    let outer_loop = if params.site_offset > 0.0 {
         let p = inset_polygon(&boundary.outer, params.site_offset);
         if p.is_empty() {
             return empty_graph();
         }
-        p
+        ensure_ccw(p)
     } else {
-        boundary.outer.clone()
+        ensure_ccw(boundary.outer.clone())
     };
-    let effective = ensure_ccw(effective);
-
-    // 1. Outer perimeter loop.
-    let outer_loop = inset_polygon(&effective, inset_d);
-    if outer_loop.is_empty() {
-        return empty_graph();
-    }
 
     let mut vertices: Vec<Vec2> = Vec::new();
     let mut edges: Vec<AisleEdge> = Vec::new();
@@ -46,20 +82,19 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
     }
     let perim_n = outer_loop.len();
 
-    // 2. Hole loops: expand each hole outward by inset_d.
+    // 2. Hole loops: boundary.holes are aisle-edge rings — use directly.
     let mut hole_loops: Vec<Vec<Vec2>> = Vec::new();
     let mut hole_bases: Vec<usize> = Vec::new();
     for hole in &boundary.holes {
-        let expanded = inset_polygon(hole, -inset_d);
-        if expanded.is_empty() {
+        if hole.is_empty() {
             continue;
         }
         let base = vertices.len();
-        for v in &expanded {
+        for v in hole {
             vertices.push(*v);
         }
         hole_bases.push(base);
-        hole_loops.push(expanded);
+        hole_loops.push(hole.clone());
     }
 
     // Snap hole loop vertices onto nearby outer perimeter edges. When a hole
@@ -208,7 +243,7 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
 
     // 3b. Cross-aisles (perpendicular to main aisles).
     let mut cross_pairs: Vec<(usize, usize)> = Vec::new();
-    let stall_pitch = params.stall_width / stall_angle_rad.sin();
+    let stall_pitch = params.stall_width / params.stall_angle_deg.to_radians().sin();
     let col_spacing = params.cross_aisle_max_run * stall_pitch;
     if col_spacing >= row_spacing {
 

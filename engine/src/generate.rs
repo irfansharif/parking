@@ -1,4 +1,4 @@
-use crate::aisle_graph::{auto_generate, find_or_add_vertex, intersect_line_polygon, merge_with_auto, subtract_intervals};
+use crate::aisle_graph::{auto_generate, compute_inset_d, derive_raw_holes, derive_raw_outer, find_or_add_vertex, intersect_line_polygon, merge_with_auto, subtract_intervals};
 use crate::face::generate_from_spines;
 use crate::inset::{inset_polygon, signed_area};
 use crate::types::*;
@@ -21,6 +21,10 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     // matched by proximity so they survive graph regeneration.
     apply_annotations(&mut graph, &input.annotations, &input.params);
 
+    let inset_d = compute_inset_d(&input.params);
+    let derived_outer = derive_raw_outer(&input.boundary.outer, inset_d, input.params.site_offset);
+    let derived_holes = derive_raw_holes(&input.boundary.holes, inset_d);
+
     let (stalls, aisle_polygons, spines, faces, miter_fills, skeleton_debug, islands) =
         generate_from_spines(&graph, &input.boundary, &input.params, &input.debug);
 
@@ -38,6 +42,8 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         miter_fills,
         skeleton_debug,
         islands,
+        derived_outer,
+        derived_holes,
     }
 }
 
@@ -55,33 +61,22 @@ fn clip_drive_lines(
         return DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 };
     }
 
-    let stall_angle_rad = params.stall_angle_deg.to_radians();
-    let effective_depth = params.stall_depth * stall_angle_rad.sin();
-    // Use two-way width (widest) for clipping perimeter computation.
     let hw = params.aisle_width;
-    let inset_d = effective_depth + hw;
 
-    // Compute the same inset perimeter and expanded holes as auto_generate.
-    let effective = if params.site_offset > 0.0 {
+    // boundary.outer is the aisle-edge perimeter — use directly (with site_offset).
+    let outer_loop = if params.site_offset > 0.0 {
         let p = inset_polygon(&boundary.outer, params.site_offset);
         if p.is_empty() { return DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 }; }
-        p
+        ensure_ccw(p)
     } else {
-        boundary.outer.clone()
+        ensure_ccw(boundary.outer.clone())
     };
-    let effective = ensure_ccw(effective);
-    let outer_loop = inset_polygon(&effective, inset_d);
-    if outer_loop.is_empty() {
-        return DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 };
-    }
 
-    let mut hole_loops: Vec<Vec<Vec2>> = Vec::new();
-    for hole in &boundary.holes {
-        let expanded = inset_polygon(hole, -inset_d);
-        if !expanded.is_empty() {
-            hole_loops.push(expanded);
-        }
-    }
+    // boundary.holes are aisle-edge rings — use directly.
+    let hole_loops: Vec<&[Vec2]> = boundary.holes.iter()
+        .filter(|h| !h.is_empty())
+        .map(|h| h.as_slice())
+        .collect();
 
     let mut vertices: Vec<Vec2> = Vec::new();
     let mut edges: Vec<AisleEdge> = Vec::new();

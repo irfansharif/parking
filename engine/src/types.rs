@@ -195,6 +195,12 @@ pub struct ParkingLayout {
     pub skeleton_debug: Vec<SkeletonDebug>,
     #[serde(default)]
     pub islands: Vec<Island>,
+    /// Raw lot boundary derived by expanding the aisle-edge perimeter outward.
+    #[serde(default)]
+    pub derived_outer: Vec<Vec2>,
+    /// Raw building footprints derived by shrinking aisle-edge rings inward.
+    #[serde(default)]
+    pub derived_holes: Vec<Vec<Vec2>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +357,8 @@ pub struct DebugToggles {
 
     // Stall placement
     #[serde(default = "default_true")]
+    pub stall_centering: bool,
+    #[serde(default = "default_true")]
     pub stall_face_clipping: bool,
 
     // Boundary
@@ -386,6 +394,7 @@ impl Default for DebugToggles {
             spine_merging: true,
             short_spine_filter: true,
             spine_extensions: true,
+            stall_centering: true,
             stall_face_clipping: true,
             boundary_clipping: true,
             conflict_removal: true,

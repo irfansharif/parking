@@ -1,3 +1,4 @@
+use crate::aisle_graph::{compute_inset_d, derive_raw_holes, derive_raw_outer};
 use crate::clip::{clip_stalls_to_boundary, remove_conflicting_stalls};
 use crate::inset::signed_area;
 use crate::segment::fill_strip;
@@ -58,8 +59,9 @@ fn ensure_ccw(path: &mut Vec<[f64; 2]>) {
 /// boundary hole contours (which have user-determined winding). Mixing
 /// them in a single NonZero operation causes winding interference.
 fn extract_faces(
-    boundary: &Polygon,
+    raw_outer: &[Vec2],
     merged_corridors: &[Vec<Vec<Vec2>>],
+    raw_holes: &[Vec<Vec2>],
 ) -> Vec<Vec<Vec<Vec2>>> {
     let to_path = |pts: &[Vec2]| -> Vec<[f64; 2]> {
         pts.iter().map(|v| [v.x, v.y]).collect()
@@ -74,7 +76,7 @@ fn extract_faces(
     // Step 1: boundary MINUS corridors. Corridor outers and holes have
     // consistent relative winding from the boolean union output, so
     // NonZero handles them correctly in isolation.
-    let subj = to_path(&boundary.outer);
+    let subj = to_path(raw_outer);
     let mut corridor_paths: Vec<Vec<[f64; 2]>> = Vec::new();
     for shape in merged_corridors {
         for contour in shape {
@@ -83,14 +85,14 @@ fn extract_faces(
     }
     let after_corridors = subj.overlay(&corridor_paths, OverlayRule::Difference, FillRule::NonZero);
 
-    // Step 2: subtract boundary holes. Kept separate so that boundary
-    // hole winding can't interfere with corridor hole winding.
-    if boundary.holes.is_empty() {
+    // Step 2: subtract raw building holes (derived from aisle-edge rings).
+    // Kept separate so that hole winding can't interfere with corridor winding.
+    if raw_holes.is_empty() {
         return after_corridors.into_iter().map(to_vec2).collect();
     }
 
     let mut hole_paths: Vec<Vec<[f64; 2]>> = Vec::new();
-    for hole in &boundary.holes {
+    for hole in raw_holes {
         let mut path = to_path(hole);
         ensure_ccw(&mut path);
         hole_paths.push(path);
@@ -757,8 +759,40 @@ fn compute_face_spines(
     let sk = skeleton::compute_skeleton_multi(&contours, &edge_weights);
     let wf_loops = skeleton::wavefront_loops_at(&sk, ed);
 
+    // Collect wavefront loops to process, each with an optional edge to skip.
+    // Normal path: no skipped edges.
+    // Suppression path (narrow faces): skip the suppressed edge so we don't
+    // emit a spine on the face boundary where the edge didn't move.
+    let mut wf_to_process: Vec<(Vec<Vec2>, Vec<usize>, Option<usize>)> = Vec::new();
+    for (pts, edges) in wf_loops {
+        wf_to_process.push((pts, edges, None));
+    }
+
+    // If the normal wavefront is empty, the face is too narrow for back-to-back
+    // stalls but may fit single-sided rows. Suppress one aisle-facing edge at a
+    // time (treat it as a wall) and re-run the skeleton to get spines for the
+    // remaining aisle edges.
+    if wf_to_process.is_empty() {
+        let aisle_indices: Vec<usize> = aisle_facing_flat
+            .iter()
+            .enumerate()
+            .filter(|(_, &af)| af)
+            .map(|(i, _)| i)
+            .collect();
+        if aisle_indices.len() >= 2 {
+            for &suppress_idx in &aisle_indices {
+                let mut w = edge_weights.clone();
+                w[suppress_idx] = 0.0;
+                let sk2 = skeleton::compute_skeleton_multi(&contours, &w);
+                for (pts, edges) in skeleton::wavefront_loops_at(&sk2, ed) {
+                    wf_to_process.push((pts, edges, Some(suppress_idx)));
+                }
+            }
+        }
+    }
+
     let mut all_spines = Vec::new();
-    for (wf_pts, active_edges) in &wf_loops {
+    for (wf_pts, active_edges, skip_edge) in &wf_to_process {
         let m = active_edges.len();
         if m < 2 || wf_pts.len() != m {
             continue;
@@ -767,6 +801,9 @@ fn compute_face_spines(
             let next_idx = (idx + 1) % m;
             let orig_edge = active_edges[next_idx];
             if orig_edge >= aisle_facing_flat.len() || !aisle_facing_flat[orig_edge] {
+                continue;
+            }
+            if skip_edge.map_or(false, |s| s == orig_edge) {
                 continue;
             }
 
@@ -1291,16 +1328,53 @@ fn clip_stalls_to_faces(
 }
 
 
-/// Place stalls on a set of spine segments. Returns stalls tagged with
-/// (face_idx, spine_idx) so strip envelopes can be computed after clipping.
+/// Compute the centering shift for a spine: the offset to add to proj_start
+/// so that stalls are centered symmetrically within the spine extent.
+fn compute_centering_shift(proj_start: f64, edge_len: f64, pitch: f64) -> f64 {
+    let k_min = (proj_start / pitch).ceil() as i64;
+    let k_max = ((proj_start + edge_len) / pitch - 1.0).floor() as i64;
+    if k_max < k_min {
+        return 0.0;
+    }
+    let n = k_max - k_min + 1;
+    let total_gap = edge_len - n as f64 * pitch;
+    let desired_gap_start = total_gap / 2.0;
+    let current_gap_start = k_min as f64 * pitch - proj_start;
+    current_gap_start - desired_gap_start
+}
+
 fn place_stalls_on_spines(
     spines: &[SpineSegment],
     params: &ParkingParams,
+    center: bool,
 ) -> Vec<(StallQuad, usize, usize)> {
+    let angle_rad = params.stall_angle_deg.to_radians();
+    let sin_a = angle_rad.sin();
+    let stall_pitch = if sin_a.abs() > 1e-12 { params.stall_width / sin_a } else { params.stall_width };
+
+    // Sort spines longest-first. Process in this order so the longest
+    // spine gets centered, and its opposing spine grid-locks to it.
+    let mut order: Vec<(usize, f64)> = spines.iter().enumerate()
+        .map(|(i, s)| (i, (s.end - s.start).length()))
+        .collect();
+    order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    // Track the centering shift used by each processed spine. When a
+    // new spine has an opposing match (collinear + opposite normals),
+    // it reuses the shift (or its negation for opposite edge dirs)
+    // instead of centering independently.
+    // Tuple: (spine_idx, oriented_edge_dir, centering_shift).
+    let mut claimed: Vec<(usize, Vec2, f64)> = Vec::new();
+
     let mut stalls = Vec::new();
-    for (spine_idx, seg) in spines.iter().enumerate() {
-        let edge_dir = (seg.end - seg.start).normalize();
-        let left_normal = Vec2::new(-edge_dir.y, edge_dir.x);
+    for (spine_idx, _) in &order {
+        let spine_idx = *spine_idx;
+        let seg = &spines[spine_idx];
+        let edge_len = (seg.end - seg.start).length();
+        let left_normal = {
+            let d = (seg.end - seg.start).normalize();
+            Vec2::new(-d.y, d.x)
+        };
         let dot = left_normal.dot(seg.outward_normal);
 
         // Orient so that fill_strip's side=+1 places stalls toward
@@ -1310,14 +1384,12 @@ fn place_stalls_on_spines(
         } else {
             (seg.end, seg.start)
         };
+        let oriented_dir = (end - start).normalize();
 
         let angle_override = if seg.is_interior { None } else { Some(90.0) };
         let flip_angle = match &seg.travel_dir {
             None => false,
-            Some(td) => {
-                let eff_dir = (end - start).normalize();
-                eff_dir.dot(*td) > 0.0
-            }
+            Some(td) => oriented_dir.dot(*td) > 0.0,
         };
         // Stagger grid by half a pitch for one-way spines whose
         // outward_normal points to the right of the travel direction
@@ -1333,11 +1405,83 @@ fn place_stalls_on_spines(
                 if td.cross(seg.outward_normal) >= 0.0 { 0.5 } else { 0.0 }
             }
         };
-        for quad in fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle, grid_offset) {
+
+        // Boundary spines use 90° override, so compute their pitch separately.
+        let eff_pitch = if angle_override.is_some() {
+            params.stall_width // sin(90°) = 1
+        } else {
+            stall_pitch
+        };
+
+        let proj_start = start.dot(oriented_dir);
+
+        // Check if an opposing spine has already been processed.
+        // Opposing = collinear (parallel directions) + opposite normals.
+        let centering = if !center {
+            0.0
+        } else if let Some(shift) = find_opposing_shift(&claimed, spines, spine_idx, oriented_dir, eff_pitch, params.aisle_width + 2.0 * params.stall_depth) {
+            shift
+        } else {
+            compute_centering_shift(proj_start, edge_len, eff_pitch)
+        };
+
+        claimed.push((spine_idx, oriented_dir, centering));
+
+        for quad in fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle, grid_offset, centering) {
             stalls.push((quad, seg.face_idx, spine_idx));
         }
     }
     stalls
+}
+
+/// Find the centering shift to use for grid-locking to an already-processed
+/// opposing spine. Opposing means: parallel directions (|dot| > 0.99) and
+/// opposite outward normals (dot < -0.99). When opposing spines have the
+/// same oriented edge_dir, the shift is reused directly. When opposite,
+/// the shift is negated (mod pitch) so stalls land at the same absolute
+/// positions.
+fn find_opposing_shift(
+    claimed: &[(usize, Vec2, f64)],
+    spines: &[SpineSegment],
+    spine_idx: usize,
+    oriented_dir: Vec2,
+    pitch: f64,
+    max_dist: f64,
+) -> Option<f64> {
+    let seg = &spines[spine_idx];
+    let dir = (seg.end - seg.start).normalize();
+    let mid = (seg.start + seg.end) * 0.5;
+
+    for &(other_idx, other_oriented_dir, other_shift) in claimed {
+        let other = &spines[other_idx];
+        let other_dir = (other.end - other.start).normalize();
+
+        // Collinear: directions parallel (within ~8°).
+        if dir.dot(other_dir).abs() < 0.99 {
+            continue;
+        }
+        // Opposite normals (within ~8°).
+        if seg.outward_normal.dot(other.outward_normal) > -0.99 {
+            continue;
+        }
+        // Proximity: perpendicular distance between spine midpoints
+        // must be small (same aisle, not a distant parallel aisle).
+        let other_mid = (other.start + other.end) * 0.5;
+        let sep = other_mid - mid;
+        let perp_dist = (sep - dir * sep.dot(dir)).length();
+        if perp_dist > max_dist {
+            continue;
+        }
+
+        // Same oriented direction: reuse shift directly.
+        // Opposite oriented direction: negate shift (mod pitch).
+        if oriented_dir.dot(other_oriented_dir) > 0.0 {
+            return Some(other_shift);
+        } else {
+            return Some((-other_shift).rem_euclid(pitch));
+        }
+    }
+    None
 }
 
 /// Hash key for a stall quad based on its corner coordinates.
@@ -1822,22 +1966,23 @@ fn quad_contained_in_face(
 /// Test whether a stall quad is fully contained within the site boundary
 /// (inside outer, outside all holes). Same geometric approach: centroid
 /// inside + no edge crossings.
-fn quad_contained_in_boundary(corners: &[Vec2; 4], boundary: &Polygon) -> bool {
+fn quad_contained_in_boundary(corners: &[Vec2; 4], raw_outer: &[Vec2], raw_holes: &[Vec<Vec2>]) -> bool {
     let cx = (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4.0;
     let cy = (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4.0;
     let centroid = Vec2::new(cx, cy);
 
-    if !crate::clip::point_in_polygon(&centroid, &boundary.outer) {
+    if !crate::clip::point_in_polygon(&centroid, raw_outer) {
         return false;
     }
-    for hole in &boundary.holes {
+    for hole in raw_holes {
         if crate::clip::point_in_polygon(&centroid, hole) {
             return false;
         }
     }
 
     // No quad edge may cross any boundary edge.
-    let all_contours = std::iter::once(&boundary.outer).chain(boundary.holes.iter());
+    let raw_outer_vec = raw_outer.to_vec();
+    let all_contours = std::iter::once(&raw_outer_vec).chain(raw_holes.iter());
     for contour in all_contours {
         let n = contour.len();
         for i in 0..4 {
@@ -1865,7 +2010,8 @@ fn place_extension_stalls_greedy(
     primary_spines: &[SpineSegment],
     primary_stalls: &[(StallQuad, usize)],
     faces: &[Vec<Vec<Vec2>>],
-    boundary: &Polygon,
+    raw_outer: &[Vec2],
+    raw_holes: &[Vec<Vec2>],
     _merged_corridors: &[Vec<Vec<Vec2>>],
     params: &ParkingParams,
     debug: &DebugToggles,
@@ -1902,7 +2048,7 @@ fn place_extension_stalls_greedy(
         let (seg, src_idx) = &ext_spines_with_src[spine_idx];
 
         // Place stalls on this extension spine.
-        let candidates = place_stalls_on_spines(std::slice::from_ref(seg), params);
+        let candidates = place_stalls_on_spines(std::slice::from_ref(seg), params, debug.stall_centering);
 
         for (mut quad, face_idx, _) in candidates {
             quad.kind = StallKind::Extension;
@@ -1918,7 +2064,7 @@ fn place_extension_stalls_greedy(
             // Boundary containment: centroid inside outer, no stall edge
             // crosses outer or hole edges.
             if debug.boundary_clipping {
-                if !quad_contained_in_boundary(&quad.corners, boundary) {
+                if !quad_contained_in_boundary(&quad.corners, raw_outer, raw_holes) {
                     continue;
                 }
             }
@@ -2017,6 +2163,9 @@ pub fn generate_from_spines(
     let stall_angle_rad = params.stall_angle_deg.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin()
         + stall_angle_rad.cos() * params.stall_width / 2.0;
+    let inset_d = compute_inset_d(params);
+    let raw_outer = derive_raw_outer(&boundary.outer, inset_d, params.site_offset);
+    let raw_holes = derive_raw_holes(&boundary.holes, inset_d);
 
     // Build deduplicated corridor rectangles + miter wedge fills, then
     // boolean-union them into merged shapes (preserving holes for loops).
@@ -2056,7 +2205,7 @@ pub fn generate_from_spines(
     // boundary. Since the union resolves all internal seams between
     // corridor rects and miter fills, no sliver artifacts remain.
     let faces = if debug.face_extraction {
-        extract_faces(boundary, &merged_corridors)
+        extract_faces(&raw_outer, &merged_corridors, &raw_holes)
     } else {
         vec![]
     };
@@ -2189,7 +2338,7 @@ pub fn generate_from_spines(
     };
 
     // Place stalls on merged spines (tagged with face_idx + spine_idx).
-    let tagged_stalls_3 = place_stalls_on_spines(&all_spines, params);
+    let tagged_stalls_3 = place_stalls_on_spines(&all_spines, params, debug.stall_centering);
 
     // Convert to (StallQuad, usize) for clipping, preserving spine_idx.
     let tagged_stalls: Vec<(StallQuad, usize)> = tagged_stalls_3.iter()
@@ -2207,7 +2356,7 @@ pub fn generate_from_spines(
     // Apply boundary clipping and conflict removal before island computation
     // so that corner gaps from removed conflicting stalls appear as islands.
     let tagged_stalls = if debug.boundary_clipping {
-        clip_stalls_to_boundary(tagged_stalls, boundary)
+        clip_stalls_to_boundary(tagged_stalls, &raw_outer, &raw_holes)
     } else {
         tagged_stalls
     };
@@ -2251,7 +2400,7 @@ pub fn generate_from_spines(
     let (ext_stalls_tagged, ext_spines) = if debug.spine_extensions {
         let ext_spines_with_src = extend_spines_to_faces(&all_spines, &faces, effective_depth, params);
         let ext_tagged = place_extension_stalls_greedy(
-            &ext_spines_with_src, &all_spines, &tagged_stalls, &faces, boundary, &merged_corridors, params, debug, &tagged_faces,
+            &ext_spines_with_src, &all_spines, &tagged_stalls, &faces, &raw_outer, &raw_holes, &merged_corridors, params, debug, &tagged_faces,
         );
         let ext_spines: Vec<SpineSegment> = ext_spines_with_src.into_iter().map(|(s, _)| s).collect();
         (ext_tagged, ext_spines)
@@ -2426,7 +2575,7 @@ mod tests {
             }
         }
 
-        let faces = extract_faces(&boundary, &merged_corridors);
+        let faces = extract_faces(&boundary.outer, &merged_corridors, &[]);
         eprintln!("\nFaces: {}", faces.len());
         for (fi, shape) in faces.iter().enumerate() {
             let outer = &shape[0];
@@ -2524,7 +2673,7 @@ mod tests {
         let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
         let miter_fills = generate_miter_fills(&graph, &debug);
         let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &debug);
-        let faces = extract_faces(&boundary, &merged_corridors);
+        let faces = extract_faces(&boundary.outer, &merged_corridors, &[]);
 
         // Run through the full spine+stall pipeline.
         let mut raw_spines = Vec::new();
@@ -2545,11 +2694,11 @@ mod tests {
             .filter(|s| (s.end - s.start).length() >= effective_depth)
             .collect();
 
-        let tagged_stalls_3 = place_stalls_on_spines(&all_spines, &params);
+        let tagged_stalls_3 = place_stalls_on_spines(&all_spines, &params, true);
         let tagged_stalls: Vec<(StallQuad, usize)> = tagged_stalls_3.iter()
             .map(|(s, fi, _)| (s.clone(), *fi)).collect();
         let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces);
-        let tagged_stalls = clip_stalls_to_boundary(tagged_stalls, &boundary);
+        let tagged_stalls = clip_stalls_to_boundary(tagged_stalls, &boundary.outer, &[]);
         let tagged_stalls = remove_conflicting_stalls(tagged_stalls, &[], &[]);
         let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
         let surviving: std::collections::HashSet<[u64; 8]> = tagged_stalls.iter()
@@ -2599,7 +2748,7 @@ mod tests {
         let dedup_corridors = deduplicate_corridors(&graph);
         let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
         let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &DebugToggles::default());
-        let faces = extract_faces(&boundary, &merged_corridors);
+        let faces = extract_faces(&boundary.outer, &merged_corridors, &[]);
 
         // Generate spines and stalls.
         let mut all_spines = Vec::new();
@@ -2616,7 +2765,7 @@ mod tests {
                 });
             }
         }
-        let tagged_stalls_3 = place_stalls_on_spines(&all_spines, &params);
+        let tagged_stalls_3 = place_stalls_on_spines(&all_spines, &params, true);
 
         // Dump spine and stall info.
         for (si, spine) in all_spines.iter().enumerate() {
@@ -2787,7 +2936,7 @@ mod tests {
         );
 
         // Place stalls and verify ALL stall corners are inside the face.
-        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params)
+        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true)
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
@@ -2895,7 +3044,7 @@ mod tests {
         );
 
         // Place stalls and verify containment.
-        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params)
+        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true)
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
@@ -2929,11 +3078,10 @@ mod tests {
     }
 
     /// Narrow face: two parallel aisle edges only 30ft apart (< 2×18=36ft).
-    /// The skeleton collapses — both offset lines cross at 15ft, so no
-    /// valid inset polygon survives. No stalls are placed (face too narrow
-    /// for two opposing rows).
+    /// The normal skeleton collapses, but edge-suppression produces
+    /// single-sided spines — one per aisle-facing edge.
     #[test]
-    fn test_narrow_face_no_stalls() {
+    fn test_narrow_face_single_sided_spines() {
         let face_contour = vec![
             Vec2::new(0.0, 0.0),
             Vec2::new(200.0, 0.0),
@@ -2953,14 +3101,14 @@ mod tests {
             * params.stall_angle_deg.to_radians().sin();
 
         let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[], None);
-        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params)
+        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true)
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
 
         eprintln!("\n=== Narrow face test (30ft between aisles) ===");
         eprintln!("spines: {}, stalls: {}", spines.len(), stalls.len());
 
-        assert_eq!(spines.len(), 0, "skeleton should collapse for narrow face");
-        assert_eq!(stalls.len(), 0, "no stalls in a face too narrow for two rows");
+        assert_eq!(spines.len(), 2, "edge-suppression should produce one spine per aisle edge");
+        assert!(stalls.len() > 0, "narrow face should have single-sided stalls");
     }
 
     /// Face between left/right aisle corridors with a diagonal boundary
@@ -3021,7 +3169,7 @@ mod tests {
         );
 
         // Place stalls and verify ALL corners are inside the face.
-        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params)
+        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true)
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
@@ -3372,7 +3520,7 @@ mod tests {
             }
             dirs
         };
-        let extracted_faces = extract_faces(&boundary, &merged);
+        let extracted_faces = extract_faces(&boundary.outer, &merged, &[]);
 
         let ed = params.stall_depth
             + params.stall_depth * (params.stall_angle_deg * std::f64::consts::PI / 180.0).sin()

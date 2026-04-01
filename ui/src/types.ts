@@ -43,6 +43,8 @@ export interface ParkingLayout {
   miter_fills: Vec2[][];
   skeleton_debug: { arcs: [Vec2, Vec2][]; nodes: Vec2[]; split_nodes: Vec2[]; sources: Vec2[] }[];
   islands: Island[];
+  derived_outer?: Vec2[];
+  derived_holes?: Vec2[][];
 }
 
 export type AisleDirection = "TwoWay" | "TwoWayOriented" | "OneWay";
@@ -97,6 +99,7 @@ export interface DebugToggles {
   // Spine extensions
   spine_extensions: boolean;
   // Stall placement
+  stall_centering: boolean;
   stall_face_clipping: boolean;
   // Boundary
   boundary_clipping: boolean;
