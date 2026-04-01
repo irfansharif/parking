@@ -84,15 +84,6 @@ const PARAM_DEFS: ParamDef[] = [
     unit: "stalls",
     type: "range",
   },
-  {
-    key: "ext_containment_min",
-    label: "Ext. Containment",
-    min: 0.5,
-    max: 1.0,
-    step: 0.01,
-    unit: "",
-    type: "range",
-  },
 ];
 
 export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () => void): void {

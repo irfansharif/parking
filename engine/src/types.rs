@@ -190,11 +190,7 @@ pub struct ParkingParams {
     pub site_offset: f64,
     #[serde(default, alias = "cross_aisle_spacing")]
     pub cross_aisle_max_run: f64,
-    #[serde(default = "default_ext_containment_min")]
-    pub ext_containment_min: f64,
 }
-
-fn default_ext_containment_min() -> f64 { 0.98 }
 
 impl Default for ParkingParams {
     fn default() -> Self {
@@ -207,7 +203,6 @@ impl Default for ParkingParams {
             aisle_offset: 0.0,
             site_offset: 0.0,
             cross_aisle_max_run: 15.0,
-            ext_containment_min: 0.98,
         }
     }
 }

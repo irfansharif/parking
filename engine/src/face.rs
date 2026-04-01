@@ -1631,6 +1631,7 @@ fn place_extension_stalls_greedy(
     primary_stalls: &[(StallQuad, usize)],
     faces: &[Vec<Vec<Vec2>>],
     boundary: &Polygon,
+    merged_corridors: &[Vec<Vec<Vec2>>],
     params: &ParkingParams,
     debug: &DebugToggles,
 ) -> Vec<(StallQuad, usize)> {
@@ -1671,9 +1672,9 @@ fn place_extension_stalls_greedy(
             quad.kind = StallKind::Extension;
 
             // Face containment: boolean intersect stall with its face.
-            // Reject if less than 98% of the stall area is inside.
+            // Reject if less than 85% of the stall area is inside.
             if debug.stall_face_clipping && face_idx < faces.len() && !faces[face_idx].is_empty() {
-                if !quad_contained_in_face(&quad.corners, &faces[face_idx], 0.98) {
+                if !quad_contained_in_face(&quad.corners, &faces[face_idx], 0.85) {
                     continue;
                 }
             }
@@ -1685,25 +1686,8 @@ fn place_extension_stalls_greedy(
                     continue;
                 }
             }
-
-            // Aisle access: cast rays from the stall's entrance corners
-            // (p2, p3) in the stall depth direction (p0->p2, p1->p3).
-            // Both rays must hit the same face boundary edge -- ensuring
-            // the stall entrance faces a single straight aisle edge, not
-            // a corner where edges meet.
-            if face_idx < faces.len() && !faces[face_idx].is_empty() {
-                let dir_a = (quad.corners[2] - quad.corners[0]).normalize();
-                let dir_b = (quad.corners[3] - quad.corners[1]).normalize();
-                let hit_a = ray_hit_face_edge(quad.corners[2], dir_a, &faces[face_idx]);
-                let hit_b = ray_hit_face_edge(quad.corners[3], dir_b, &faces[face_idx]);
-                let valid = match (hit_a, hit_b) {
-                    (Some((ci_a, ei_a)), Some((ci_b, ei_b))) => ci_a == ci_b && ei_a == ei_b,
-                    _ => false,
-                };
-                if !valid {
-                    continue;
-                }
-            }
+            //
+            // TODO: corner check disabled — needs rethink.
 
             // Conflict check against all occupied stalls in the same face.
             let shrunk = shrink_toward_centroid(&quad.corners, 0.1);
@@ -1920,7 +1904,7 @@ pub fn generate_from_spines(
     let (ext_stalls_tagged, ext_spines) = if debug.spine_extensions {
         let ext_spines_with_src = extend_spines_to_faces(&all_spines, &faces, effective_depth, params);
         let ext_tagged = place_extension_stalls_greedy(
-            &ext_spines_with_src, &all_spines, &tagged_stalls, &faces, boundary, params, debug,
+            &ext_spines_with_src, &all_spines, &tagged_stalls, &faces, boundary, &merged_corridors, params, debug,
         );
         let ext_spines: Vec<SpineSegment> = ext_spines_with_src.into_iter().map(|(s, _)| s).collect();
         (ext_tagged, ext_spines)

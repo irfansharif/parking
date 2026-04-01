@@ -113,7 +113,6 @@ export class App {
         aisle_offset: 0,
         site_offset: 0,
         cross_aisle_max_run: 15,
-        ext_containment_min: 0.98,
       },
       debug: {
         miter_fills: true,

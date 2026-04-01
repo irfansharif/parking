@@ -398,6 +398,16 @@ export class Renderer {
     ctx.strokeStyle = c.stroke;
     ctx.lineWidth = 0.3;
     ctx.stroke();
+
+    // Debug: draw colored dots at each corner to identify p0-p3.
+    // p0=red, p1=green, p2=blue, p3=yellow
+    const dotColors = ["red", "lime", "blue", "yellow"];
+    for (let i = 0; i < 4; i++) {
+      ctx.beginPath();
+      ctx.arc(stall.corners[i].x, stall.corners[i].y, 1.0, 0, Math.PI * 2);
+      ctx.fillStyle = dotColors[i];
+      ctx.fill();
+    }
   }
 
   private drawSpine(spine: SpineLine): void {

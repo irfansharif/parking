@@ -73,7 +73,6 @@ export interface ParkingParams {
   aisle_offset: number;
   site_offset: number;
   cross_aisle_max_run: number;
-  ext_containment_min: number;
 }
 
 export interface DebugToggles {
