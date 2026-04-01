@@ -244,13 +244,16 @@ fn point_to_segment_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
 /// A face is boundary if none of its aisle-facing edges come from an
 /// interior aisle. Faces bounded only by perimeter/hole aisles (and
 /// walls) get 90° stalls. Any interior aisle edge makes the face interior.
+/// Returns (is_boundary, wall_edge_indices).
 fn is_boundary_face(
     contour: &[Vec2],
     merged_aisle_shapes: &[Vec<Vec<Vec2>>],
     per_edge_aisles: &[(Vec<Vec2>, bool, Option<Vec2>)],
-) -> bool {
+) -> (bool, Vec<usize>) {
     let eps = 0.5;
     let n = contour.len();
+    let mut wall_edges = Vec::new();
+    let mut has_interior = false;
     for i in 0..n {
         let j = (i + 1) % n;
         let p0 = contour[i];
@@ -258,22 +261,29 @@ fn is_boundary_face(
 
         // Condition 1: check against MERGED aisle shapes. Face edges come
         // from the merged union, so this is the right thing to match against.
+        // Sample p0, midpoint, and p1: a long face edge may straddle an
+        // aisle/wall junction, so requiring both endpoints on one segment
+        // fails. Any sample point on a merged aisle means the edge is at
+        // least partially aisle-facing (not a pure wall).
+        let mid = Vec2 { x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5 };
+        let samples = [p0, mid, p1];
         let mut on_merged = false;
         'merged: for shape in merged_aisle_shapes {
             for ring in shape {
                 for ci in 0..ring.len() {
                     let cj = (ci + 1) % ring.len();
-                    let d = point_to_segment_dist(p0, ring[ci], ring[cj])
-                        .max(point_to_segment_dist(p1, ring[ci], ring[cj]));
-                    if d < eps {
-                        on_merged = true;
-                        break 'merged;
+                    for &pt in &samples {
+                        if point_to_segment_dist(pt, ring[ci], ring[cj]) < eps {
+                            on_merged = true;
+                            break 'merged;
+                        }
                     }
                 }
             }
         }
         if !on_merged {
-            return true; // Wall edge.
+            wall_edges.push(i);
+            continue;
         }
 
         // Condition 2: check which un-merged aisle this edge belongs to.
@@ -291,10 +301,11 @@ fn is_boundary_face(
             }
         }
         if best_interior {
-            return false; // Has an interior aisle edge.
+            has_interior = true;
         }
     }
-    true
+    let is_boundary = !wall_edges.is_empty() || !has_interior;
+    (is_boundary, wall_edges)
 }
 
 /// Classify each edge of a face contour as (aisle_facing, is_interior, travel_dir).
@@ -327,7 +338,7 @@ fn classify_face_edges_ext(
         return vec![(true, true, None, false); contour.len()];
     }
 
-    let is_interior = !is_boundary_face(contour, corridor_shapes, per_edge_corridors);
+    let is_interior = !is_boundary_face(contour, corridor_shapes, per_edge_corridors).0;
 
     let eps = 0.5;
     let n = contour.len();
@@ -1114,8 +1125,17 @@ fn stall_key(s: &StallQuad) -> [u64; 8] {
     ]
 }
 
-/// Build strip envelopes from stalls grouped by spine_idx. Each envelope
-/// is the convex hull of all stall corners in the group.
+/// Build strip envelopes from stalls grouped by spine_idx.
+///
+/// Each envelope is convex on the aisle-facing side (corners 0,1) so
+/// inter-stall zigzag gaps don't leak through as islands, but follows
+/// the actual stall back edges on the interior side (corners 2,3) so
+/// the island can fill into the sawtooth gaps between stall backs.
+///
+/// Construction: compute the full convex hull of all stall corners,
+/// then replace the back-side chain of that hull with the actual
+/// back-corner sawtooth trace. The aisle-side chain is preserved from
+/// the hull (smooth), giving a half-hull polygon.
 fn build_strip_envelopes(stalls: &[(StallQuad, usize, usize)]) -> Vec<(Vec<Vec2>, usize)> {
     // Group stalls by spine_idx, preserving order.
     let mut by_spine: std::collections::BTreeMap<usize, (usize, Vec<&StallQuad>)> =
@@ -1129,12 +1149,96 @@ fn build_strip_envelopes(stalls: &[(StallQuad, usize, usize)]) -> Vec<(Vec<Vec2>
     let mut envelopes = Vec::new();
     for (_spine_idx, (face_idx, quads)) in &by_spine {
         if quads.is_empty() { continue; }
-        let points: Vec<Vec2> = quads.iter()
+
+        // Infer directions from stall geometry.
+        let depth_dir = {
+            let mut d = Vec2::new(0.0, 0.0);
+            for q in quads.iter() {
+                let aisle_mid = (q.corners[0] + q.corners[1]) * 0.5;
+                let back_mid = (q.corners[2] + q.corners[3]) * 0.5;
+                d = d + (back_mid - aisle_mid);
+            }
+            d.normalize()
+        };
+        let spine_dir = Vec2::new(-depth_dir.y, depth_dir.x);
+
+        // Sort stalls along spine direction.
+        let mut sorted: Vec<&StallQuad> = quads.clone();
+        sorted.sort_by(|a, b| {
+            let ca = (a.corners[0] + a.corners[1] + a.corners[2] + a.corners[3]) * 0.25;
+            let cb = (b.corners[0] + b.corners[1] + b.corners[2] + b.corners[3]) * 0.25;
+            ca.dot(spine_dir).partial_cmp(&cb.dot(spine_dir)).unwrap()
+        });
+
+        // Full convex hull of ALL corners (original behavior = smooth
+        // on both sides).
+        let all_points: Vec<Vec2> = quads.iter()
             .flat_map(|q| q.corners.iter().copied())
             .collect();
-        let hull = convex_hull(&points);
-        if hull.len() >= 3 {
-            envelopes.push((hull, *face_idx));
+        let hull = convex_hull(&all_points);
+        if hull.len() < 3 { continue; }
+
+        // Back-side sawtooth: trace corners 2,3 in spine order.
+        let mut back_trace: Vec<Vec2> = Vec::new();
+        for q in &sorted {
+            if q.corners[3].dot(spine_dir) < q.corners[2].dot(spine_dir) {
+                back_trace.push(q.corners[3]);
+                back_trace.push(q.corners[2]);
+            } else {
+                back_trace.push(q.corners[2]);
+                back_trace.push(q.corners[3]);
+            }
+        }
+
+        // Split the full hull into aisle-side and back-side chains at
+        // the leftmost/rightmost vertices along spine_dir. The back-
+        // side chain (larger avg depth) gets replaced with back_trace.
+        let hull_n = hull.len();
+        let (mut li, mut ri) = (0, 0);
+        let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+        for (i, v) in hull.iter().enumerate() {
+            let p = v.dot(spine_dir);
+            if p < lo { lo = p; li = i; }
+            if p > hi { hi = p; ri = i; }
+        }
+
+        let walk = |from: usize, to: usize| -> Vec<Vec2> {
+            let mut chain = Vec::new();
+            let mut i = from;
+            loop {
+                chain.push(hull[i]);
+                if i == to { break; }
+                i = (i + 1) % hull_n;
+            }
+            chain
+        };
+        let chain_a = walk(ri, li); // right → left (CCW)
+        let chain_b = walk(li, ri); // left → right (CCW)
+
+        let avg_depth = |c: &[Vec2]| -> f64 {
+            c.iter().map(|v| v.dot(depth_dir)).sum::<f64>() / c.len() as f64
+        };
+
+        // The aisle chain has SMALLER depth (closer to spine/aisle).
+        // With the full hull, the depth difference between chains spans
+        // the full stall depth, making this comparison robust.
+        // We need it going right → left.
+        let aisle_chain: Vec<Vec2> = if avg_depth(&chain_a) < avg_depth(&chain_b) {
+            chain_a
+        } else {
+            chain_b.into_iter().rev().collect()
+        };
+
+        // Assemble: back_trace (left→right) + aisle_chain (right→left).
+        let mut envelope: Vec<Vec2> = back_trace;
+        envelope.extend(aisle_chain);
+
+        if signed_area(&envelope) < 0.0 {
+            envelope.reverse();
+        }
+
+        if envelope.len() >= 3 {
+            envelopes.push((envelope, *face_idx));
         }
     }
     envelopes
@@ -1846,7 +1950,7 @@ pub fn generate_from_spines(
                 sources,
             });
         }
-        let face_is_boundary = is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags);
+        let (face_is_boundary, _) = is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags);
         let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors_with_flags, face_is_boundary, params, debug, &two_way_oriented_dirs);
         if !face_spines.is_empty() {
             faces_with_spines.insert(face_idx);
@@ -1921,7 +2025,7 @@ pub fn generate_from_spines(
             .iter()
             .map(|shape| {
                 !shape.is_empty() && shape[0].len() >= 3
-                    && is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags)
+                    && is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags).0
             })
             .collect();
         remove_conflicting_stalls(tagged_stalls, &stall_spine_lengths, &face_boundary)
@@ -1993,11 +2097,12 @@ pub fn generate_from_spines(
         .iter()
         .filter(|shape| !shape.is_empty() && shape[0].len() >= 3)
         .map(|shape| {
-            let ib = is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags);
+            let (ib, we) = is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags);
             Face {
                 contour: shape[0].clone(),
                 holes: shape[1..].iter().cloned().collect(),
                 is_boundary: ib,
+                wall_edges: we,
             }
         })
         .collect();
@@ -2248,6 +2353,85 @@ mod tests {
             assert!(net < boundary_area * 0.25,
                 "island {} has net area {:.1} ≥ 25% of boundary area {:.1}",
                 ii, net, boundary_area);
+        }
+    }
+
+    #[test]
+    fn test_strip_envelope_orientation() {
+        // User's test case: diagonal drive-line through a rectangle with hole.
+        let boundary = Polygon {
+            outer: vec![
+                Vec2::new(-48.47, 0.0),
+                Vec2::new(750.0, 0.0),
+                Vec2::new(782.80, 654.85),
+                Vec2::new(0.0, 654.85),
+            ],
+            holes: vec![vec![
+                Vec2::new(394.53, 251.80),
+                Vec2::new(611.14, 251.80),
+                Vec2::new(613.91, 512.33),
+                Vec2::new(394.53, 512.33),
+            ]],
+        };
+        let params = ParkingParams::default();
+        let graph = crate::aisle_graph::auto_generate(&boundary, &params);
+
+        let stall_angle_rad = params.stall_angle_deg.to_radians();
+        let effective_depth = params.stall_depth * stall_angle_rad.sin();
+        let dedup_corridors = deduplicate_corridors(&graph);
+        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
+        let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &DebugToggles::default());
+        let faces = extract_faces(&boundary, &merged_corridors);
+
+        // Generate spines and stalls.
+        let mut all_spines = Vec::new();
+        for (fi, shape) in faces.iter().enumerate() {
+            let spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &DebugToggles::default(), &[]);
+            for s in spines {
+                all_spines.push(SpineSegment {
+                    start: s.start,
+                    end: s.end,
+                    outward_normal: s.outward_normal,
+                    face_idx: fi,
+                    is_interior: s.is_interior,
+                    travel_dir: s.travel_dir,
+                });
+            }
+        }
+        let tagged_stalls_3 = place_stalls_on_spines(&all_spines, &params);
+
+        // Dump spine and stall info.
+        for (si, spine) in all_spines.iter().enumerate() {
+            eprintln!("spine {}: ({:.1},{:.1})→({:.1},{:.1}) normal=({:.2},{:.2}) interior={}",
+                si, spine.start.x, spine.start.y, spine.end.x, spine.end.y,
+                spine.outward_normal.x, spine.outward_normal.y, spine.is_interior);
+        }
+
+        // Check a representative stall from each spine.
+        let mut by_spine: std::collections::BTreeMap<usize, Vec<&StallQuad>> = std::collections::BTreeMap::new();
+        for (q, _, si) in &tagged_stalls_3 {
+            by_spine.entry(*si).or_default().push(q);
+        }
+        for (si, quads) in &by_spine {
+            let q = quads[0];
+            let aisle_mid = (q.corners[0] + q.corners[1]) * 0.5;
+            let back_mid = (q.corners[2] + q.corners[3]) * 0.5;
+            let depth_vec = back_mid - aisle_mid;
+            eprintln!("spine {} stall[0]: aisle_mid=({:.1},{:.1}) back_mid=({:.1},{:.1}) depth_vec=({:.2},{:.2})",
+                si, aisle_mid.x, aisle_mid.y, back_mid.x, back_mid.y, depth_vec.x, depth_vec.y);
+            eprintln!("  corners: [0]=({:.1},{:.1}) [1]=({:.1},{:.1}) [2]=({:.1},{:.1}) [3]=({:.1},{:.1})",
+                q.corners[0].x, q.corners[0].y, q.corners[1].x, q.corners[1].y,
+                q.corners[2].x, q.corners[2].y, q.corners[3].x, q.corners[3].y);
+        }
+
+        // Build envelopes and dump them.
+        let envelopes = build_strip_envelopes(&tagged_stalls_3);
+        for (ei, (env, fi)) in envelopes.iter().enumerate() {
+            let area = signed_area(env).abs();
+            eprintln!("envelope {}: face={}, area={:.0}, verts={}", ei, fi, area, env.len());
+            for (vi, v) in env.iter().enumerate() {
+                eprintln!("  v{}: ({:.1}, {:.1})", vi, v.x, v.y);
+            }
         }
     }
 
@@ -2979,7 +3163,7 @@ mod tests {
         let mut left_spines = Vec::new();
         let mut right_spines = Vec::new();
         for shape in &extracted_faces {
-            let face_is_boundary = is_boundary_face(&shape[0], &merged, &dedup);
+            let (face_is_boundary, _) = is_boundary_face(&shape[0], &merged, &dedup);
             let spines = compute_face_spines(shape, ed, &merged, &dedup, face_is_boundary, &params, &debug, &two_way_dirs);
             for s in &spines {
                 if let Some(td) = s.travel_dir {

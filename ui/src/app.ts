@@ -97,9 +97,10 @@ export class App {
         ],
         holes: [
           [
-            { x: 275, y: 150 },
-            { x: 475, y: 150 },
-            { x: 375, y: 350 },
+            { x: 394.53, y: 251.80 },
+            { x: 611.14, y: 251.80 },
+            { x: 613.91, y: 512.33 },
+            { x: 394.53, y: 512.33 },
           ],
         ],
       },
@@ -144,7 +145,7 @@ export class App {
       annotations: [],
       aisleVector: aisleVectorFromAngle(90, 0, { x: -80, y: 250 }),
       driveLines: [
-        { start: { x: 375, y: -13.35 }, end: { x: 139.44, y: 696.35 } },
+        { start: { x: 471.79, y: -42.94 }, end: { x: 139.44, y: 696.35 } },
       ],
       pendingDriveLine: null,
       pendingDriveLinePreview: null,

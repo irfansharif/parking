@@ -62,6 +62,12 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
         hole_loops.push(expanded);
     }
 
+    // Per-edge split tracking for hole loops (mirrors perim_splits).
+    let mut hole_splits: Vec<Vec<Vec<(f64, usize)>>> = hole_loops
+        .iter()
+        .map(|hl| vec![Vec::new(); hl.len()])
+        .collect();
+
     // 3. Interior parallel aisles.
     let angle_rad = params.aisle_angle_deg.to_radians();
     let aisle_dir = Vec2::new(angle_rad.cos(), angle_rad.sin());
@@ -125,14 +131,20 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
             perim_splits[hit.edge_idx].push((hit.t_edge, vi));
         }
 
-        // Subtract hole interiors from intervals.
-        for hl in &hole_loops {
+        // Subtract hole interiors from intervals and record intersection
+        // points as hole edge splits (mirrors perim_splits).
+        for (hi, hl) in hole_loops.iter().enumerate() {
             let hole_hits = intersect_line_polygon(origin, aisle_dir, hl);
             let mut hole_ivs: Vec<(f64, f64)> = Vec::new();
             for pair in hole_hits.chunks(2) {
                 if pair.len() == 2 {
                     hole_ivs.push((pair[0].t_line, pair[1].t_line));
                 }
+            }
+            for hit in &hole_hits {
+                let pt = origin + aisle_dir * hit.t_line;
+                let vi = find_or_add_vertex(&mut vertices, pt, 0.1);
+                hole_splits[hi][hit.edge_idx].push((hit.t_edge, vi));
             }
             intervals = subtract_intervals(&intervals, &hole_ivs);
         }
@@ -241,14 +253,25 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
         edges.push(AisleEdge { start: vi_end, end: prev, width: hw, interior: false, direction: AisleDirection::TwoWay });
     }
 
-    // 5. Build hole loop edges.
+    // 5. Build hole loop edges with splits spliced in (mirrors perimeter).
     for (hi, hl) in hole_loops.iter().enumerate() {
         let base = hole_bases[hi];
         let hn = hl.len();
         for i in 0..hn {
             let j = (i + 1) % hn;
-            edges.push(AisleEdge { start: base + i, end: base + j, width: hw, interior: false, direction: AisleDirection::TwoWay });
-            edges.push(AisleEdge { start: base + j, end: base + i, width: hw, interior: false, direction: AisleDirection::TwoWay });
+            let vi_start = base + i;
+            let vi_end = base + j;
+
+            hole_splits[hi][i].sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+            let mut prev = vi_start;
+            for &(_, split_vi) in &hole_splits[hi][i] {
+                edges.push(AisleEdge { start: prev, end: split_vi, width: hw, interior: false, direction: AisleDirection::TwoWay });
+                edges.push(AisleEdge { start: split_vi, end: prev, width: hw, interior: false, direction: AisleDirection::TwoWay });
+                prev = split_vi;
+            }
+            edges.push(AisleEdge { start: prev, end: vi_end, width: hw, interior: false, direction: AisleDirection::TwoWay });
+            edges.push(AisleEdge { start: vi_end, end: prev, width: hw, interior: false, direction: AisleDirection::TwoWay });
         }
     }
 

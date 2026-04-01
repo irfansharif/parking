@@ -341,6 +341,21 @@ export class Renderer {
     ctx.lineWidth = 0.5;
     ctx.stroke();
 
+    // Highlight wall edges in magenta for debugging.
+    if (face.wall_edges && face.wall_edges.length > 0) {
+      const c = face.contour;
+      for (const ei of face.wall_edges) {
+        const a = c[ei];
+        const b = c[(ei + 1) % c.length];
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.strokeStyle = "rgba(255, 0, 255, 0.9)";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+    }
+
     if (face.is_boundary) {
       ctx.save();
       ctx.beginPath();

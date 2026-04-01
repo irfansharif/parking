@@ -120,6 +120,8 @@ pub struct Face {
     pub holes: Vec<Vec<Vec2>>,
     #[serde(default)]
     pub is_boundary: bool,
+    #[serde(default)]
+    pub wall_edges: Vec<usize>,
 }
 
 // ---------------------------------------------------------------------------
