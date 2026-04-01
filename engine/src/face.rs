@@ -1637,7 +1637,7 @@ fn place_extension_stalls_greedy(
     primary_stalls: &[(StallQuad, usize)],
     faces: &[Vec<Vec<Vec2>>],
     boundary: &Polygon,
-    merged_corridors: &[Vec<Vec<Vec2>>],
+    _merged_corridors: &[Vec<Vec<Vec2>>],
     params: &ParkingParams,
     debug: &DebugToggles,
 ) -> Vec<(StallQuad, usize)> {
