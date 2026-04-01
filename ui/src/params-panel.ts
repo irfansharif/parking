@@ -84,6 +84,15 @@ const PARAM_DEFS: ParamDef[] = [
     unit: "stalls",
     type: "range",
   },
+  {
+    key: "ext_containment_min",
+    label: "Ext. Containment",
+    min: 0.5,
+    max: 1.0,
+    step: 0.01,
+    unit: "",
+    type: "range",
+  },
 ];
 
 export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () => void): void {
@@ -154,6 +163,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     { key: "miterFills", label: "Miter Fills" },
     { key: "skeletonDebug", label: "Skeleton" },
     { key: "islands", label: "Islands" },
+    { key: "extensionStalls", label: "Extension Stalls" },
   ];
 
   for (const def of LAYER_DEFS) {
@@ -196,6 +206,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
         { key: "miter_fills", label: "Miter Fills" },
 
         { key: "spike_removal", label: "Spike Removal" },
+        { key: "contour_simplification", label: "Contour Simplification" },
         { key: "hole_filtering", label: "Hole Filtering" },
       ],
     },
@@ -219,6 +230,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
         { key: "spine_dedup", label: "Spine Dedup" },
         { key: "spine_merging", label: "Spine Merging" },
         { key: "short_spine_filter", label: "Short Spine Filter" },
+        { key: "spine_extensions", label: "Spine Extensions" },
       ],
     },
     {

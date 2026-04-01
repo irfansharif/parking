@@ -100,6 +100,7 @@ pub enum StallKind {
     Standard,
     Compact,
     Ev,
+    Extension,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -189,7 +190,11 @@ pub struct ParkingParams {
     pub site_offset: f64,
     #[serde(default, alias = "cross_aisle_spacing")]
     pub cross_aisle_max_run: f64,
+    #[serde(default = "default_ext_containment_min")]
+    pub ext_containment_min: f64,
 }
+
+fn default_ext_containment_min() -> f64 { 0.98 }
 
 impl Default for ParkingParams {
     fn default() -> Self {
@@ -202,6 +207,7 @@ impl Default for ParkingParams {
             aisle_offset: 0.0,
             site_offset: 0.0,
             cross_aisle_max_run: 15.0,
+            ext_containment_min: 0.98,
         }
     }
 }
@@ -262,6 +268,8 @@ pub struct SpineLine {
     pub start: Vec2,
     pub end: Vec2,
     pub normal: Vec2,
+    #[serde(default)]
+    pub is_extension: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +314,10 @@ pub struct DebugToggles {
     #[serde(default = "default_true")]
     pub short_spine_filter: bool,
 
+    // Spine extensions (extend spines colinearly to face boundary)
+    #[serde(default = "default_true")]
+    pub spine_extensions: bool,
+
     // Stall placement
     #[serde(default = "default_true")]
     pub stall_face_clipping: bool,
@@ -338,6 +350,7 @@ impl Default for DebugToggles {
             spine_dedup: true,
             spine_merging: true,
             short_spine_filter: true,
+            spine_extensions: true,
             stall_face_clipping: true,
             boundary_clipping: true,
             conflict_removal: true,

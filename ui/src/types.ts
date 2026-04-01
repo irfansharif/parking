@@ -5,7 +5,7 @@ export interface Vec2 {
 
 export interface StallQuad {
   corners: [Vec2, Vec2, Vec2, Vec2];
-  kind: "Standard" | "Compact" | "Ev";
+  kind: "Standard" | "Compact" | "Ev" | "Extension";
 }
 
 export interface Metrics {
@@ -16,6 +16,7 @@ export interface SpineLine {
   start: Vec2;
   end: Vec2;
   normal: Vec2;
+  is_extension?: boolean;
 }
 
 export interface Face {
@@ -72,6 +73,7 @@ export interface ParkingParams {
   aisle_offset: number;
   site_offset: number;
   cross_aisle_max_run: number;
+  ext_containment_min: number;
 }
 
 export interface DebugToggles {
@@ -91,6 +93,8 @@ export interface DebugToggles {
   spine_dedup: boolean;
   spine_merging: boolean;
   short_spine_filter: boolean;
+  // Spine extensions
+  spine_extensions: boolean;
   // Stall placement
   stall_face_clipping: boolean;
   // Boundary

@@ -47,6 +47,7 @@ export interface LayerVisibility {
   miterFills: boolean;
   skeletonDebug: boolean;
   islands: boolean;
+  extensionStalls: boolean;
 }
 
 export interface AppState {
@@ -112,6 +113,7 @@ export class App {
         aisle_offset: 0,
         site_offset: 0,
         cross_aisle_max_run: 15,
+        ext_containment_min: 0.98,
       },
       debug: {
         miter_fills: true,
@@ -126,6 +128,7 @@ export class App {
         spine_dedup: true,
         spine_merging: true,
         short_spine_filter: false,
+        spine_extensions: true,
         stall_face_clipping: true,
         boundary_clipping: false,
         conflict_removal: true,
@@ -159,6 +162,7 @@ export class App {
         miterFills: false,
         skeletonDebug: false,
         islands: true,
+        extensionStalls: false,
       },
     };
   }

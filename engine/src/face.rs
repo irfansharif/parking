@@ -1341,14 +1341,22 @@ fn compute_islands(
         // Faces with holes subtract ALL individual stalls (some stalls
         // from adjacent faces physically overlap this face). Simple
         // faces use strip envelopes (hexagons covering each spine's
-        // stalls) to avoid inter-stall zigzag gaps appearing as islands.
+        // stalls) to avoid inter-stall zigzag gaps appearing as islands,
+        // plus individual extension stalls (which aren't in envelopes).
         let clip: Vec<Vec<[f64; 2]>> = if shape.len() > 1 {
             all_stall_paths.clone()
         } else {
-            strip_envelopes.iter()
+            let mut paths: Vec<Vec<[f64; 2]>> = strip_envelopes.iter()
                 .filter(|(_, fi)| *fi == face_idx)
                 .map(|(env, _)| to_path(env))
-                .collect()
+                .collect();
+            // Add individual extension stalls for this face.
+            for (stall, fi) in _tagged_stalls {
+                if *fi == face_idx && matches!(stall.kind, StallKind::Extension) {
+                    paths.push(to_path(&stall.corners));
+                }
+            }
+            paths
         };
 
         if clip.is_empty() {
@@ -1375,6 +1383,363 @@ fn compute_islands(
     }
 
     islands
+}
+
+/// Extend each spine colinearly in both directions until it hits the face
+/// boundary. Returns (extension SpineSegment, source spine index) pairs.
+/// Each extension inherits all properties (normal, travel_dir, etc.) from its
+/// source spine. A dual-clip approach validates both the spine position and
+/// the stall-reach position, ensuring extension stalls have depth clearance.
+fn extend_spines_to_faces(
+    spines: &[SpineSegment],
+    faces: &[Vec<Vec<Vec2>>],
+    effective_depth: f64,
+    params: &ParkingParams,
+) -> Vec<(SpineSegment, usize)> {
+    let mut extensions = Vec::new();
+
+    // Compute stall pitch to use as overlap margin. fill_strip keeps stall
+    // centers at least half a pitch from each segment endpoint, so extending
+    // the extension segment one pitch into the primary spine ensures the
+    // first extension grid cell bridges the gap. remove_extension_conflicts
+    // discards duplicates in the overlap zone afterward.
+    let angle_rad = params.stall_angle_deg.to_radians();
+    let sin_a = angle_rad.sin();
+    let stall_pitch = if sin_a.abs() > 1e-12 {
+        params.stall_width / sin_a
+    } else {
+        params.stall_width
+    };
+
+    for (src_idx, spine) in spines.iter().enumerate() {
+        if spine.face_idx >= faces.len() {
+            continue;
+        }
+        // Skip boundary faces — extensions only apply to interior faces
+        // where angled stalls leave triangular waste in tapered regions.
+        if !spine.is_interior {
+            continue;
+        }
+        let face_shape = &faces[spine.face_idx];
+        if face_shape.is_empty() {
+            continue;
+        }
+
+        let dir = (spine.end - spine.start).normalize();
+        let spine_len = (spine.end - spine.start).length();
+        if spine_len < 1e-6 {
+            continue;
+        }
+
+        // Extend the spine line far in both directions.
+        let extend_dist = 10000.0;
+        let ext_start = spine.start - dir * extend_dist;
+        let ext_end = spine.end + dir * extend_dist;
+        let ext_vec = ext_end - ext_start;
+        let ext_total = ext_vec.length();
+
+        // Clip the extended spine line to the face interior.
+        let spine_clips = clip_segment_to_face(ext_start, ext_end, face_shape);
+
+        // Also clip the offset line (stall reach) to ensure depth clearance.
+        let reach = (effective_depth - 0.5).max(0.0);
+        let off_start = ext_start + spine.outward_normal * reach;
+        let off_end = ext_end + spine.outward_normal * reach;
+        let offset_clips = clip_segment_to_face(off_start, off_end, face_shape);
+
+        // The original spine occupies a known parameter range on the extended
+        // line. Shrink it by one stall_pitch on each side so that extension
+        // segments overlap the primary, ensuring contiguous stall placement.
+        let overlap_t = stall_pitch / ext_total;
+        let orig_t0 = extend_dist / ext_total + overlap_t;
+        let orig_t1 = (extend_dist + spine_len) / ext_total - overlap_t;
+
+        for &(st0, st1) in &spine_clips {
+            for &(ot0, ot1) in &offset_clips {
+                let t0 = st0.max(ot0);
+                let t1 = st1.min(ot1);
+                if t1 - t0 < 1e-9 {
+                    continue;
+                }
+
+                // Extract portions outside the (shrunk) original spine range.
+                // Left tail: [t0, min(t1, orig_t0)]
+                if t0 < orig_t0 - 1e-9 {
+                    let tail_end = t1.min(orig_t0);
+                    let s = ext_start + ext_vec * t0;
+                    let e = ext_start + ext_vec * tail_end;
+                    if (e - s).length() > 1.0 {
+                        extensions.push((SpineSegment {
+                            start: s,
+                            end: e,
+                            outward_normal: spine.outward_normal,
+                            face_idx: spine.face_idx,
+                            is_interior: spine.is_interior,
+                            travel_dir: spine.travel_dir,
+                        }, src_idx));
+                    }
+                }
+                // Right tail: [max(t0, orig_t1), t1]
+                if t1 > orig_t1 + 1e-9 {
+                    let tail_start = t0.max(orig_t1);
+                    let s = ext_start + ext_vec * tail_start;
+                    let e = ext_start + ext_vec * t1;
+                    if (e - s).length() > 1.0 {
+                        extensions.push((SpineSegment {
+                            start: s,
+                            end: e,
+                            outward_normal: spine.outward_normal,
+                            face_idx: spine.face_idx,
+                            is_interior: spine.is_interior,
+                            travel_dir: spine.travel_dir,
+                        }, src_idx));
+                    }
+                }
+            }
+        }
+    }
+
+    extensions
+}
+
+/// Cast a ray from `origin` in `dir` and return the (contour_index,
+/// edge_index) of the nearest face boundary edge it crosses.
+fn ray_hit_face_edge(
+    origin: Vec2,
+    dir: Vec2,
+    face_shape: &[Vec<Vec2>],
+) -> Option<(usize, usize)> {
+    let mut best_t = f64::INFINITY;
+    let mut best = None;
+
+    for (ci, contour) in face_shape.iter().enumerate() {
+        let n = contour.len();
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let p = contour[i];
+            let e = contour[j] - contour[i];
+            let denom = dir.x * e.y - dir.y * e.x;
+            if denom.abs() < 1e-12 {
+                continue;
+            }
+            let h = p - origin;
+            let t = (h.x * e.y - h.y * e.x) / denom;
+            let s = (h.x * dir.y - h.y * dir.x) / denom;
+            if t > 1e-6 && s >= -1e-9 && s <= 1.0 + 1e-9 && t < best_t {
+                best_t = t;
+                best = Some((ci, i));
+            }
+        }
+    }
+
+    best
+}
+
+/// Test whether a stall quad is mostly contained in a face by computing
+/// the boolean intersection `stall ∩ face`. If the intersection area is
+/// less than `min_frac` of the stall area, the stall bleeds outside.
+/// Angled stall corners that poke slightly into the corridor are tolerated
+/// since they represent a small fraction of total area.
+fn quad_contained_in_face(
+    corners: &[Vec2; 4],
+    face_shape: &[Vec<Vec2>],
+    min_frac: f64,
+) -> bool {
+    use crate::inset::signed_area;
+
+    let stall_area = signed_area(corners).abs();
+    if stall_area < 1e-6 {
+        return false;
+    }
+
+    let to_path = |pts: &[Vec2]| -> Vec<[f64; 2]> {
+        pts.iter().map(|v| [v.x, v.y]).collect()
+    };
+
+    let stall_path = to_path(corners);
+
+    // Build face as multi-contour (outer CCW + holes CW).
+    let mut face_paths: Vec<Vec<[f64; 2]>> = Vec::new();
+    for (i, contour) in face_shape.iter().enumerate() {
+        let mut p = to_path(contour);
+        if i == 0 {
+            // Outer must be CCW.
+            if signed_area_f64(&p) < 0.0 { p.reverse(); }
+        } else {
+            // Holes must be CW.
+            if signed_area_f64(&p) > 0.0 { p.reverse(); }
+        }
+        face_paths.push(p);
+    }
+
+    let intersection = stall_path.overlay(&face_paths, OverlayRule::Intersect, FillRule::NonZero);
+
+    let mut isect_area = 0.0;
+    for shape in &intersection {
+        for contour in shape {
+            isect_area += signed_area_f64(contour).abs();
+        }
+    }
+
+    isect_area >= min_frac * stall_area
+}
+
+/// Test whether a stall quad is fully contained within the site boundary
+/// (inside outer, outside all holes). Same geometric approach: centroid
+/// inside + no edge crossings.
+fn quad_contained_in_boundary(corners: &[Vec2; 4], boundary: &Polygon) -> bool {
+    let cx = (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4.0;
+    let cy = (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4.0;
+    let centroid = Vec2::new(cx, cy);
+
+    if !crate::clip::point_in_polygon(&centroid, &boundary.outer) {
+        return false;
+    }
+    for hole in &boundary.holes {
+        if crate::clip::point_in_polygon(&centroid, hole) {
+            return false;
+        }
+    }
+
+    // No quad edge may cross any boundary edge.
+    let all_contours = std::iter::once(&boundary.outer).chain(boundary.holes.iter());
+    for contour in all_contours {
+        let n = contour.len();
+        for i in 0..4 {
+            let a = corners[i];
+            let b = corners[(i + 1) % 4];
+            for j in 0..n {
+                let c = contour[j];
+                let d = contour[(j + 1) % n];
+                if crate::clip::segments_intersect(a, b, c, d) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Place extension stalls greedily, prioritised by source primary spine
+/// length (longest primary spine's extensions first). Each candidate stall
+/// is checked against all already-placed stalls (primary + earlier
+/// extensions) and silently skipped on conflict, avoiding the
+/// mutual-removal behaviour of remove_conflicting_stalls.
+fn place_extension_stalls_greedy(
+    ext_spines_with_src: &[(SpineSegment, usize)],
+    primary_spines: &[SpineSegment],
+    primary_stalls: &[(StallQuad, usize)],
+    faces: &[Vec<Vec<Vec2>>],
+    boundary: &Polygon,
+    params: &ParkingParams,
+    debug: &DebugToggles,
+) -> Vec<(StallQuad, usize)> {
+    use crate::clip::polygons_overlap;
+
+    // Sort by source primary spine length (longest first), breaking ties
+    // by extension spine length.
+    let mut ordered: Vec<(usize, f64, f64)> = ext_spines_with_src
+        .iter()
+        .enumerate()
+        .map(|(i, (ext, src_idx))| {
+            let src = &primary_spines[*src_idx];
+            let src_len = (src.end - src.start).length();
+            let ext_len = (ext.end - ext.start).length();
+            (i, src_len, ext_len)
+        })
+        .collect();
+    ordered.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap()
+        .then(b.2.partial_cmp(&a.2).unwrap()));
+
+    // Seed the occupied set with shrunk primary stall polygons, grouped by face.
+    let mut occupied_by_face: std::collections::HashMap<usize, Vec<Vec<Vec2>>> =
+        std::collections::HashMap::new();
+    for (stall, face_idx) in primary_stalls {
+        let shrunk = shrink_toward_centroid(&stall.corners, 0.1);
+        occupied_by_face.entry(*face_idx).or_default().push(shrunk);
+    }
+
+    let mut result = Vec::new();
+
+    for (spine_idx, _, _) in ordered {
+        let (seg, _src_idx) = &ext_spines_with_src[spine_idx];
+
+        // Place stalls on this extension spine.
+        let candidates = place_stalls_on_spines(std::slice::from_ref(seg), params);
+
+        for (mut quad, face_idx, _) in candidates {
+            quad.kind = StallKind::Extension;
+
+            // Face containment: boolean intersect stall with its face.
+            // Reject if less than 98% of the stall area is inside.
+            if debug.stall_face_clipping && face_idx < faces.len() && !faces[face_idx].is_empty() {
+                if !quad_contained_in_face(&quad.corners, &faces[face_idx], 0.98) {
+                    continue;
+                }
+            }
+
+            // Boundary containment: centroid inside outer, no stall edge
+            // crosses outer or hole edges.
+            if debug.boundary_clipping {
+                if !quad_contained_in_boundary(&quad.corners, boundary) {
+                    continue;
+                }
+            }
+
+            // Aisle access: cast rays from the stall's entrance corners
+            // (p2, p3) in the stall depth direction (p0->p2, p1->p3).
+            // Both rays must hit the same face boundary edge -- ensuring
+            // the stall entrance faces a single straight aisle edge, not
+            // a corner where edges meet.
+            if face_idx < faces.len() && !faces[face_idx].is_empty() {
+                let dir_a = (quad.corners[2] - quad.corners[0]).normalize();
+                let dir_b = (quad.corners[3] - quad.corners[1]).normalize();
+                let hit_a = ray_hit_face_edge(quad.corners[2], dir_a, &faces[face_idx]);
+                let hit_b = ray_hit_face_edge(quad.corners[3], dir_b, &faces[face_idx]);
+                let valid = match (hit_a, hit_b) {
+                    (Some((ci_a, ei_a)), Some((ci_b, ei_b))) => ci_a == ci_b && ei_a == ei_b,
+                    _ => false,
+                };
+                if !valid {
+                    continue;
+                }
+            }
+
+            // Conflict check against all occupied stalls in the same face.
+            let shrunk = shrink_toward_centroid(&quad.corners, 0.1);
+            let dominated = occupied_by_face
+                .get(&face_idx)
+                .map_or(false, |occ| occ.iter().any(|p| polygons_overlap(&shrunk, p)));
+            if dominated {
+                continue;
+            }
+
+            // Accept this stall — add to occupied set.
+            occupied_by_face.entry(face_idx).or_default().push(shrunk);
+            result.push((quad, face_idx));
+        }
+    }
+
+    result
+}
+
+/// Shrink polygon vertices toward centroid by a fixed distance (for overlap testing).
+fn shrink_toward_centroid(corners: &[Vec2], amount: f64) -> Vec<Vec2> {
+    let n = corners.len() as f64;
+    let cx = corners.iter().map(|c| c.x).sum::<f64>() / n;
+    let cy = corners.iter().map(|c| c.y).sum::<f64>() / n;
+    let centroid = Vec2::new(cx, cy);
+    corners
+        .iter()
+        .map(|c| {
+            let d = *c - centroid;
+            let len = d.length();
+            if len < 1e-12 {
+                return *c;
+            }
+            *c - d * (amount / len)
+        })
+        .collect()
 }
 
 /// Generate stalls from positive-space face extraction + per-edge spine shifting.
@@ -1547,19 +1912,47 @@ pub fn generate_from_spines(
         .filter(|(s, _, _)| surviving.contains(&stall_key(s)))
         .collect();
 
-    let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
+    // --- Spine extension phase ---
+    // Extend each spine colinearly to the face boundary and place additional
+    // stalls on the extensions. Stalls are placed greedily in longest-spine-
+    // first order: each candidate is checked against all already-placed stalls
+    // (primary + earlier extensions) and silently skipped on conflict.
+    let (ext_stalls_tagged, ext_spines) = if debug.spine_extensions {
+        let ext_spines_with_src = extend_spines_to_faces(&all_spines, &faces, effective_depth, params);
+        let ext_tagged = place_extension_stalls_greedy(
+            &ext_spines_with_src, &all_spines, &tagged_stalls, &faces, boundary, params, debug,
+        );
+        let ext_spines: Vec<SpineSegment> = ext_spines_with_src.into_iter().map(|(s, _)| s).collect();
+        (ext_tagged, ext_spines)
+    } else {
+        (vec![], vec![])
+    };
+
+    // Merge primary and extension stalls.
+    let mut all_tagged = tagged_stalls;
+    all_tagged.extend(ext_stalls_tagged);
+
+    let all_stalls: Vec<StallQuad> = all_tagged.iter().map(|(s, _)| s.clone()).collect();
     let strip_envelopes = build_strip_envelopes(&surviving_3);
 
-    let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, &strip_envelopes, 10.0);
+    let islands = compute_islands(&faces, &all_tagged, &all_stalls, &strip_envelopes, 10.0);
 
-    let spine_lines: Vec<SpineLine> = all_spines
+    // Build spine lines for visualization: primary + extension.
+    let mut spine_lines: Vec<SpineLine> = all_spines
         .iter()
         .map(|s| SpineLine {
             start: s.start,
             end: s.end,
             normal: s.outward_normal,
+            is_extension: false,
         })
         .collect();
+    spine_lines.extend(ext_spines.iter().map(|s| SpineLine {
+        start: s.start,
+        end: s.end,
+        normal: s.outward_normal,
+        is_extension: true,
+    }));
 
     let face_list: Vec<Face> = faces
         .iter()

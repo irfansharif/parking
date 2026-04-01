@@ -95,7 +95,7 @@ pub fn polygons_overlap(a: &[Vec2], b: &[Vec2]) -> bool {
 
 /// Test whether two line segments (p0-p1) and (q0-q1) properly intersect
 /// (cross each other, not just touch at endpoints).
-fn segments_intersect(p0: Vec2, p1: Vec2, q0: Vec2, q1: Vec2) -> bool {
+pub fn segments_intersect(p0: Vec2, p1: Vec2, q0: Vec2, q1: Vec2) -> bool {
     let d1 = (q1 - q0).cross(p0 - q0);
     let d2 = (q1 - q0).cross(p1 - q0);
     let d3 = (p1 - p0).cross(q0 - p0);

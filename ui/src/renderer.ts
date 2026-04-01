@@ -150,8 +150,9 @@ export class Renderer {
 
       // 5. Stalls
       if (state.layers.stalls) {
+        const highlightExt = state.layers.extensionStalls;
         for (const stall of state.layout.stalls) {
-          this.drawStall(stall);
+          this.drawStall(stall, highlightExt);
         }
       }
 
@@ -364,7 +365,7 @@ export class Renderer {
     }
   }
 
-  private drawStall(stall: StallQuad): void {
+  private drawStall(stall: StallQuad, highlightExtensions = true): void {
     const { ctx } = this;
     const colors: Record<string, { fill: string; stroke: string }> = {
       Standard: {
@@ -379,8 +380,13 @@ export class Renderer {
         fill: "rgba(100, 200, 100, 0.4)",
         stroke: "rgba(80, 180, 80, 0.7)",
       },
+      Extension: {
+        fill: "rgba(255, 160, 80, 0.35)",
+        stroke: "rgba(230, 120, 50, 0.65)",
+      },
     };
-    const c = colors[stall.kind] || colors.Standard;
+    const effectiveKind = (stall.kind === "Extension" && !highlightExtensions) ? "Standard" : stall.kind;
+    const c = colors[effectiveKind] || colors.Standard;
     ctx.beginPath();
     ctx.moveTo(stall.corners[0].x, stall.corners[0].y);
     for (let i = 1; i < 4; i++) {
@@ -406,13 +412,13 @@ export class Renderer {
     const color = `hsla(${hue}, 100%, 70%, 0.95)`;
     const colorFaint = `hsla(${hue}, 100%, 70%, 0.8)`;
 
-    // Draw the spine line itself — dashed.
+    // Draw the spine line — dashed for primary, dotted for extensions.
     ctx.beginPath();
     ctx.moveTo(spine.start.x, spine.start.y);
     ctx.lineTo(spine.end.x, spine.end.y);
     ctx.strokeStyle = color;
     ctx.lineWidth = 0.8;
-    ctx.setLineDash([3, 2]);
+    ctx.setLineDash(spine.is_extension ? [1, 2] : [3, 2]);
     ctx.stroke();
     ctx.setLineDash([]);
 
