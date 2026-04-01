@@ -689,7 +689,7 @@ fn compute_face_spines(
 
     // Use tagged classification when available and face_simplification is off
     // (simplification changes vertex count, breaking tag alignment).
-    let use_tags = tagged.is_some() && debug.use_tagged_classification && !debug.face_simplification;
+    let use_tags = tagged.is_some() && !debug.face_simplification;
     if use_tags {
         let tf = tagged.unwrap();
         // Build list of (contour, tagged_edges) pairs to classify.
@@ -1941,7 +1941,7 @@ fn place_extension_stalls_greedy(
                     (Some((ci_a, ei_a)), Some((ci_b, ei_b))) => {
                         if ci_a != ci_b || ei_a != ei_b { continue; }
                         // Reject extensions aimed at wall edges.
-                        if debug.edge_provenance && face_idx < tagged_faces.len() {
+                        if face_idx < tagged_faces.len() {
                             let tf = &tagged_faces[face_idx];
                             let edges = if ci_a == 0 { &tf.edges } else if ci_a - 1 < tf.hole_edges.len() { &tf.hole_edges[ci_a - 1] } else { &tf.edges };
                             // Find the tagged edge closest to the hit edge midpoint.
@@ -2064,19 +2064,15 @@ pub fn generate_from_spines(
     // Tag each face edge with its source corridor/wall for provenance.
     // Indexed by face_idx (parallel to `faces`); empty/small faces get a
     // default empty TaggedFace.
-    let tagged_faces: Vec<TaggedFace> = if debug.edge_provenance {
-        faces.iter()
-            .map(|shape| {
-                if !shape.is_empty() && shape[0].len() >= 3 {
-                    tag_face_edges(shape, &merged_corridors, &dedup_corridors_with_flags, &two_way_oriented_dirs)
-                } else {
-                    TaggedFace { edges: vec![], hole_edges: vec![], is_boundary: true, wall_edge_indices: vec![] }
-                }
-            })
-            .collect()
-    } else {
-        vec![]
-    };
+    let tagged_faces: Vec<TaggedFace> = faces.iter()
+        .map(|shape| {
+            if !shape.is_empty() && shape[0].len() >= 3 {
+                tag_face_edges(shape, &merged_corridors, &dedup_corridors_with_flags, &two_way_oriented_dirs)
+            } else {
+                TaggedFace { edges: vec![], hole_edges: vec![], is_boundary: true, wall_edge_indices: vec![] }
+            }
+        })
+        .collect();
 
     // Collect spines from all faces, then merge collinear segments across
     // face boundaries so stalls flow continuously along shared aisle edges.
@@ -2099,7 +2095,7 @@ pub fn generate_from_spines(
             }
             // Build edge weights matching the spine computation: aisle-facing
             // edges shrink (1.0), boundary edges stay fixed (0.0).
-            let debug_weights: Vec<f64> = if debug.use_tagged_classification && face_idx < tagged_faces.len() && !debug.face_simplification {
+            let debug_weights: Vec<f64> = if face_idx < tagged_faces.len() && !debug.face_simplification {
                 let tf = &tagged_faces[face_idx];
                 // Match each normalized contour edge to its closest tagged edge.
                 let mut weights = Vec::new();
@@ -2160,12 +2156,8 @@ pub fn generate_from_spines(
                 sources,
             });
         }
-        let face_is_boundary = if debug.use_tagged_boundary && face_idx < tagged_faces.len() {
-            tagged_faces[face_idx].is_boundary
-        } else {
-            is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags)
-        };
-        let tagged_ref = if !tagged_faces.is_empty() { Some(&tagged_faces[face_idx]) } else { None };
+        let face_is_boundary = tagged_faces[face_idx].is_boundary;
+        let tagged_ref = Some(&tagged_faces[face_idx]);
         let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors_with_flags, face_is_boundary, params, debug, &two_way_oriented_dirs, tagged_ref);
         if !face_spines.is_empty() {
             faces_with_spines.insert(face_idx);
@@ -2236,16 +2228,7 @@ pub fn generate_from_spines(
                 .collect()
         };
         // Build per-face boundary flags.
-        let face_boundary: Vec<bool> = if debug.use_tagged_boundary && !tagged_faces.is_empty() {
-            tagged_faces.iter().map(|tf| tf.is_boundary).collect()
-        } else {
-            faces.iter()
-                .map(|shape| {
-                    !shape.is_empty() && shape[0].len() >= 3
-                        && is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags)
-                })
-                .collect()
-        };
+        let face_boundary: Vec<bool> = tagged_faces.iter().map(|tf| tf.is_boundary).collect();
         remove_conflicting_stalls(tagged_stalls, &stall_spine_lengths, &face_boundary)
     } else {
         tagged_stalls
@@ -2315,12 +2298,8 @@ pub fn generate_from_spines(
         .iter()
         .enumerate()
         .filter(|(_, shape)| !shape.is_empty() && shape[0].len() >= 3)
-        .map(|(face_idx, shape)| {
-            let ib = if debug.use_tagged_boundary && face_idx < tagged_faces.len() {
-                tagged_faces[face_idx].is_boundary
-            } else {
-                is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags)
-            };
+        .map(|(face_idx, _shape)| {
+            let tf = &tagged_faces[face_idx];
             let source_label = |e: &FaceEdge| -> String {
                 match &e.source {
                     EdgeSource::Wall => "wall".to_string(),
@@ -2328,25 +2307,18 @@ pub fn generate_from_spines(
                     EdgeSource::Aisle { interior: false, .. } => "perimeter".to_string(),
                 }
             };
-            let (contour, holes, edge_sources, hole_edge_sources) = if debug.edge_provenance && face_idx < tagged_faces.len() {
-                let tf = &tagged_faces[face_idx];
-                // Use tagged edge start points as contour — accounts for split edges.
-                let c: Vec<Vec2> = tf.edges.iter().map(|e| e.start).collect();
-                let es: Vec<String> = tf.edges.iter().map(&source_label).collect();
-                let h: Vec<Vec<Vec2>> = tf.hole_edges.iter()
-                    .map(|hole| hole.iter().map(|e| e.start).collect())
-                    .collect();
-                let hes: Vec<Vec<String>> = tf.hole_edges.iter()
-                    .map(|hole| hole.iter().map(&source_label).collect())
-                    .collect();
-                (c, h, es, hes)
-            } else {
-                (shape[0].clone(), shape[1..].iter().cloned().collect(), vec![], vec![])
-            };
+            let contour: Vec<Vec2> = tf.edges.iter().map(|e| e.start).collect();
+            let edge_sources: Vec<String> = tf.edges.iter().map(&source_label).collect();
+            let holes: Vec<Vec<Vec2>> = tf.hole_edges.iter()
+                .map(|hole| hole.iter().map(|e| e.start).collect())
+                .collect();
+            let hole_edge_sources: Vec<Vec<String>> = tf.hole_edges.iter()
+                .map(|hole| hole.iter().map(&source_label).collect())
+                .collect();
             Face {
                 contour,
                 holes,
-                is_boundary: ib,
+                is_boundary: tf.is_boundary,
                 edge_sources,
                 hole_edge_sources,
             }

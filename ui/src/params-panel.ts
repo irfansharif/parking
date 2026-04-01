@@ -206,8 +206,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       toggles: [
         { key: "face_extraction", label: "Face Extraction" },
         { key: "edge_provenance", label: "Edge Provenance" },
-        { key: "use_tagged_boundary", label: "Use Tagged Boundary" },
-        { key: "use_tagged_classification", label: "Use Tagged Classification" },
       ],
     },
     {

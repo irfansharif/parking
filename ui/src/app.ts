@@ -123,8 +123,6 @@ export class App {
         hole_filtering: false,
         face_extraction: true,
         edge_provenance: true,
-        use_tagged_boundary: true,
-        use_tagged_classification: true,
         face_simplification: false,
         edge_classification: true,
         spine_clipping: true,

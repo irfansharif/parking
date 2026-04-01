@@ -365,14 +365,6 @@ pub struct DebugToggles {
     #[serde(default = "default_true")]
     pub edge_provenance: bool,
 
-    // Use tagged edges for boundary classification instead of distance matching
-    #[serde(default = "default_true")]
-    pub use_tagged_boundary: bool,
-
-    // Use tagged edges for edge classification in compute_face_spines
-    #[serde(default = "default_true")]
-    pub use_tagged_classification: bool,
-
     // Skeleton debug visualization
     #[serde(default)]
     pub skeleton_debug: bool,
@@ -398,8 +390,6 @@ impl Default for DebugToggles {
             boundary_clipping: true,
             conflict_removal: true,
             edge_provenance: true,
-            use_tagged_boundary: true,
-            use_tagged_classification: true,
             skeleton_debug: false,
         }
     }
