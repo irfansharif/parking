@@ -1454,6 +1454,10 @@ fn extend_spines_to_faces(
         let orig_t0 = extend_dist / ext_total + overlap_t;
         let orig_t1 = (extend_dist + spine_len) / ext_total - overlap_t;
 
+        // End margin: shorten each extension's outer end (the face-boundary
+        // side) so the last stall doesn't create a thin sliver island.
+        let end_margin_t = (params.stall_width * 0.6) / ext_total;
+
         for &(st0, st1) in &spine_clips {
             for &(ot0, ot1) in &offset_clips {
                 let t0 = st0.max(ot0);
@@ -1463,10 +1467,12 @@ fn extend_spines_to_faces(
                 }
 
                 // Extract portions outside the (shrunk) original spine range.
-                // Left tail: [t0, min(t1, orig_t0)]
+                // Outer ends are pulled inward by end_margin_t to avoid
+                // thin sliver islands at face boundaries.
+                // Left tail: [t0 + margin, min(t1, orig_t0)]
                 if t0 < orig_t0 - 1e-9 {
                     let tail_end = t1.min(orig_t0);
-                    let s = ext_start + ext_vec * t0;
+                    let s = ext_start + ext_vec * (t0 + end_margin_t);
                     let e = ext_start + ext_vec * tail_end;
                     if (e - s).length() > 1.0 {
                         extensions.push((SpineSegment {
@@ -1479,11 +1485,11 @@ fn extend_spines_to_faces(
                         }, src_idx));
                     }
                 }
-                // Right tail: [max(t0, orig_t1), t1]
+                // Right tail: [max(t0, orig_t1), t1 - margin]
                 if t1 > orig_t1 + 1e-9 {
                     let tail_start = t0.max(orig_t1);
                     let s = ext_start + ext_vec * tail_start;
-                    let e = ext_start + ext_vec * t1;
+                    let e = ext_start + ext_vec * (t1 - end_margin_t);
                     if (e - s).length() > 1.0 {
                         extensions.push((SpineSegment {
                             start: s,
