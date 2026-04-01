@@ -107,6 +107,8 @@ export interface DebugToggles {
   conflict_removal: boolean;
   // Short segment filter
   short_segment_filter: boolean;
+  // Edge provenance
+  edge_provenance: boolean;
   // Skeleton debug visualization
   skeleton_debug: boolean;
 }
