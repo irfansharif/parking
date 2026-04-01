@@ -234,6 +234,14 @@ pub struct ParkingParams {
     pub cross_aisle_max_run: f64,
 }
 
+impl ParkingParams {
+    /// Stall pitch: spacing between stall centers along a spine.
+    pub fn stall_pitch(&self) -> f64 {
+        let sin_a = self.stall_angle_deg.to_radians().sin();
+        if sin_a.abs() > 1e-12 { self.stall_width / sin_a } else { self.stall_width }
+    }
+}
+
 impl Default for ParkingParams {
     fn default() -> Self {
         Self {
@@ -298,6 +306,27 @@ pub struct SpineSegment {
     pub is_interior: bool,
     /// Travel direction of the adjacent aisle. `None` for two-way or perimeter edges.
     pub travel_dir: Option<Vec2>,
+}
+
+impl SpineSegment {
+    /// Direction oriented so the left normal aligns with `outward_normal`.
+    pub fn oriented_dir(&self) -> Vec2 {
+        let d = (self.end - self.start).normalize();
+        let left = Vec2::new(-d.y, d.x);
+        if left.dot(self.outward_normal) > 0.0 { d } else { d * -1.0 }
+    }
+
+    /// Start/end oriented so fill_strip's side=+1 places stalls toward
+    /// the outward_normal direction.
+    pub fn oriented_endpoints(&self) -> (Vec2, Vec2) {
+        let d = (self.end - self.start).normalize();
+        let left = Vec2::new(-d.y, d.x);
+        if left.dot(self.outward_normal) > 0.0 {
+            (self.start, self.end)
+        } else {
+            (self.end, self.start)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

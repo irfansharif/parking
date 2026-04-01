@@ -1352,23 +1352,39 @@ fn compute_centering_shift(proj_start: f64, edge_len: f64, pitch: f64) -> f64 {
 /// spine position in the input slice). When `extensions` is provided,
 /// centering uses the full projected range (primary + extensions) for
 /// each spine instead of just the primary length.
+/// Compute fill_strip parameters for a spine segment.
+fn spine_fill_params(seg: &SpineSegment) -> (Vec2, Vec2, Option<f64>, bool, f64) {
+    let (start, end) = seg.oriented_endpoints();
+    let oriented_dir = (end - start).normalize();
+    let angle_override = if seg.is_interior { None } else { Some(90.0) };
+    let flip_angle = seg.travel_dir.map_or(false, |td| oriented_dir.dot(td) > 0.0);
+    // Stagger grid by half a pitch for one-way spines whose outward_normal
+    // points to the right of the travel direction (cross product >= 0).
+    let grid_offset = seg.travel_dir.map_or(0.0, |td| {
+        if td.cross(seg.outward_normal) >= 0.0 { 0.5 } else { 0.0 }
+    });
+    (start, end, angle_override, flip_angle, grid_offset)
+}
+
+/// Place stalls on a spine with the given centering shift.
+fn fill_spine(seg: &SpineSegment, params: &ParkingParams, centering: f64) -> Vec<StallQuad> {
+    let (start, end, angle_override, flip_angle, grid_offset) = spine_fill_params(seg);
+    fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle, grid_offset, centering)
+}
+
 fn place_stalls_on_spines(
     spines: &[SpineSegment],
     params: &ParkingParams,
     center: bool,
     extensions: Option<&[(SpineSegment, usize)]>,
 ) -> (Vec<(StallQuad, usize, usize)>, Vec<f64>) {
-    let angle_rad = params.stall_angle_deg.to_radians();
-    let sin_a = angle_rad.sin();
-    let stall_pitch = if sin_a.abs() > 1e-12 { params.stall_width / sin_a } else { params.stall_width };
+    let stall_pitch = params.stall_pitch();
 
-    // Pre-compute the full projected range (min, max) along each spine's
-    // oriented direction, incorporating any extensions.
+    // Pre-compute the full projected range along each spine's oriented
+    // direction, incorporating any extensions.
     let extended_ranges: Vec<Option<(f64, f64)>> = spines.iter().enumerate().map(|(i, seg)| {
         let exts = extensions?;
-        let dir = (seg.end - seg.start).normalize();
-        let left = Vec2::new(-dir.y, dir.x);
-        let oriented = if left.dot(seg.outward_normal) > 0.0 { dir } else { dir * -1.0 };
+        let oriented = seg.oriented_dir();
         let p0 = seg.start.dot(oriented);
         let p1 = seg.end.dot(oriented);
         let mut lo = p0.min(p1);
@@ -1397,73 +1413,26 @@ fn place_stalls_on_spines(
         .collect();
     order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
-    // Track the centering shift used by each processed spine. When a
-    // new spine has an opposing match (collinear + opposite normals),
-    // it reuses the shift (or its negation for opposite edge dirs)
-    // instead of centering independently.
-    // Tuple: (spine_idx, oriented_edge_dir, centering_shift).
+    // Track centering shifts. When a spine has an opposing match
+    // (collinear + opposite normals), it grid-locks to the existing
+    // shift instead of centering independently.
     let mut claimed: Vec<(usize, Vec2, f64)> = Vec::new();
     let mut shifts = vec![0.0_f64; spines.len()];
 
     let mut stalls = Vec::new();
-    for (spine_idx, _) in &order {
-        let spine_idx = *spine_idx;
+    for &(spine_idx, _) in &order {
         let seg = &spines[spine_idx];
         let edge_len = (seg.end - seg.start).length();
-        let left_normal = {
-            let d = (seg.end - seg.start).normalize();
-            Vec2::new(-d.y, d.x)
-        };
-        let dot = left_normal.dot(seg.outward_normal);
-
-        // Orient so that fill_strip's side=+1 places stalls toward
-        // the outward_normal direction.
-        let (start, end) = if dot > 0.0 {
-            (seg.start, seg.end)
-        } else {
-            (seg.end, seg.start)
-        };
-        let oriented_dir = (end - start).normalize();
-
-        let angle_override = if seg.is_interior { None } else { Some(90.0) };
-        let flip_angle = match &seg.travel_dir {
-            None => false,
-            Some(td) => oriented_dir.dot(*td) > 0.0,
-        };
-        // Stagger grid by half a pitch for one-way spines whose
-        // outward_normal points to the right of the travel direction
-        // (cross product >= 0). This offsets the one-way spine relative
-        // to the opposing spine in the same face, whether that opposing
-        // spine is two-way (offset 0.0) or one-way with the opposite
-        // cross sign (also offset 0.0). The result: stalls interleave
-        // instead of overlapping whenever same-direction lean would
-        // cause conflict.
-        let grid_offset = match &seg.travel_dir {
-            None => 0.0,
-            Some(td) => {
-                if td.cross(seg.outward_normal) >= 0.0 { 0.5 } else { 0.0 }
-            }
-        };
-
-        // Boundary spines use 90° override, so compute their pitch separately.
-        let eff_pitch = if angle_override.is_some() {
-            params.stall_width // sin(90°) = 1
-        } else {
-            stall_pitch
-        };
-
+        let oriented_dir = seg.oriented_dir();
+        let (start, _, angle_override, _, _) = spine_fill_params(seg);
+        let eff_pitch = if angle_override.is_some() { params.stall_width } else { stall_pitch };
         let proj_start = start.dot(oriented_dir);
 
-        // Check if an opposing spine has already been processed.
-        // Opposing = collinear (parallel directions) + opposite normals.
         let centering = if !center {
             0.0
         } else if let Some(shift) = find_opposing_shift(&claimed, spines, spine_idx, oriented_dir, eff_pitch, params.aisle_width + 2.0 * params.stall_depth) {
             shift
         } else {
-            // Use the full extended range for centering when available,
-            // so stalls are centered across the whole extent (primary +
-            // extensions), not just the primary spine.
             let (center_proj, center_len) = match &extended_ranges[spine_idx] {
                 Some((lo, hi)) => (*lo, hi - lo),
                 None => (proj_start, edge_len),
@@ -1474,7 +1443,7 @@ fn place_stalls_on_spines(
         claimed.push((spine_idx, oriented_dir, centering));
         shifts[spine_idx] = centering;
 
-        for quad in fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle, grid_offset, centering) {
+        for quad in fill_spine(seg, params, centering) {
             stalls.push((quad, seg.face_idx, spine_idx));
         }
     }
@@ -1503,6 +1472,12 @@ fn find_opposing_shift(
         let other = &spines[other_idx];
         let other_dir = (other.end - other.start).normalize();
 
+        // Only grid-lock spines of the same type: interior↔interior or
+        // boundary↔boundary. Boundary spines use 90° stalls with a
+        // different pitch, so cross-type grid-locking misaligns the grid.
+        if seg.is_interior != other.is_interior {
+            continue;
+        }
         // Collinear: directions parallel (within ~8°).
         if dir.dot(other_dir).abs() < 0.99 {
             continue;
@@ -1532,20 +1507,9 @@ fn find_opposing_shift(
 }
 
 /// Compute the centering shift for an extension spine that should be
-/// contiguous with its source primary spine. The extension is collinear
-/// with the source but may have a different oriented direction after the
-/// standard orientation step.
-fn compute_extension_shift(ext: &SpineSegment, src: &SpineSegment, src_shift: f64, params: &ParkingParams) -> f64 {
-    let sin_a = params.stall_angle_deg.to_radians().sin();
-    let pitch = if sin_a.abs() > 1e-12 { params.stall_width / sin_a } else { params.stall_width };
-    let oriented_dir = |seg: &SpineSegment| -> Vec2 {
-        let d = (seg.end - seg.start).normalize();
-        let left = Vec2::new(-d.y, d.x);
-        if left.dot(seg.outward_normal) > 0.0 { d } else { d * -1.0 }
-    };
-    let src_dir = oriented_dir(src);
-    let ext_dir = oriented_dir(ext);
-    if src_dir.dot(ext_dir) > 0.0 {
+/// contiguous with its source primary spine.
+fn compute_extension_shift(ext: &SpineSegment, src: &SpineSegment, src_shift: f64, pitch: f64) -> f64 {
+    if src.oriented_dir().dot(ext.oriented_dir()) > 0.0 {
         src_shift
     } else {
         (-src_shift).rem_euclid(pitch)
@@ -1844,13 +1808,7 @@ fn extend_spines_to_faces(
     // the extension segment one pitch into the primary spine ensures the
     // first extension grid cell bridges the gap. remove_extension_conflicts
     // discards duplicates in the overlap zone afterward.
-    let angle_rad = params.stall_angle_deg.to_radians();
-    let sin_a = angle_rad.sin();
-    let stall_pitch = if sin_a.abs() > 1e-12 {
-        params.stall_width / sin_a
-    } else {
-        params.stall_width
-    };
+    let stall_pitch = params.stall_pitch();
 
     for (src_idx, spine) in spines.iter().enumerate() {
         if spine.face_idx >= faces.len() {
@@ -2116,27 +2074,10 @@ fn place_extension_stalls_greedy(
     for (spine_idx, _, _) in ordered {
         let (seg, src_idx) = &ext_spines_with_src[spine_idx];
 
-        // Place stalls on this extension spine using the source primary
-        // spine's centering shift so extension stalls are contiguous.
-        let ext_shift = compute_extension_shift(seg, &primary_spines[*src_idx], primary_shifts[*src_idx], params);
-        let candidates: Vec<(StallQuad, usize, usize)> = {
-            let ext_dir = (seg.end - seg.start).normalize();
-            let left_normal = Vec2::new(-ext_dir.y, ext_dir.x);
-            let dot = left_normal.dot(seg.outward_normal);
-            let (start, end) = if dot > 0.0 { (seg.start, seg.end) } else { (seg.end, seg.start) };
-            let oriented_dir = (end - start).normalize();
-            let angle_override = if seg.is_interior { None } else { Some(90.0) };
-            let flip_angle = match &seg.travel_dir {
-                None => false,
-                Some(td) => oriented_dir.dot(*td) > 0.0,
-            };
-            let grid_offset = match &seg.travel_dir {
-                None => 0.0,
-                Some(td) => if td.cross(seg.outward_normal) >= 0.0 { 0.5 } else { 0.0 },
-            };
-            fill_strip(start, end, 1.0, 0.0, params, angle_override, flip_angle, grid_offset, ext_shift)
-                .into_iter().map(|q| (q, seg.face_idx, 0)).collect()
-        };
+        let ext_shift = compute_extension_shift(seg, &primary_spines[*src_idx], primary_shifts[*src_idx], params.stall_pitch());
+        let candidates: Vec<(StallQuad, usize, usize)> =
+            fill_spine(seg, params, ext_shift)
+                .into_iter().map(|q| (q, seg.face_idx, 0)).collect();
 
         for (mut quad, face_idx, _) in candidates {
             quad.kind = StallKind::Extension;
