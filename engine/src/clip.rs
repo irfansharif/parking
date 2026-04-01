@@ -105,12 +105,20 @@ pub fn segments_intersect(p0: Vec2, p1: Vec2, q0: Vec2, q1: Vec2) -> bool {
 }
 
 
-/// Remove both stalls in any pair that geometrically overlap within the
-/// same face. Uses a spatial grid for O(n) average-case performance and
-/// a small inward shrink to avoid false positives from stalls that merely
-/// share an edge (adjacent stalls along the same spine). Stalls in
-/// different faces are separated by corridors and cannot truly conflict.
-pub fn remove_conflicting_stalls(stalls: Vec<(StallQuad, usize)>) -> Vec<(StallQuad, usize)> {
+/// Remove stalls that geometrically overlap within the same face.
+///
+/// For boundary faces (or when no spine length info is provided), both
+/// stalls in a conflicting pair are removed. For interior faces, the
+/// stall from the shorter spine is removed, keeping the dominant side.
+///
+/// `spine_lengths` maps each stall index to its source spine length.
+/// `boundary_faces` indicates which face indices are boundary faces.
+/// Both slices must have the same length as `stalls`.
+pub fn remove_conflicting_stalls(
+    stalls: Vec<(StallQuad, usize)>,
+    spine_lengths: &[f64],
+    boundary_faces: &[bool],
+) -> Vec<(StallQuad, usize)> {
     let shrunk: Vec<Vec<Vec2>> = stalls
         .iter()
         .map(|(s, _)| shrink_polygon(&s.corners, 0.1))
@@ -175,8 +183,22 @@ pub fn remove_conflicting_stalls(stalls: Vec<(StallQuad, usize)>) -> Vec<(StallQ
                         continue;
                     }
                     if polygons_overlap(&shrunk[i], &shrunk[j]) {
-                        conflicted[i] = true;
-                        conflicted[j] = true;
+                        let face_i = stalls[i].1;
+                        let is_boundary = face_i < boundary_faces.len() && boundary_faces[face_i];
+                        if is_boundary || spine_lengths.is_empty() {
+                            // Boundary face: remove both.
+                            conflicted[i] = true;
+                            conflicted[j] = true;
+                        } else {
+                            // Interior face: keep the stall from the longer spine.
+                            let len_i = if i < spine_lengths.len() { spine_lengths[i] } else { 0.0 };
+                            let len_j = if j < spine_lengths.len() { spine_lengths[j] } else { 0.0 };
+                            if len_i >= len_j {
+                                conflicted[j] = true;
+                            } else {
+                                conflicted[i] = true;
+                            }
+                        }
                     }
                 }
             }

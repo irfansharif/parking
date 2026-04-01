@@ -1340,23 +1340,16 @@ fn compute_islands(
 
         // Faces with holes subtract ALL individual stalls (some stalls
         // from adjacent faces physically overlap this face). Simple
-        // faces use strip envelopes (hexagons covering each spine's
-        // stalls) to avoid inter-stall zigzag gaps appearing as islands,
-        // plus individual extension stalls (which aren't in envelopes).
+        // faces use strip envelopes (convex hulls covering each spine's
+        // stalls, including extensions) to avoid inter-stall zigzag gaps
+        // appearing as islands.
         let clip: Vec<Vec<[f64; 2]>> = if shape.len() > 1 {
             all_stall_paths.clone()
         } else {
-            let mut paths: Vec<Vec<[f64; 2]>> = strip_envelopes.iter()
+            strip_envelopes.iter()
                 .filter(|(_, fi)| *fi == face_idx)
                 .map(|(env, _)| to_path(env))
-                .collect();
-            // Add individual extension stalls for this face.
-            for (stall, fi) in _tagged_stalls {
-                if *fi == face_idx && matches!(stall.kind, StallKind::Extension) {
-                    paths.push(to_path(&stall.corners));
-                }
-            }
-            paths
+                .collect()
         };
 
         if clip.is_empty() {
@@ -1640,7 +1633,7 @@ fn place_extension_stalls_greedy(
     _merged_corridors: &[Vec<Vec<Vec2>>],
     params: &ParkingParams,
     debug: &DebugToggles,
-) -> Vec<(StallQuad, usize)> {
+) -> Vec<(StallQuad, usize, usize)> {
     use crate::clip::polygons_overlap;
 
     // Sort by source primary spine length (longest first), breaking ties
@@ -1669,7 +1662,7 @@ fn place_extension_stalls_greedy(
     let mut result = Vec::new();
 
     for (spine_idx, _, _) in ordered {
-        let (seg, _src_idx) = &ext_spines_with_src[spine_idx];
+        let (seg, src_idx) = &ext_spines_with_src[spine_idx];
 
         // Place stalls on this extension spine.
         let candidates = place_stalls_on_spines(std::slice::from_ref(seg), params);
@@ -1726,7 +1719,7 @@ fn place_extension_stalls_greedy(
 
             // Accept this stall — add to occupied set.
             occupied_by_face.entry(face_idx).or_default().push(shrunk);
-            result.push((quad, face_idx));
+            result.push((quad, face_idx, *src_idx));
         }
     }
 
@@ -1908,7 +1901,30 @@ pub fn generate_from_spines(
         tagged_stalls
     };
     let tagged_stalls = if debug.conflict_removal {
-        remove_conflicting_stalls(tagged_stalls)
+        // Build per-stall spine lengths by matching surviving stalls back
+        // to their spine_idx via corner identity.
+        let stall_spine_lengths: Vec<f64> = {
+            let key_to_spine_len: std::collections::HashMap<[u64; 8], f64> = tagged_stalls_3
+                .iter()
+                .map(|(s, _, si)| {
+                    let spine = &all_spines[*si];
+                    (stall_key(s), (spine.end - spine.start).length())
+                })
+                .collect();
+            tagged_stalls
+                .iter()
+                .map(|(s, _)| *key_to_spine_len.get(&stall_key(s)).unwrap_or(&0.0))
+                .collect()
+        };
+        // Build per-face boundary flags.
+        let face_boundary: Vec<bool> = faces
+            .iter()
+            .map(|shape| {
+                !shape.is_empty() && shape[0].len() >= 3
+                    && is_boundary_face(&shape[0], &merged_corridors, &dedup_corridors_with_flags)
+            })
+            .collect();
+        remove_conflicting_stalls(tagged_stalls, &stall_spine_lengths, &face_boundary)
     } else {
         tagged_stalls
     };
@@ -1938,12 +1954,21 @@ pub fn generate_from_spines(
         (vec![], vec![])
     };
 
-    // Merge primary and extension stalls.
+    // Merge primary and extension stalls. Extension stalls carry their
+    // source primary spine_idx so they join the same strip envelope.
+    let ext_stalls_tagged_2: Vec<(StallQuad, usize)> = ext_stalls_tagged
+        .iter()
+        .map(|(s, fi, _)| (s.clone(), *fi))
+        .collect();
     let mut all_tagged = tagged_stalls;
-    all_tagged.extend(ext_stalls_tagged);
+    all_tagged.extend(ext_stalls_tagged_2);
+
+    // Build strip envelopes from primary + extension stalls grouped by spine.
+    let mut all_surviving_3 = surviving_3;
+    all_surviving_3.extend(ext_stalls_tagged);
 
     let all_stalls: Vec<StallQuad> = all_tagged.iter().map(|(s, _)| s.clone()).collect();
-    let strip_envelopes = build_strip_envelopes(&surviving_3);
+    let strip_envelopes = build_strip_envelopes(&all_surviving_3);
 
     let islands = compute_islands(&faces, &all_tagged, &all_stalls, &strip_envelopes, 10.0);
 
@@ -2202,7 +2227,7 @@ mod tests {
             .map(|(s, fi, _)| (s.clone(), *fi)).collect();
         let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces);
         let tagged_stalls = clip_stalls_to_boundary(tagged_stalls, &boundary);
-        let tagged_stalls = remove_conflicting_stalls(tagged_stalls);
+        let tagged_stalls = remove_conflicting_stalls(tagged_stalls, &[], &[]);
         let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
         let surviving: std::collections::HashSet<[u64; 8]> = tagged_stalls.iter()
             .map(|(s, _)| stall_key(s)).collect();
