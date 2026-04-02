@@ -1311,29 +1311,29 @@ fn try_merge_spines(a: &SpineSegment, b: &SpineSegment, tolerance: f64) -> Optio
 // Top-level orchestration
 // ---------------------------------------------------------------------------
 
-/// Remove stalls where any shrunk corner falls outside all face shapes.
-/// This catches stalls in corner regions that protrude past the face
-/// boundary into the corridor.
+/// Remove stalls where any shrunk corner falls outside the stall's own
+/// face. This catches stalls that protrude past the face boundary into
+/// corridors or adjacent faces.
 fn clip_stalls_to_faces(
     stalls: Vec<(StallQuad, usize)>,
     faces: &[Vec<Vec<Vec2>>],
 ) -> Vec<(StallQuad, usize)> {
     stalls
         .into_iter()
-        .filter(|(stall, _)| {
-            // Shrink 40% toward centroid for tolerance. Rectangular stalls at
-            // non-90° angles have corners that extend past the spine and into
-            // the corridor, so a proportional shrink handles all angles.
+        .filter(|(stall, face_idx)| {
+            if *face_idx >= faces.len() { return false; }
+            let shape = &faces[*face_idx];
+            // Shrink 40% toward centroid for tolerance. Angled stalls have
+            // corners that extend past the spine into the corridor, so a
+            // proportional shrink handles all angles.
             let cx = stall.corners.iter().map(|c| c.x).sum::<f64>() / 4.0;
             let cy = stall.corners.iter().map(|c| c.y).sum::<f64>() / 4.0;
             let centroid = Vec2::new(cx, cy);
             let shrunk: Vec<Vec2> = stall.corners.iter().map(|c| {
                 *c + (centroid - *c) * 0.4
             }).collect();
-            // Every shrunk corner must be inside at least one face.
-            shrunk.iter().all(|corner| {
-                faces.iter().any(|shape| point_in_face(*corner, shape))
-            })
+            // Every shrunk corner must be inside the stall's own face.
+            shrunk.iter().all(|corner| point_in_face(*corner, shape))
         })
         .collect()
 }

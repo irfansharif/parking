@@ -13,7 +13,7 @@ use crate::types::*;
 /// `centering_shift` shifts all stall positions along the spine by a fixed
 /// distance (in world units) to center stalls within the spine extent.
 ///
-/// Corner layout (viewed from above, spine horizontal, stalls growing up):
+/// Corner layout (spine horizontal, stalls growing away from aisle):
 ///
 ///   corners: [0]=back_left, [1]=back_right, [2]=aisle_right, [3]=aisle_left
 ///
@@ -82,14 +82,30 @@ pub fn fill_strip(
 
     let mut stalls = Vec::with_capacity((k_max - k_min + 1) as usize);
 
+    // Divider length: travel along depth_dir from the spine (normal=0)
+    // to effective_depth (stall_depth * sin_a + cos_a * w/2). This
+    // accounts for the corridor spacing that includes the width_dir
+    // normal offset.
+    let effective_depth = stall_depth * sin_a + cos_a.abs() * params.stall_width / 2.0;
+    let divider_len = effective_depth / sin_a;
+
     for k in k_min..=k_max {
         let t = (k as f64 + 0.5) * stall_pitch - offset_proj;
         let mid = edge_start + edge_dir * t + normal * edge_width;
-        let aisle_left  = mid - width_dir * (params.stall_width / 2.0);
-        let aisle_right = mid + width_dir * (params.stall_width / 2.0);
-        let back_right = aisle_right + depth_dir * stall_depth;
-        let back_left  = aisle_left  + depth_dir * stall_depth;
 
+        // Back corners: on the spine, along width_dir (at the stall angle).
+        // This preserves the braided/interlocking pattern where opposing
+        // stalls' back edges zigzag against each other.
+        let back_left  = mid - width_dir * (params.stall_width / 2.0);
+        let back_right = mid + width_dir * (params.stall_width / 2.0);
+
+        // Aisle (entrance) corners: at divider_len depth (reaching the
+        // face edge), flat along edge_dir so adjacent stalls tile cleanly.
+        let aisle_center = mid + depth_dir * divider_len;
+        let aisle_left  = aisle_center - edge_dir * (stall_pitch / 2.0);
+        let aisle_right = aisle_center + edge_dir * (stall_pitch / 2.0);
+
+        // [0]=back_left, [1]=back_right, [2]=aisle_right, [3]=aisle_left
         stalls.push(StallQuad {
             corners: [back_left, back_right, aisle_right, aisle_left],
             kind: StallKind::Standard,

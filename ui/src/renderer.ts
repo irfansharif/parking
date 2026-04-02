@@ -483,6 +483,19 @@ export class Renderer {
     ctx.closePath();
     ctx.fillStyle = c.fill;
     ctx.fill();
+    // Stroke three sides, leaving one edge open (matches paint lines).
+    ctx.beginPath();
+    if (stall.kind === "Island") {
+      ctx.moveTo(stall.corners[1].x, stall.corners[1].y);
+      ctx.lineTo(stall.corners[2].x, stall.corners[2].y);
+      ctx.lineTo(stall.corners[3].x, stall.corners[3].y);
+      ctx.lineTo(stall.corners[0].x, stall.corners[0].y);
+    } else {
+      ctx.moveTo(stall.corners[3].x, stall.corners[3].y);
+      ctx.lineTo(stall.corners[0].x, stall.corners[0].y);
+      ctx.lineTo(stall.corners[1].x, stall.corners[1].y);
+      ctx.lineTo(stall.corners[2].x, stall.corners[2].y);
+    }
     ctx.strokeStyle = c.stroke;
     ctx.lineWidth = 0.3;
     ctx.stroke();
@@ -495,24 +508,31 @@ export class Renderer {
     ctx.lineWidth = 0.5;
     ctx.lineCap = "round";
 
-    // Stall paint lines: draw three sides, leaving the aisle edge open.
+    // Stall paint lines: draw three sides, leaving one edge open.
     // corners: [0]=back_left, [1]=back_right, [2]=aisle_right, [3]=aisle_left
+    // Regular stalls: [2]→[3] open (aisle/entrance).
+    // Island stalls: [0]→[1] open (back, connects to island).
     if (state.layout) {
       ctx.beginPath();
       for (const stall of state.layout.stalls) {
         const c = stall.corners;
-        // Left divider: aisle_left[3] → back_left[0]
-        ctx.moveTo(c[3].x, c[3].y);
-        ctx.lineTo(c[0].x, c[0].y);
-        // Back edge: back_left[0] → back_right[1]
-        ctx.lineTo(c[1].x, c[1].y);
-        // Right divider: back_right[1] → aisle_right[2]
-        ctx.lineTo(c[2].x, c[2].y);
-        // Aisle edge [2]→[3] left open (entrance).
+        if (stall.kind === "Island") {
+          // Both dividers + back edge, aisle open.
+          ctx.moveTo(c[1].x, c[1].y);
+          ctx.lineTo(c[2].x, c[2].y);
+          ctx.lineTo(c[3].x, c[3].y);
+          ctx.lineTo(c[0].x, c[0].y);
+        } else {
+          // Both dividers + aisle edge, back open.
+          ctx.moveTo(c[3].x, c[3].y);
+          ctx.lineTo(c[0].x, c[0].y);
+          ctx.lineTo(c[1].x, c[1].y);
+          ctx.lineTo(c[2].x, c[2].y);
+        }
       }
       ctx.stroke();
 
-      // Island stalls: hatched fill inside the stall quad.
+      // Island stalls: hatched fill inside the stall quad (when islands layer enabled).
       // Hatch angle is relative to the stall's own axes:
       //   0° = parallel to back edge (corners[0]→corners[1])
       //   90° = parallel to side edges (corners[0]→corners[3])
