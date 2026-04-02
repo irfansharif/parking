@@ -431,7 +431,7 @@ impl Default for DebugToggles {
             stall_face_clipping: true,
             boundary_clipping: true,
             conflict_removal: true,
-            short_segment_filter: true,
+            short_segment_filter: false,
             edge_provenance: true,
             skeleton_debug: false,
         }

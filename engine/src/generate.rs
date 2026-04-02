@@ -1,4 +1,5 @@
 use crate::aisle_graph::{auto_generate, compute_inset_d, derive_raw_holes, derive_raw_outer, find_or_add_vertex, intersect_line_polygon, merge_with_auto, subtract_intervals};
+use crate::clip::point_in_polygon;
 use crate::face::generate_from_spines;
 use crate::inset::{inset_polygon, signed_area};
 use crate::types::*;
@@ -19,7 +20,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
 
     // Apply spatial annotations to the resolved graph. Annotations are
     // matched by proximity so they survive graph regeneration.
-    apply_annotations(&mut graph, &input.annotations, &input.params);
+    apply_annotations(&mut graph, &input.annotations);
 
     let inset_d = compute_inset_d(&input.params);
     let derived_outer = derive_raw_outer(&input.boundary.outer, inset_d, input.params.site_offset);
@@ -27,6 +28,38 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
 
     let (stalls, aisle_polygons, spines, faces, miter_fills, skeleton_debug, islands) =
         generate_from_spines(&graph, &input.boundary, &input.params, &input.debug);
+
+    // Remove stalls that fall inside raw drive line corridors. The raw
+    // corridors extend from the user-specified endpoints (which lie outside
+    // the boundary) through the perimeter aisle to the interior, so they
+    // cover the boundary-face stalls at each entrance point.
+    let stalls = if !input.drive_lines.is_empty() {
+        let hw = input.params.aisle_width;
+        let drive_corridors: Vec<Vec<Vec2>> = input.drive_lines.iter()
+            .filter_map(|dl| {
+                let dir = dl.end - dl.start;
+                if dir.length() < 1e-9 { return None; }
+                let n = Vec2::new(-dir.y, dir.x).normalize() * hw;
+                Some(vec![
+                    dl.start + n,
+                    dl.end + n,
+                    dl.end - n,
+                    dl.start - n,
+                ])
+            })
+            .collect();
+        stalls.into_iter()
+            .filter(|stall| {
+                let c = Vec2::new(
+                    (stall.corners[0].x + stall.corners[1].x + stall.corners[2].x + stall.corners[3].x) / 4.0,
+                    (stall.corners[0].y + stall.corners[1].y + stall.corners[2].y + stall.corners[3].y) / 4.0,
+                );
+                !drive_corridors.iter().any(|corridor| point_in_polygon(&c, corridor))
+            })
+            .collect()
+    } else {
+        stalls
+    };
 
     let total = stalls.len();
 
@@ -314,7 +347,6 @@ fn append_graph(a: DriveAisleGraph, b: DriveAisleGraph) -> DriveAisleGraph {
 fn apply_annotations(
     graph: &mut DriveAisleGraph,
     annotations: &[Annotation],
-    params: &ParkingParams,
 ) {
     if annotations.is_empty() {
         return;
@@ -344,7 +376,6 @@ fn apply_annotations(
         edge_infos.push(EdgeInfo { start: s, end: e, dir, idx: i });
     }
 
-    let one_way_hw = params.aisle_width / 2.0;
     // Tight threshold: annotation must be essentially on top of the edge.
     let max_dist = 3.0;
 
@@ -391,7 +422,6 @@ fn apply_annotations(
                             continue;
                         }
                         graph.edges[i].direction = AisleDirection::OneWay;
-                        graph.edges[i].width = one_way_hw;
                         if needs_flip && is_forward {
                             graph.edges[i].start = e;
                             graph.edges[i].end = s;

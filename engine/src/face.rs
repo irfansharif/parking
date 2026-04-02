@@ -838,6 +838,13 @@ fn compute_face_spines(
                 }
             });
 
+            // Suppress stalls on the left side of one-way aisles.
+            if let Some(td) = travel_dir {
+                if !is_two_way_ori && td.cross(outward) >= 0.0 {
+                    continue;
+                }
+            }
+
             if !debug.spine_clipping {
                 all_spines.push(SpineSegment {
                     start: spine_start,

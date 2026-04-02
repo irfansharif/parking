@@ -1,7 +1,10 @@
 use crate::clip::polygons_overlap;
 use crate::face::corridor_polygon;
-use crate::inset::{inset_polygon, signed_area};
+use crate::inset::{inset_polygon, raw_inset_polygon, signed_area};
 use crate::types::*;
+use i_overlay::core::fill_rule::FillRule;
+use i_overlay::core::overlay_rule::OverlayRule;
+use i_overlay::float::single::SingleFloatOverlay;
 
 /// Compute the inset distance for a given set of parking parameters.
 /// This is the offset from the aisle-edge ring to the raw building boundary,
@@ -34,16 +37,40 @@ pub fn derive_raw_outer(outer: &[Vec2], inset_d: f64, site_offset: f64) -> Vec<V
 
 /// Shrink each aisle-edge ring inward by `inset_d` to recover the raw
 /// building footprint. Rings that collapse to nothing are omitted.
+///
+/// Concave rings produce self-intersecting raw miter polygons. We skip
+/// the edge-collapse heuristic (which recomputes miters with stale edge
+/// directions and cascades incorrectly) and instead resolve geometry via
+/// boolean intersection of the raw miter polygon with the original ring.
 pub fn derive_raw_holes(holes: &[Vec<Vec2>], inset_d: f64) -> Vec<Vec<Vec2>> {
     holes
         .iter()
         .filter_map(|ring| {
-            let shrunk = inset_polygon(ring, inset_d);
-            if shrunk.is_empty() {
-                None
-            } else {
-                Some(shrunk)
+            let raw = raw_inset_polygon(ring, inset_d);
+            if raw.len() < 3 {
+                return None;
             }
+            // Boolean-intersect the raw miter polygon with the original
+            // ring. This resolves self-intersections and clips any miter
+            // spikes that extend beyond the ring boundary.
+            let miter_path: Vec<[f64; 2]> = raw.iter().map(|v| [v.x, v.y]).collect();
+            let ring_path: Vec<[f64; 2]> = ring.iter().map(|v| [v.x, v.y]).collect();
+            let result = vec![miter_path]
+                .overlay(&vec![ring_path], OverlayRule::Intersect, FillRule::EvenOdd);
+            // Take the largest contour (by area) as the hole polygon.
+            result
+                .into_iter()
+                .flat_map(|shape| shape.into_iter())
+                .max_by(|a, b| {
+                    let area_a: f64 = a.iter().zip(a.iter().cycle().skip(1))
+                        .map(|(p, q)| p[0] * q[1] - q[0] * p[1])
+                        .sum::<f64>().abs();
+                    let area_b: f64 = b.iter().zip(b.iter().cycle().skip(1))
+                        .map(|(p, q)| p[0] * q[1] - q[0] * p[1])
+                        .sum::<f64>().abs();
+                    area_a.partial_cmp(&area_b).unwrap()
+                })
+                .map(|pts| pts.into_iter().map(|p| Vec2::new(p[0], p[1])).collect())
         })
         .collect()
 }

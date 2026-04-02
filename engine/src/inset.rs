@@ -12,6 +12,44 @@ pub fn signed_area(polygon: &[Vec2]) -> f64 {
     area * 0.5
 }
 
+/// Raw miter polygon: offset each edge by `d` and compute miter intersections
+/// at each vertex. No edge-collapse detection — the result may self-intersect
+/// for concave polygons. Use boolean operations to resolve self-intersections.
+pub fn raw_inset_polygon(polygon: &[Vec2], d: f64) -> Vec<Vec2> {
+    let n = polygon.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let sign = if signed_area(polygon) >= 0.0 { 1.0 } else { -1.0 };
+
+    let mut edge_dirs: Vec<Vec2> = Vec::with_capacity(n);
+    let mut normals: Vec<Vec2> = Vec::with_capacity(n);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let e = polygon[j] - polygon[i];
+        edge_dirs.push(e);
+        normals.push(Vec2::new(-e.y * sign, e.x * sign).normalize());
+    }
+
+    let mut result = Vec::with_capacity(n);
+    for i in 0..n {
+        let prev = if i == 0 { n - 1 } else { i - 1 };
+        let a = polygon[prev] + normals[prev] * d;
+        let da = edge_dirs[prev];
+        let b = polygon[i] + normals[i] * d;
+        let db = edge_dirs[i];
+        let denom = da.cross(db);
+        let miter = if denom.abs() < 1e-12 {
+            polygon[i] + normals[i] * d
+        } else {
+            let t = (b - a).cross(db) / denom;
+            a + da * t
+        };
+        result.push(miter);
+    }
+    result
+}
+
 /// Inset a polygon inward by uniform distance `d`. Returns the offset polygon,
 /// or an empty vec if the polygon collapses entirely.
 pub fn inset_polygon(polygon: &[Vec2], d: f64) -> Vec<Vec2> {
