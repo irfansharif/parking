@@ -5,7 +5,7 @@ export interface Vec2 {
 
 export interface StallQuad {
   corners: [Vec2, Vec2, Vec2, Vec2];
-  kind: "Standard" | "Compact" | "Ev" | "Extension";
+  kind: "Standard" | "Compact" | "Ev" | "Extension" | "Island";
 }
 
 export interface Metrics {
