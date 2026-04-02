@@ -90,10 +90,10 @@ export class App {
     this.state = {
       boundary: {
         outer: [
-          { x: -48.47, y: 0 },
+          { x: 112.96, y: 0 },
           { x: 750, y: 0 },
           { x: 782.80, y: 654.85 },
-          { x: 0, y: 654.85 },
+          { x: 168.78, y: 654.85 },
         ],
         holes: [
           [
@@ -148,7 +148,7 @@ export class App {
       annotations: [],
       aisleVector: aisleVectorFromAngle(90, 0, { x: -80, y: 250 }),
       driveLines: [
-        { start: { x: 471.79, y: -42.94 }, end: { x: 139.44, y: 696.35 } },
+        { start: { x: 447.88, y: 0 }, end: { x: 224.60, y: 654.85 } },
       ],
       pendingDriveLine: null,
       pendingDriveLinePreview: null,
