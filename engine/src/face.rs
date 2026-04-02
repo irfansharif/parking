@@ -1384,7 +1384,7 @@ fn place_stalls_on_spines(
     params: &ParkingParams,
     center: bool,
     extensions: Option<&[(SpineSegment, usize)]>,
-) -> (Vec<(StallQuad, usize, usize)>, Vec<f64>, std::collections::HashMap<usize, usize>) {
+) -> (Vec<(StallQuad, usize, usize)>, Vec<f64>) {
     let stall_pitch = params.stall_pitch();
 
     // Pre-compute the full projected range along each spine's oriented
@@ -1425,8 +1425,6 @@ fn place_stalls_on_spines(
     // shift instead of centering independently.
     let mut claimed: Vec<(usize, Vec2, f64)> = Vec::new();
     let mut shifts = vec![0.0_f64; spines.len()];
-    let mut grid_lock_partners: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-
     let mut stalls = Vec::new();
     for &(spine_idx, _) in &order {
         let seg = &spines[spine_idx];
@@ -1438,9 +1436,7 @@ fn place_stalls_on_spines(
 
         let centering = if !center {
             0.0
-        } else if let Some((shift, partner_idx)) = find_opposing_shift(&claimed, spines, spine_idx, oriented_dir, eff_pitch, params.aisle_width + 2.0 * params.stall_depth) {
-            grid_lock_partners.insert(spine_idx, partner_idx);
-            grid_lock_partners.insert(partner_idx, spine_idx);
+        } else if let Some((shift, _partner_idx)) = find_opposing_shift(&claimed, spines, spine_idx, oriented_dir, eff_pitch, params.aisle_width + 2.0 * params.stall_depth) {
             shift
         } else {
             let (center_proj, center_len) = match &extended_ranges[spine_idx] {
@@ -1457,7 +1453,7 @@ fn place_stalls_on_spines(
             stalls.push((quad, seg.face_idx, spine_idx));
         }
     }
-    (stalls, shifts, grid_lock_partners)
+    (stalls, shifts)
 }
 
 /// Find the centering shift to use for grid-locking to an already-processed
@@ -1536,100 +1532,56 @@ fn stall_key(s: &StallQuad) -> [u64; 8] {
     ]
 }
 
-/// Mark every Nth stall per spine row as StallKind::Island. For each
-/// spine, stalls are sorted by position along the spine direction, then
-/// every Nth one is marked (skipping the first and last). Grid-locked
-/// opposing spines use the leader's projection to determine absolute
-/// positions, so islands align across the aisle.
+/// Mark every Nth stall per spine row as StallKind::Island. Uses
+/// absolute position-based marking: each stall's island status depends
+/// on `floor(position / pitch) % interval`, not its index in the row.
+/// This makes marking completely independent of stall centering,
+/// grid-locking, and extension stalls — grid-locked rows naturally
+/// align because their stalls occupy the same absolute positions.
+/// The first and last stall in each row are always skipped.
 fn mark_island_stalls(
     stalls_3: &mut [(StallQuad, usize, usize)],
     tagged: &mut [(StallQuad, usize)],
     spines: &[SpineSegment],
     params: &ParkingParams,
-    _shifts: &[f64],
-    grid_lock_partners: &std::collections::HashMap<usize, usize>,
 ) {
     let interval = params.island_stall_interval as usize;
     if interval < 2 { return; }
+    let target_rem = (interval / 2) as i64;
 
-    // Group stall indices (into stalls_3) by spine_idx.
+    // Group stall indices by spine_idx.
     let mut by_spine: std::collections::BTreeMap<usize, Vec<usize>> =
         std::collections::BTreeMap::new();
     for (i, (_, _, spine_idx)) in stalls_3.iter().enumerate() {
         by_spine.entry(*spine_idx).or_default().push(i);
     }
 
-    // For each spine, sort its stall indices by projection along a
-    // consistent direction. For grid-locked groups, use the leader's
-    // direction so positions are comparable across both sides of the aisle.
     let mut island_keys: std::collections::HashSet<[u64; 8]> = std::collections::HashSet::new();
-    let mut visited: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
-    for &spine_idx in by_spine.keys() {
-        if visited.contains(&spine_idx) { continue; }
-        visited.insert(spine_idx);
+    for (&spine_idx, indices) in &by_spine {
+        if spine_idx >= spines.len() { continue; }
+        let seg = &spines[spine_idx];
+        let proj_dir = seg.oriented_dir();
+        let pitch = if seg.is_interior { params.stall_pitch() } else { params.stall_width };
 
-        // Build the grid-lock group.
-        let mut group = vec![spine_idx];
-        if let Some(&partner) = grid_lock_partners.get(&spine_idx) {
-            if by_spine.contains_key(&partner) {
-                group.push(partner);
-                visited.insert(partner);
-            }
-        }
-
-        // Pick leader (most stalls) for the projection direction.
-        let leader = *group.iter()
-            .max_by_key(|&&si| by_spine.get(&si).map_or(0, |v| v.len()))
-            .unwrap();
-        if leader >= spines.len() { continue; }
-        let proj_dir = spines[leader].oriented_dir();
-
-        // For the leader spine: sort stalls by position, mark every Nth
-        // (skipping first and last), and record the projection values of
-        // marked stalls so partners can align to them.
-        let leader_indices = by_spine.get(&leader).unwrap();
-        let mut leader_sorted: Vec<(f64, usize)> = leader_indices.iter().map(|&idx| {
+        // Sort stalls by position along the spine.
+        let mut sorted: Vec<(f64, usize)> = indices.iter().map(|&idx| {
             let center = stall_center(&stalls_3[idx].0);
             (center.dot(proj_dir), idx)
         }).collect();
-        leader_sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-        let count = leader_sorted.len();
+        let count = sorted.len();
         if count < interval { continue; }
 
-        // Mark every Nth stall, offset so we skip the first and last.
-        // Offset = interval/2 so the pattern is centered.
-        let offset = interval / 2;
-        let mut marked_projs: Vec<f64> = Vec::new();
-        for (i, &(proj, idx)) in leader_sorted.iter().enumerate() {
-            if i >= offset && i < count - 1 && (i - offset) % interval == 0 {
+        // Mark stalls whose absolute grid position matches the island
+        // pattern: floor(proj / pitch) % interval == interval/2.
+        // Skip the first and last stall in the row.
+        for (i, &(proj, idx)) in sorted.iter().enumerate() {
+            if i == 0 || i == count - 1 { continue; }
+            let k = (proj / pitch).floor() as i64;
+            if k.rem_euclid(interval as i64) == target_rem {
                 island_keys.insert(stall_key(&stalls_3[idx].0));
-                marked_projs.push(proj);
-            }
-        }
-
-        // For partner spines: match each marked projection to the nearest
-        // stall on the partner, so islands align across the aisle.
-        for &si in &group {
-            if si == leader { continue; }
-            let indices = match by_spine.get(&si) {
-                Some(v) => v,
-                None => continue,
-            };
-            let mut sorted: Vec<(f64, usize)> = indices.iter().map(|&idx| {
-                let center = stall_center(&stalls_3[idx].0);
-                (center.dot(proj_dir), idx)
-            }).collect();
-            sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-
-            for &target_proj in &marked_projs {
-                // Find nearest stall by projection distance.
-                let best = sorted.iter()
-                    .min_by_key(|(p, _)| ((p - target_proj).abs() * 1000.0) as i64);
-                if let Some(&(_, idx)) = best {
-                    island_keys.insert(stall_key(&stalls_3[idx].0));
-                }
             }
         }
     }
@@ -2414,7 +2366,7 @@ pub fn generate_from_spines(
     // Place stalls on merged spines (tagged with face_idx + spine_idx).
     // Pass extension spines so centering uses the full projected range.
     let ext_ref = if ext_spines_with_src.is_empty() { None } else { Some(ext_spines_with_src.as_slice()) };
-    let (tagged_stalls_3, spine_shifts, grid_lock_partners) = place_stalls_on_spines(
+    let (tagged_stalls_3, spine_shifts) = place_stalls_on_spines(
         &all_spines, params, debug.stall_centering, ext_ref,
     );
 
@@ -2524,7 +2476,7 @@ pub fn generate_from_spines(
     if params.island_stall_interval > 0 {
         mark_island_stalls(
             &mut all_surviving_3, &mut all_tagged,
-            &all_spines, params, &spine_shifts, &grid_lock_partners,
+            &all_spines, params,
         );
     }
 
@@ -2812,7 +2764,7 @@ mod tests {
             .filter(|s| (s.end - s.start).length() >= effective_depth)
             .collect();
 
-        let (tagged_stalls_3, _, _) = place_stalls_on_spines(&all_spines, &params, true, None);
+        let (tagged_stalls_3, _) = place_stalls_on_spines(&all_spines, &params, true, None);
         let tagged_stalls: Vec<(StallQuad, usize)> = tagged_stalls_3.iter()
             .map(|(s, fi, _)| (s.clone(), *fi)).collect();
         let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces);
@@ -3659,6 +3611,232 @@ mod tests {
 
         // Verify stalls exist on both sides.
         assert!(layout.stalls.len() > 0, "should produce stalls");
+    }
+
+    /// Comprehensive test for mark_island_stalls covering:
+    /// - Various row lengths and intervals
+    /// - Multiple independent rows (different spines)
+    /// - Angled stalls (45°)
+    /// - Invariants: no islands at row edges, every qualifying row gets
+    ///   islands, no long runs without an island.
+    #[test]
+    fn test_mark_island_stalls_invariants() {
+        // Helper: create a horizontal spine at y_offset with stalls along
+        // the x-axis. Normal points up (+y), so oriented_dir is +x.
+        fn make_row(
+            n_target: usize,
+            spine_idx: usize,
+            face_idx: usize,
+            y_offset: f64,
+            params: &ParkingParams,
+        ) -> (Vec<(StallQuad, usize, usize)>, SpineSegment) {
+            let pitch = params.stall_pitch();
+            let spine_len = n_target as f64 * pitch;
+            let seg = SpineSegment {
+                start: Vec2::new(0.0, y_offset),
+                end: Vec2::new(spine_len, y_offset),
+                outward_normal: Vec2::new(0.0, 1.0),
+                face_idx,
+                is_interior: true,
+                travel_dir: None,
+            };
+            let stalls: Vec<(StallQuad, usize, usize)> = fill_spine(&seg, params, 0.0)
+                .into_iter()
+                .map(|q| (q, face_idx, spine_idx))
+                .collect();
+            (stalls, seg)
+        }
+
+        // Sort stalls by position along direction for a given spine.
+        fn sorted_row(
+            stalls: &[(StallQuad, usize, usize)],
+            spine_idx: usize,
+            dir: Vec2,
+        ) -> Vec<(f64, bool)> {
+            let mut s: Vec<(f64, bool)> = stalls.iter()
+                .filter(|(_, _, si)| *si == spine_idx)
+                .map(|(q, _, _)| (stall_center(q).dot(dir), q.kind == StallKind::Island))
+                .collect();
+            s.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            s
+        }
+
+        // Check all invariants for a single row.
+        fn check_invariants(
+            stalls: &[(StallQuad, usize, usize)],
+            spine_idx: usize,
+            dir: Vec2,
+            interval: usize,
+            label: &str,
+        ) {
+            let row = sorted_row(stalls, spine_idx, dir);
+            let count = row.len();
+
+            if count < interval {
+                let n_islands = row.iter().filter(|(_, is)| *is).count();
+                assert_eq!(n_islands, 0,
+                    "{}: row with {} stalls (< interval {}) should have 0 islands, got {}",
+                    label, count, interval, n_islands);
+                return;
+            }
+
+            // A: first stall is not an island.
+            assert!(!row[0].1,
+                "{}: first stall should not be island (count={}, interval={})",
+                label, count, interval);
+
+            // B: last stall is not an island.
+            assert!(!row[count - 1].1,
+                "{}: last stall should not be island (count={}, interval={})",
+                label, count, interval);
+
+            // C: at least one island exists.
+            let n_islands = row.iter().filter(|(_, is)| *is).count();
+            assert!(n_islands >= 1,
+                "{}: row with {} stalls and interval {} should have >= 1 island, got {}",
+                label, count, interval, n_islands);
+
+            // D: no run of >= interval consecutive non-island stalls
+            // in the interior (positions 1..count-2).
+            if count > 2 {
+                let mut run = 0usize;
+                for i in 1..count - 1 {
+                    if row[i].1 {
+                        run = 0;
+                    } else {
+                        run += 1;
+                        assert!(run < interval,
+                            "{}: interior run of {} non-island stalls at position {} exceeds interval {} (count={})",
+                            label, run + 1, i, interval, count);
+                    }
+                }
+            }
+
+            // E: reasonable island count — at most count/2.
+            assert!(n_islands <= count / 2,
+                "{}: too many islands ({}) for {} stalls",
+                label, n_islands, count);
+        }
+
+        // =========================================================
+        // Test 1: Single rows, various lengths, interval=5, 90° stalls
+        // =========================================================
+        {
+            let params = ParkingParams {
+                stall_angle_deg: 90.0,
+                island_stall_interval: 5,
+                ..ParkingParams::default()
+            };
+            let dir = Vec2::new(1.0, 0.0);
+
+            for &n in &[3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 30] {
+                let (mut stalls_3, spine) = make_row(n, 0, 0, 0.0, &params);
+                let actual_n = stalls_3.len();
+                let mut tagged: Vec<(StallQuad, usize)> = stalls_3.iter()
+                    .map(|(q, fi, _)| (q.clone(), *fi)).collect();
+                let spines = vec![spine];
+
+                mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params);
+                check_invariants(&stalls_3, 0, dir, 5, &format!("single_90deg_n{}", actual_n));
+            }
+        }
+
+        // =========================================================
+        // Test 2: Single row, length=20, various intervals
+        // =========================================================
+        {
+            let dir = Vec2::new(1.0, 0.0);
+
+            for &interval in &[2, 3, 4, 5, 6, 8, 10] {
+                let params = ParkingParams {
+                    stall_angle_deg: 90.0,
+                    island_stall_interval: interval,
+                    ..ParkingParams::default()
+                };
+                let (mut stalls_3, spine) = make_row(20, 0, 0, 0.0, &params);
+                let actual_n = stalls_3.len();
+                let mut tagged: Vec<(StallQuad, usize)> = stalls_3.iter()
+                    .map(|(q, fi, _)| (q.clone(), *fi)).collect();
+                let spines = vec![spine];
+
+                mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params);
+                check_invariants(&stalls_3, 0, dir, interval as usize,
+                    &format!("single_interval{}_n{}", interval, actual_n));
+            }
+        }
+
+        // =========================================================
+        // Test 3: 45° angled stalls, various lengths, interval=5
+        // =========================================================
+        {
+            let params = ParkingParams {
+                stall_angle_deg: 45.0,
+                island_stall_interval: 5,
+                ..ParkingParams::default()
+            };
+            let dir = Vec2::new(1.0, 0.0);
+
+            for &n in &[5, 8, 12, 20] {
+                let (mut stalls_3, spine) = make_row(n, 0, 0, 0.0, &params);
+                let actual_n = stalls_3.len();
+                let mut tagged: Vec<(StallQuad, usize)> = stalls_3.iter()
+                    .map(|(q, fi, _)| (q.clone(), *fi)).collect();
+                let spines = vec![spine];
+
+                mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params);
+                check_invariants(&stalls_3, 0, dir, 5, &format!("angled45_n{}", actual_n));
+            }
+        }
+
+        // =========================================================
+        // Test 4: Two independent rows (different spines, same params)
+        //         — both should independently get islands
+        // =========================================================
+        {
+            let params = ParkingParams {
+                stall_angle_deg: 90.0,
+                island_stall_interval: 5,
+                ..ParkingParams::default()
+            };
+            let dir = Vec2::new(1.0, 0.0);
+
+            let (mut stalls_a, spine_a) = make_row(20, 0, 0, 0.0, &params);
+            let (stalls_b, spine_b) = make_row(12, 1, 0, 50.0, &params);
+            stalls_a.extend(stalls_b);
+            let mut tagged: Vec<(StallQuad, usize)> = stalls_a.iter()
+                .map(|(q, fi, _)| (q.clone(), *fi)).collect();
+            let spines = vec![spine_a, spine_b];
+
+            mark_island_stalls(&mut stalls_a, &mut tagged, &spines, &params);
+            check_invariants(&stalls_a, 0, dir, 5, "two_rows_spine0");
+            check_invariants(&stalls_a, 1, dir, 5, "two_rows_spine1");
+        }
+
+        // =========================================================
+        // Test 5: tagged vector is marked in sync with stalls_3
+        // =========================================================
+        {
+            let params = ParkingParams {
+                stall_angle_deg: 90.0,
+                island_stall_interval: 5,
+                ..ParkingParams::default()
+            };
+
+            let (mut stalls_3, spine) = make_row(20, 0, 0, 0.0, &params);
+            let mut tagged: Vec<(StallQuad, usize)> = stalls_3.iter()
+                .map(|(q, fi, _)| (q.clone(), *fi)).collect();
+            let spines = vec![spine];
+
+            mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params);
+
+            for (s3, _, _) in &stalls_3 {
+                let key = stall_key(s3);
+                let tagged_match = tagged.iter().find(|(t, _)| stall_key(t) == key);
+                assert!(tagged_match.is_some(), "stalls_3 entry should exist in tagged");
+                assert_eq!(s3.kind, tagged_match.unwrap().0.kind,
+                    "kind should match between stalls_3 and tagged");
+            }
+        }
     }
 }
 
