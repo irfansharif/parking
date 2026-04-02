@@ -22,7 +22,7 @@ drive-line: 471.79,-42.94 -> 139.44,696.35
 
 generate
 ----
-total_stalls: 1004
+total_stalls: 1099
 
 screenshot
 ----

@@ -27,22 +27,25 @@ async function main() {
     renderer.render(app.state);
   });
 
-  // Fit the default boundary in the canvas with some padding.
+  // Fit all lot boundaries in the canvas with some padding.
   {
     const container = canvas.parentElement!;
     const cw = container.clientWidth;
     const ch = container.clientHeight;
-    const b = app.state.boundary.outer;
-    const vec = app.state.aisleVector;
-    const xs = [...b.map((v) => v.x), vec.start.x, vec.end.x];
-    const ys = [...b.map((v) => v.y), vec.start.y, vec.end.y];
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (const lot of app.state.lots) {
+      for (const v of lot.boundary.outer) { xs.push(v.x); ys.push(v.y); }
+      xs.push(lot.aisleVector.start.x, lot.aisleVector.end.x);
+      ys.push(lot.aisleVector.start.y, lot.aisleVector.end.y);
+    }
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
     const maxY = Math.max(...ys);
     const bw = maxX - minX;
     const bh = maxY - minY;
-    const padding = 100; // screen pixels
+    const padding = 100;
     const zoom = Math.min((cw - padding * 2) / bw, (ch - padding * 2) / bh);
     app.state.camera.zoom = zoom;
     app.state.camera.offsetX = (cw - bw * zoom) / 2 - minX * zoom;
@@ -59,7 +62,34 @@ async function main() {
   // Expose fixture dumper for debugging. Usage:
   //   copy(window.dumpFixture())
   // Then paste into tests/testdata/<name>.txt
-  (window as any).dumpFixture = () => debug_input_js((window as any).__parkingInput);
+  // For multi-lot, dumps each lot with new-lot/select-lot commands.
+  (window as any).dumpFixture = () => {
+    if (app.state.lots.length <= 1) {
+      return debug_input_js((window as any).__parkingInput);
+    }
+    const parts: string[] = [];
+    for (let i = 0; i < app.state.lots.length; i++) {
+      const lot = app.state.lots[i];
+      const input = {
+        boundary: lot.boundary,
+        aisle_graph: lot.aisleGraph,
+        drive_lines: lot.driveLines,
+        annotations: lot.annotations.filter((a: any) => a._active !== false),
+        params: app.state.params,
+        debug: app.state.debug,
+        regionOverrides: Object.entries(lot.regionOverrides).map(([k, v]: [string, any]) => ({
+          region_index: Number(k),
+          aisle_angle_deg: v.angle,
+          aisle_offset: v.offset,
+        })),
+      };
+      if (i > 0) {
+        parts.push(`new-lot\n----\nnew-lot: ${lot.id}\n`);
+      }
+      parts.push(debug_input_js(JSON.stringify(input)));
+    }
+    return parts.join("\n");
+  };
 }
 
 function setupToolbar(app: App, renderer: Renderer): void {
@@ -67,6 +97,7 @@ function setupToolbar(app: App, renderer: Renderer): void {
 
   const modes: { mode: EditMode; label: string; key: string }[] = [
     { mode: "select", label: "Select (V)", key: "v" },
+    { mode: "add-boundary", label: "Add Boundary (B)", key: "b" },
     { mode: "add-hole", label: "Add Hole (H)", key: "h" },
     { mode: "add-drive-line", label: "Drive Line (L)", key: "l" },
   ];
@@ -84,11 +115,12 @@ function setupToolbar(app: App, renderer: Renderer): void {
   }
 
   function setMode(mode: EditMode) {
-    // Commit pending hole if switching away from add-hole mode
+    if (app.state.editMode === "add-boundary" && mode !== "add-boundary") {
+      app.commitPendingBoundary();
+    }
     if (app.state.editMode === "add-hole" && mode !== "add-hole") {
       app.commitPendingHole();
     }
-    // Clear pending drive line if switching away
     if (app.state.editMode === "add-drive-line" && mode !== "add-drive-line") {
       app.state.pendingDriveLine = null;
       app.state.pendingDriveLinePreview = null;

@@ -21,25 +21,43 @@ export function createCommandAPI(app: App): CommandAPI {
 
       switch (cmd) {
         case "clear": {
-          app.state.boundary = { outer: [], holes: [] };
-          app.state.driveLines = [];
-          app.state.annotations = [];
-          app.state.aisleGraph = null;
+          const lot = app.activeLot();
+          lot.boundary = { outer: [], holes: [] };
+          lot.driveLines = [];
+          lot.annotations = [];
+          lot.aisleGraph = null;
           return "cleared";
+        }
+
+        case "new-lot": {
+          // Create a new empty lot and switch to it.
+          const newLot = app.addLot({ outer: [], holes: [] });
+          return `new-lot: ${newLot.id}`;
+        }
+
+        case "select-lot": {
+          // Switch active lot by index (0-based).
+          const idx = parseInt(parts[1]);
+          if (idx < 0 || idx >= app.state.lots.length) {
+            return `error: lot index ${idx} out of range (${app.state.lots.length} lots)`;
+          }
+          app.state.activeLotId = app.state.lots[idx].id;
+          return `select-lot: ${idx}`;
         }
 
         case "polygon": {
           const subtype = parts[1]; // "outer" or "hole"
           if (!body) return "error: polygon requires body with vertices";
           const points = parsePoints(body);
+          const lot = app.activeLot();
           if (subtype === "outer") {
-            app.state.boundary.outer = points;
-            app.state.boundary.holes = [];
-            app.state.driveLines = [];
-            app.state.annotations = [];
-            app.state.aisleGraph = null;
+            lot.boundary.outer = points;
+            lot.boundary.holes = [];
+            lot.driveLines = [];
+            lot.annotations = [];
+            lot.aisleGraph = null;
           } else if (subtype === "hole") {
-            app.state.boundary.holes.push(points);
+            lot.boundary.holes.push(points);
           }
           return `polygon ${subtype}: ${points.length} vertices`;
         }
@@ -50,7 +68,15 @@ export function createCommandAPI(app: App): CommandAPI {
           if (eqIdx === -1) return "error: set requires key=value";
           const rawKey = rest.slice(0, eqIdx).replace(/-/g, "_");
           const key = KEY_ALIASES[rawKey] ?? rawKey;
-          const val = parseFloat(rest.slice(eqIdx + 1));
+          const rawVal = rest.slice(eqIdx + 1);
+          // Handle boolean params (use_regions).
+          if (rawVal === "true" || rawVal === "false") {
+            (app.state.params as any)[key] = rawVal === "true";
+            for (const lot of app.state.lots) lot.aisleGraph = null;
+            app.generate();
+            return `set ${key}=${rawVal}`;
+          }
+          const val = parseFloat(rawVal);
           if (isNaN(val)) return `error: invalid value for ${key}`;
           app.setParam(key as any, val);
           return `set ${key}=${val}`;
@@ -58,24 +84,22 @@ export function createCommandAPI(app: App): CommandAPI {
 
         case "vertex": {
           const action = parts[1];
+          const lot = app.activeLot();
           if (action === "add") {
             const coords = parts[2];
             const [x, y] = coords.split(",").map(Number);
-            if (!app.state.aisleGraph) {
-              app.state.aisleGraph = { vertices: [], edges: [] };
+            if (!lot.aisleGraph) {
+              lot.aisleGraph = { vertices: [], edges: [] };
             }
-            const idx = app.state.aisleGraph.vertices.length;
-            app.state.aisleGraph.vertices.push({ x, y });
+            const idx = lot.aisleGraph.vertices.length;
+            lot.aisleGraph.vertices.push({ x, y });
             return String(idx);
           } else if (action === "move") {
             const idx = parseInt(parts[2]);
             const coords = parts[3];
             const [x, y] = coords.split(",").map(Number);
-            if (
-              app.state.aisleGraph &&
-              idx < app.state.aisleGraph.vertices.length
-            ) {
-              app.state.aisleGraph.vertices[idx] = { x, y };
+            if (lot.aisleGraph && idx < lot.aisleGraph.vertices.length) {
+              lot.aisleGraph.vertices[idx] = { x, y };
             }
             return `moved vertex ${idx} to ${x},${y}`;
           }
@@ -84,13 +108,14 @@ export function createCommandAPI(app: App): CommandAPI {
 
         case "edge": {
           const action = parts[1];
+          const lot = app.activeLot();
           if (action === "add") {
             const coords = parts[2];
             const [v1, v2] = coords.split(",").map(Number);
-            if (!app.state.aisleGraph) {
-              app.state.aisleGraph = { vertices: [], edges: [] };
+            if (!lot.aisleGraph) {
+              lot.aisleGraph = { vertices: [], edges: [] };
             }
-            app.state.aisleGraph.edges.push({
+            lot.aisleGraph.edges.push({
               start: v1,
               end: v2,
               width: app.state.params.aisle_width / 2,
@@ -102,13 +127,25 @@ export function createCommandAPI(app: App): CommandAPI {
 
         case "generate": {
           app.generate();
-          const m = app.state.layout?.metrics;
-          if (!m) return "error: generate failed";
-          return `total_stalls: ${m.total_stalls}`;
+          if (app.state.lots.length === 1) {
+            const m = app.activeLot().layout?.metrics;
+            if (!m) return "error: generate failed";
+            return `total_stalls: ${m.total_stalls}`;
+          }
+          // Multi-lot: report per-lot and total.
+          let total = 0;
+          const perLot: string[] = [];
+          for (let i = 0; i < app.state.lots.length; i++) {
+            const m = app.state.lots[i].layout?.metrics;
+            const n = m?.total_stalls ?? 0;
+            perLot.push(`lot_${i}: ${n}`);
+            total += n;
+          }
+          return `total_stalls: ${total}\n${perLot.join("\n")}`;
         }
 
         case "state": {
-          return JSON.stringify(app.state.layout);
+          return JSON.stringify(app.activeLot().layout);
         }
 
         case "screenshot": {
@@ -130,7 +167,7 @@ export function createCommandAPI(app: App): CommandAPI {
         case "hole": {
           if (!body) return "error: hole requires body with vertices";
           const points = parsePoints(body);
-          app.state.boundary.holes.push(points);
+          app.activeLot().boundary.holes.push(points);
           return `hole: ${points.length} vertices`;
         }
 
@@ -138,8 +175,23 @@ export function createCommandAPI(app: App): CommandAPI {
           if (!body) return "error: drive-line requires body with start and end points";
           const points = parsePoints(body);
           if (points.length < 2) return "error: drive-line requires 2 points";
-          app.addDriveLine(points[0], points[1]);
-          return `drive-line: ${points[0].x},${points[0].y} -> ${points[1].x},${points[1].y}`;
+          // Parse optional hole-pin=holeIndex,vertexIndex
+          const pinMatch = command.match(/hole-pin=(\d+),(\d+)/);
+          const lot = app.activeLot();
+          if (pinMatch) {
+            const holeIndex = parseInt(pinMatch[1]);
+            const vertexIndex = parseInt(pinMatch[2]);
+            lot.driveLines.push({
+              start: points[0],
+              end: points[1],
+              holePin: { holeIndex, vertexIndex },
+            });
+          } else {
+            lot.driveLines.push({ start: points[0], end: points[1] });
+          }
+          app.generate();
+          const pinSuffix = pinMatch ? ` hole-pin=${pinMatch[1]},${pinMatch[2]}` : "";
+          return `drive-line: ${points[0].x},${points[0].y} -> ${points[1].x},${points[1].y}${pinSuffix}`;
         }
 
         case "annotation": {
@@ -147,25 +199,35 @@ export function createCommandAPI(app: App): CommandAPI {
           if (!body) return "error: annotation requires body";
           const points = parsePoints(body);
           const noChain = parts.includes("no-chain");
+          const lot = app.activeLot();
           if (subtype === "one-way") {
             if (points.length < 2) return "error: one-way requires midpoint and travel_dir";
-            app.state.annotations.push({
+            lot.annotations.push({
               kind: "OneWay",
               midpoint: points[0],
               travel_dir: points[1],
               chain: !noChain,
             });
             return `annotation one-way at ${points[0].x},${points[0].y}`;
+          } else if (subtype === "two-way-oriented") {
+            if (points.length < 2) return "error: two-way-oriented requires midpoint and travel_dir";
+            lot.annotations.push({
+              kind: "TwoWayOriented",
+              midpoint: points[0],
+              travel_dir: points[1],
+              chain: !noChain,
+            });
+            return `annotation two-way-oriented at ${points[0].x},${points[0].y}`;
           } else if (subtype === "delete-vertex") {
             if (points.length < 1) return "error: delete-vertex requires point";
-            app.state.annotations.push({
+            lot.annotations.push({
               kind: "DeleteVertex",
               point: points[0],
             });
             return `annotation delete-vertex at ${points[0].x},${points[0].y}`;
           } else if (subtype === "delete-edge") {
             if (points.length < 2) return "error: delete-edge requires midpoint and edge_dir";
-            app.state.annotations.push({
+            lot.annotations.push({
               kind: "DeleteEdge",
               midpoint: points[0],
               edge_dir: points[1],
@@ -174,6 +236,30 @@ export function createCommandAPI(app: App): CommandAPI {
             return `annotation delete-edge at ${points[0].x},${points[0].y}`;
           }
           return `error: unknown annotation type '${subtype}'`;
+        }
+
+        case "region-override": {
+          // Usage: region-override region=0 angle=90 offset=10
+          const lot = app.activeLot();
+          let regionIdx = -1;
+          let angle: number | undefined;
+          let offset: number | undefined;
+          for (const p of parts.slice(1)) {
+            const [k, v] = p.split("=");
+            if (k === "region") regionIdx = parseInt(v);
+            else if (k === "angle") angle = parseFloat(v);
+            else if (k === "offset") offset = parseFloat(v);
+          }
+          if (regionIdx < 0) return "error: region-override requires region=N";
+          if (!lot.regionOverrides[regionIdx]) {
+            lot.regionOverrides[regionIdx] = {};
+          }
+          if (angle !== undefined) lot.regionOverrides[regionIdx].angle = angle;
+          if (offset !== undefined) lot.regionOverrides[regionIdx].offset = offset;
+          lot.aisleGraph = null;
+          app.generate();
+          const spec = parts.slice(1).join(" ");
+          return spec;
         }
 
         case "layers": {
@@ -195,7 +281,7 @@ export function createCommandAPI(app: App): CommandAPI {
     },
 
     getState(): object {
-      return app.state.layout ?? {};
+      return app.activeLot().layout ?? {};
     },
   };
 }

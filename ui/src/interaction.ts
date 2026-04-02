@@ -33,6 +33,13 @@ export function setupInteraction(
     const worldPos = renderer.screenToWorld(sx, sy, app.state.camera);
     const mode = app.state.editMode;
 
+    if (mode === "add-boundary") {
+      const { pos } = computeSnap(worldPos, app.getAllVertices(), null, app.state.camera.zoom, emptySnapState());
+      app.state.pendingBoundary.push(pos);
+      renderer.render(app.state);
+      return;
+    }
+
     if (mode === "add-hole") {
       const { pos } = computeSnap(worldPos, app.getAllVertices(), null, app.state.camera.zoom, emptySnapState());
       app.state.pendingHole.push(pos);
@@ -56,6 +63,7 @@ export function setupInteraction(
     // Default: select mode — hit test and drag.
     const allVerts = app.getAllVertices();
     const perimCount = app.getEffectiveAisleGraph()?.perim_vertex_count ?? 0;
+    const activeLotId = app.state.activeLotId;
     let closest: { ref: VertexRef; dist: number } | null = null;
 
     for (const v of allVerts) {
@@ -83,16 +91,19 @@ export function setupInteraction(
     }
 
     if (closest) {
+      // Switch active lot to the one owning this vertex.
+      if (closest.ref.lotId) {
+        app.state.activeLotId = closest.ref.lotId;
+      }
       app.state.selectedVertex = closest.ref;
       app.state.selectedEdge = null;
-      // Aisle vertices are fixed — don't start dragging.
       app.state.isDragging = closest.ref.type !== "aisle";
-      // Sync: when clicking an annotation, also select its edge.
       if (closest.ref.type === "annotation") {
-        const ann = app.state.annotations[closest.ref.index];
+        const lot = app.lotForRef(closest.ref);
+        const ann = lot.annotations[closest.ref.index];
         if (ann && ann.kind !== "DeleteVertex") {
           const pt = ann.midpoint;
-          const graph = app.getEffectiveAisleGraph();
+          const graph = app.getEffectiveAisleGraph(lot);
           if (graph) {
             const seen = new Set<string>();
             let bestIdx = -1;
@@ -131,19 +142,20 @@ export function setupInteraction(
         lastEdgeClickIdx = edgeHit.index;
         app.state.selectedEdge = edgeHit;
         // Sync: also select annotation on this edge if one exists.
-        const graph = app.getEffectiveAisleGraph();
+        const activeLot = app.activeLot();
+        const graph = app.getEffectiveAisleGraph(activeLot);
         if (graph) {
           const edge = graph.edges[edgeHit.index];
           if (edge) {
             const s = graph.vertices[edge.start];
             const e = graph.vertices[edge.end];
             const mid = { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 };
-            const annIdx = app.state.annotations.findIndex((a) => {
+            const annIdx = activeLot.annotations.findIndex((a: any) => {
               const ap = a.kind === "DeleteVertex" ? a.point : a.midpoint;
               return Math.sqrt((ap.x - mid.x) ** 2 + (ap.y - mid.y) ** 2) < 5;
             });
             if (annIdx >= 0) {
-              app.state.selectedVertex = { type: "annotation", index: annIdx };
+              app.state.selectedVertex = { type: "annotation", index: annIdx, lotId: activeLot.id };
             }
           }
         }
@@ -283,46 +295,49 @@ export function setupInteraction(
     const sy = e.clientY - rect.top;
     const worldPos = renderer.screenToWorld(sx, sy, app.state.camera);
 
-    // Check boundary outer edges
-    const outer = app.state.boundary.outer;
     let bestDist = Infinity;
     let bestIdx = -1;
     let bestTarget: "outer" | "hole" = "outer";
     let bestHoleIdx = -1;
+    let bestLotId = "";
 
-    for (let i = 0; i < outer.length; i++) {
-      const a = outer[i];
-      const b = outer[(i + 1) % outer.length];
-      const dist = pointToSegmentDist(worldPos, a, b);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestIdx = i;
-        bestTarget = "outer";
-      }
-    }
-
-    // Check hole edges too
-    for (let hi = 0; hi < app.state.boundary.holes.length; hi++) {
-      const hole = app.state.boundary.holes[hi];
-      for (let i = 0; i < hole.length; i++) {
-        const a = hole[i];
-        const b = hole[(i + 1) % hole.length];
+    for (const lot of app.state.lots) {
+      const outer = lot.boundary.outer;
+      for (let i = 0; i < outer.length; i++) {
+        const a = outer[i];
+        const b = outer[(i + 1) % outer.length];
         const dist = pointToSegmentDist(worldPos, a, b);
         if (dist < bestDist) {
           bestDist = dist;
           bestIdx = i;
-          bestTarget = "hole";
-          bestHoleIdx = hi;
+          bestTarget = "outer";
+          bestLotId = lot.id;
+        }
+      }
+      for (let hi = 0; hi < lot.boundary.holes.length; hi++) {
+        const hole = lot.boundary.holes[hi];
+        for (let i = 0; i < hole.length; i++) {
+          const a = hole[i];
+          const b = hole[(i + 1) % hole.length];
+          const dist = pointToSegmentDist(worldPos, a, b);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestIdx = i;
+            bestTarget = "hole";
+            bestHoleIdx = hi;
+            bestLotId = lot.id;
+          }
         }
       }
     }
 
     const threshold = 10;
     if (bestDist < threshold) {
+      app.state.activeLotId = bestLotId;
       if (bestTarget === "outer") {
-        app.insertBoundaryVertex(bestIdx, worldPos);
+        app.insertBoundaryVertex(bestIdx, worldPos, bestLotId);
       } else {
-        app.insertHoleVertex(bestHoleIdx, bestIdx, worldPos);
+        app.insertHoleVertex(bestHoleIdx, bestIdx, worldPos, bestLotId);
       }
     }
   });
@@ -338,11 +353,15 @@ export function setupInteraction(
       if (app.state.editMode === "add-hole" && app.state.pendingHole.length > 0) {
         app.commitPendingHole();
       }
+      if (app.state.editMode === "add-boundary" && app.state.pendingBoundary.length > 0) {
+        app.commitPendingBoundary();
+      }
       app.state.editMode = "select";
       app.cleanupTombstones();
       app.state.selectedVertex = null;
       app.state.selectedEdge = null;
       app.state.pendingHole = [];
+      app.state.pendingBoundary = [];
       app.state.pendingDriveLine = null;
       app.state.pendingDriveLinePreview = null;
       canvas.style.cursor = "default";
@@ -372,16 +391,15 @@ export function setupInteraction(
       const sel = app.state.selectedVertex;
       if (!sel) return;
       if (sel.type === "annotation") {
-        app.deleteAnnotation(sel.index);
+        app.deleteAnnotation(sel.index, sel.lotId);
       } else if (sel.type === "boundary-outer") {
-        app.deleteBoundaryVertex(sel.index);
+        app.deleteBoundaryVertex(sel.index, sel.lotId);
       } else if (sel.type === "boundary-hole" && sel.holeIndex !== undefined) {
-        app.deleteHoleVertex(sel.holeIndex, sel.index);
+        app.deleteHoleVertex(sel.holeIndex, sel.index, sel.lotId);
       } else if (sel.type === "aisle") {
-        // Create a DeleteVertex annotation instead of mutating the graph.
-        app.deleteAisleVertexByAnnotation(sel.index);
+        app.deleteAisleVertexByAnnotation(sel.index, sel.lotId);
       } else if (sel.type === "drive-line") {
-        app.deleteDriveLine(sel.index);
+        app.deleteDriveLine(sel.index, sel.lotId);
       }
       renderer.render(app.state);
     }
@@ -480,31 +498,33 @@ export function findCollinearChain(graph: DriveAisleGraph, seedIdx: number): num
 
 /// Hit-test against region vector line segments (body, not endpoints).
 function hitTestRegionVectorBody(worldPos: Vec2, app: App, worldRadius: number): VertexRef | null {
-  const rd = app.state.layout?.region_debug;
-  if (!rd) return null;
   const halfLen = 30;
-  let best: { index: number; dist: number } | null = null;
+  let best: { ref: VertexRef; dist: number } | null = null;
 
-  for (let i = 0; i < rd.regions.length; i++) {
-    const region = rd.regions[i];
-    const angleRad = region.aisle_angle_deg * (Math.PI / 180);
-    const dirX = Math.cos(angleRad);
-    const dirY = Math.sin(angleRad);
-    const cx = region.center.x;
-    const cy = region.center.y;
-    const sx = cx - dirX * halfLen;
-    const sy = cy - dirY * halfLen;
-    const ex = cx + dirX * halfLen;
-    const ey = cy + dirY * halfLen;
+  for (const lot of app.state.lots) {
+    const rd = lot.layout?.region_debug;
+    if (!rd) continue;
 
-    const dist = pointToSegmentDist(worldPos, { x: sx, y: sy }, { x: ex, y: ey });
-    if (dist < worldRadius && (!best || dist < best.dist)) {
-      best = { index: i, dist };
+    for (let i = 0; i < rd.regions.length; i++) {
+      const region = rd.regions[i];
+      const angleRad = region.aisle_angle_deg * (Math.PI / 180);
+      const dirX = Math.cos(angleRad);
+      const dirY = Math.sin(angleRad);
+      const cx = region.center.x;
+      const cy = region.center.y;
+      const sx = cx - dirX * halfLen;
+      const sy = cy - dirY * halfLen;
+      const ex = cx + dirX * halfLen;
+      const ey = cy + dirY * halfLen;
+
+      const dist = pointToSegmentDist(worldPos, { x: sx, y: sy }, { x: ex, y: ey });
+      if (dist < worldRadius && (!best || dist < best.dist)) {
+        best = { ref: { type: "region-vector", index: i, endpoint: "body", lotId: lot.id }, dist };
+      }
     }
   }
 
-  if (!best) return null;
-  return { type: "region-vector", index: best.index, endpoint: "body" };
+  return best?.ref ?? null;
 }
 
 export function updateModeHint(app: App): void {
@@ -523,6 +543,7 @@ export function updateModeHint(app: App): void {
     return;
   }
   const hints: Record<string, string> = {
+    "add-boundary": "Click to place boundary vertices for a new lot. Press Esc to finish (needs 3+ vertices).",
     "add-hole": "Click to place hole vertices. Press Esc to finish the hole (needs 3+ vertices).",
     "add-drive-line": "Click to place start point, click again to place end point. Press Esc to cancel.",
   };

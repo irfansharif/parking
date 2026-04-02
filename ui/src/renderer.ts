@@ -1,5 +1,5 @@
 import { AppState, Camera, VertexRef } from "./app";
-import { Vec2, StallQuad, DriveAisleGraph, SpineLine, Face, AisleDirection } from "./types";
+import { Vec2, ParkingLot, StallQuad, DriveAisleGraph, SpineLine, Face, AisleDirection } from "./types";
 import { SnapGuide } from "./snap";
 
 export class Renderer {
@@ -38,29 +38,27 @@ export class Renderer {
       this.drawSnapGuides(state.snapGuides, cam, w, h);
     }
 
-    // 2. Boundary polygon
-    this.drawBoundary(state);
+    // 2–5. Per-lot rendering
+    for (const lot of state.lots) {
+      this.drawBoundary(state, lot);
 
-    if (state.layout) {
-      // 2b. Positive-space faces (debug overlay)
-      if (state.layers.faces && state.layout.faces) {
-        for (let i = 0; i < state.layout.faces.length; i++) {
-          this.drawFace(state.layout.faces[i], i, state.layers.faceColors);
+      const layout = lot.layout;
+      if (!layout) continue;
+
+      if (state.layers.faces && layout.faces) {
+        for (let i = 0; i < layout.faces.length; i++) {
+          this.drawFace(layout.faces[i], i, state.layers.faceColors);
         }
       }
 
-      // 2b2. Region debug overlay
-      if (state.layers.regions && state.layout.region_debug) {
-        const rd = state.layout.region_debug;
+      if (state.layers.regions && layout.region_debug) {
+        const rd = layout.region_debug;
         const colors = Renderer.FACE_COLORS;
-
-        // Draw each region polygon with a distinct color, subtracting holes.
         for (let i = 0; i < rd.regions.length; i++) {
           const [r, g, b] = colors[i % colors.length];
           ctx.beginPath();
           this.tracePath(rd.regions[i].clip_poly);
-          // Subtract hole interiors so they don't get colored.
-          for (const hole of state.boundary.holes) {
+          for (const hole of lot.boundary.holes) {
             if (hole.length >= 3) {
               this.tracePath(hole);
             }
@@ -71,8 +69,6 @@ export class Renderer {
           ctx.lineWidth = 1.0;
           ctx.stroke();
         }
-
-        // Draw separator segments.
         for (const [start, end] of rd.separators) {
           ctx.beginPath();
           ctx.moveTo(start.x, start.y);
@@ -80,7 +76,6 @@ export class Renderer {
           ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
           ctx.lineWidth = 2;
           ctx.stroke();
-          // Draw endpoint dots.
           for (const pt of [start, end]) {
             ctx.beginPath();
             ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
@@ -90,27 +85,19 @@ export class Renderer {
         }
       }
 
-      // 2c. Miter fills (debug overlay)
-      if (state.layers.miterFills && state.layout.miter_fills) {
-        for (const fill of state.layout.miter_fills) {
-          this.drawPolygon(
-            fill,
-            "rgba(255, 100, 100, 0.3)",
-            "rgba(255, 80, 80, 0.7)",
-            0.5,
-          );
+      if (state.layers.miterFills && layout.miter_fills) {
+        for (const fill of layout.miter_fills) {
+          this.drawPolygon(fill, "rgba(255, 100, 100, 0.3)", "rgba(255, 80, 80, 0.7)", 0.5);
         }
       }
 
-      // 2d. Skeleton debug (arcs + nodes)
-      if (state.layers.skeletonDebug && state.layout.skeleton_debug) {
+      if (state.layers.skeletonDebug && layout.skeleton_debug) {
         const colors = Renderer.FACE_COLORS;
-        for (let si = 0; si < state.layout.skeleton_debug.length; si++) {
-          const sk = state.layout.skeleton_debug[si];
+        for (let si = 0; si < layout.skeleton_debug.length; si++) {
+          const sk = layout.skeleton_debug[si];
           let [r, g, b] = state.layers.faceColors
             ? colors[si % colors.length]
             : [78, 205, 196];
-          // Draw skeleton arcs.
           for (const arc of sk.arcs) {
             this.ctx.beginPath();
             this.ctx.moveTo(arc[0].x, arc[0].y);
@@ -119,7 +106,6 @@ export class Renderer {
             this.ctx.lineWidth = 1;
             this.ctx.stroke();
           }
-          // Draw skeleton nodes (edge-collapse points).
           for (const node of sk.nodes) {
             this.ctx.beginPath();
             this.ctx.arc(node.x, node.y, 2.5, 0, Math.PI * 2);
@@ -128,7 +114,6 @@ export class Renderer {
               : "rgba(255, 221, 87, 0.85)";
             this.ctx.fill();
           }
-          // Draw split event nodes as squares.
           const splitColor = state.layers.faceColors
             ? `rgba(${r}, ${g}, ${b}, 0.9)`
             : "rgba(255, 100, 200, 0.9)";
@@ -137,33 +122,22 @@ export class Renderer {
             this.ctx.fillStyle = splitColor;
             this.ctx.fillRect(node.x - s, node.y - s, s * 2, s * 2);
           }
-          // Skeleton source vertices (polygon corners) are drawn later
-          // (step 6b) so they render on top of boundary vertex markers.
         }
       }
 
-      // 3. Aisle corridors
       if (state.layers.aisles) {
-        for (const poly of state.layout.aisle_polygons) {
-          this.drawPolygon(
-            poly,
-            "rgba(80, 80, 100, 0.6)",
-            "rgba(60, 60, 80, 0.8)",
-            0.5,
-          );
+        for (const poly of layout.aisle_polygons) {
+          this.drawPolygon(poly, "rgba(80, 80, 100, 0.6)", "rgba(60, 60, 80, 0.8)", 0.5);
         }
       }
 
-      // 4. Islands (before stalls so stalls paint over island fill)
-      if (state.layers.islands && state.layout.islands) {
-        for (const island of state.layout.islands) {
+      if (state.layers.islands && layout.islands) {
+        for (const island of layout.islands) {
           let fillR: number, fillG: number, fillB: number;
           if (state.layers.faceColors) {
-            // Debug: colorize by face index
             const [fr, fg, fb] = Renderer.FACE_COLORS[island.face_idx % Renderer.FACE_COLORS.length];
             [fillR, fillG, fillB] = [Math.round(fr * 0.45), Math.round(fg * 0.45), Math.round(fb * 0.45)];
           } else {
-            // Grass/landscaping green
             [fillR, fillG, fillB] = [75, 140, 60];
           }
           const { ctx } = this;
@@ -182,48 +156,49 @@ export class Renderer {
         }
       }
 
-      // 4a. Spines (after islands so they're visible over green fill)
-      if (state.layers.spines && state.layout.spines) {
-        for (const spine of state.layout.spines) {
+      if (state.layers.spines && layout.spines) {
+        for (const spine of layout.spines) {
           this.drawSpine(spine);
         }
       }
 
-      // 5. Stalls
       if (state.layers.stalls) {
         const highlightExt = state.layers.extensionStalls;
-        for (const stall of state.layout.stalls) {
+        for (const stall of layout.stalls) {
           this.drawStall(stall, highlightExt);
         }
       }
 
-      // 5b. Paint lines — thin white strokes mimicking real parking lot paint
+      // 5b. Paint lines
       if (state.layers.paintLines) {
-        this.drawPaintLines(state);
+        this.drawPaintLines(state, lot);
       }
 
-    }
+    } // end per-lot loop
 
     // 6. Vertex network overlay (always called; individual sections
     //    check their own layer flags inside).
     this.drawVertexNetwork(state);
 
-    // 6b. Skeleton source vertices drawn after vertex network so they
-    //     aren't hidden by boundary vertex markers at the same position.
-    if (state.layers.skeletonDebug && state.layout?.skeleton_debug) {
-      const colors = Renderer.FACE_COLORS;
-      for (let si = 0; si < state.layout.skeleton_debug.length; si++) {
-        const sk = state.layout.skeleton_debug[si];
-        const [r, g, b] = state.layers.faceColors
-          ? colors[si % colors.length]
-          : [255, 80, 80];
-        const srcColor = `rgba(${r}, ${g}, ${b}, 0.9)`;
-        for (const src of sk.sources) {
-          this.ctx.beginPath();
-          this.ctx.arc(src.x, src.y, 3.5, 0, Math.PI * 2);
-          this.ctx.arc(src.x, src.y, 1.5, 0, Math.PI * 2, true);
-          this.ctx.fillStyle = srcColor;
-          this.ctx.fill();
+    // 6b. Skeleton source vertices drawn after vertex network.
+    if (state.layers.skeletonDebug) {
+      for (const lot of state.lots) {
+        const skd = lot.layout?.skeleton_debug;
+        if (!skd) continue;
+        const colors = Renderer.FACE_COLORS;
+        for (let si = 0; si < skd.length; si++) {
+          const sk = skd[si];
+          const [r, g, b] = state.layers.faceColors
+            ? colors[si % colors.length]
+            : [255, 80, 80];
+          const srcColor = `rgba(${r}, ${g}, ${b}, 0.9)`;
+          for (const src of sk.sources) {
+            this.ctx.beginPath();
+            this.ctx.arc(src.x, src.y, 3.5, 0, Math.PI * 2);
+            this.ctx.arc(src.x, src.y, 1.5, 0, Math.PI * 2, true);
+            this.ctx.fillStyle = srcColor;
+            this.ctx.fill();
+          }
         }
       }
     }
@@ -231,6 +206,11 @@ export class Renderer {
     // 7. Pending hole preview
     if (state.pendingHole && state.pendingHole.length > 0) {
       this.drawPendingHole(state.pendingHole);
+    }
+
+    // 7b. Pending boundary preview
+    if (state.pendingBoundary && state.pendingBoundary.length > 0) {
+      this.drawPendingBoundary(state.pendingBoundary);
     }
 
     // 8. Pending drive line preview
@@ -316,28 +296,26 @@ export class Renderer {
     ctx.restore();
   }
 
-  private drawBoundary(state: AppState): void {
+  private drawBoundary(state: AppState, lot: ParkingLot): void {
     const { ctx } = this;
-    const { boundary } = state;
+    const { boundary } = lot;
+    const isActive = lot.id === state.activeLotId;
 
-    // Outer boundary fill at derived (raw) position, stroke at aisle-edge perimeter.
-    const derivedOuter = state.layout?.derived_outer ?? boundary.outer;
+    const derivedOuter = lot.layout?.derived_outer ?? boundary.outer;
     ctx.beginPath();
     this.tracePath(derivedOuter);
     ctx.fillStyle = "rgba(40, 40, 60, 0.8)";
     ctx.fill();
 
-    // Outer boundary stroke at aisle-edge perimeter (where orange dots are).
     if (state.layers.vertices) {
       ctx.beginPath();
       this.tracePath(boundary.outer);
-      ctx.strokeStyle = "rgba(233, 69, 96, 0.8)";
+      ctx.strokeStyle = isActive ? "rgba(233, 69, 96, 0.8)" : "rgba(233, 69, 96, 0.4)";
       ctx.lineWidth = 1;
       ctx.stroke();
     }
 
-    // Holes (buildings): fill at derived (raw) positions, stroke at aisle-edge ring positions.
-    const derivedHoles = state.layout?.derived_holes ?? [];
+    const derivedHoles = lot.layout?.derived_holes ?? [];
     for (const dh of derivedHoles) {
       ctx.beginPath();
       this.tracePath(dh);
@@ -348,7 +326,7 @@ export class Renderer {
       for (const hole of boundary.holes) {
         ctx.beginPath();
         this.tracePath(hole);
-        ctx.strokeStyle = "rgba(233, 69, 96, 0.6)";
+        ctx.strokeStyle = isActive ? "rgba(233, 69, 96, 0.6)" : "rgba(233, 69, 96, 0.3)";
         ctx.lineWidth = 0.8;
         ctx.stroke();
       }
@@ -501,7 +479,7 @@ export class Renderer {
     ctx.stroke();
   }
 
-  private drawPaintLines(state: AppState): void {
+  private drawPaintLines(state: AppState, lot: ParkingLot): void {
     const { ctx } = this;
     ctx.save();
     ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
@@ -512,18 +490,16 @@ export class Renderer {
     // corners: [0]=back_left, [1]=back_right, [2]=aisle_right, [3]=aisle_left
     // Regular stalls: [2]→[3] open (aisle/entrance).
     // Island stalls: [0]→[1] open (back, connects to island).
-    if (state.layout) {
+    if (lot.layout) {
       ctx.beginPath();
-      for (const stall of state.layout.stalls) {
+      for (const stall of lot.layout.stalls) {
         const c = stall.corners;
         if (stall.kind === "Island") {
-          // Both dividers + back edge, aisle open.
           ctx.moveTo(c[1].x, c[1].y);
           ctx.lineTo(c[2].x, c[2].y);
           ctx.lineTo(c[3].x, c[3].y);
           ctx.lineTo(c[0].x, c[0].y);
         } else {
-          // Both dividers + aisle edge, back open.
           ctx.moveTo(c[3].x, c[3].y);
           ctx.lineTo(c[0].x, c[0].y);
           ctx.lineTo(c[1].x, c[1].y);
@@ -532,13 +508,9 @@ export class Renderer {
       }
       ctx.stroke();
 
-      // Island stalls: hatched fill inside the stall quad (when islands layer enabled).
-      // Hatch angle is relative to the stall's own axes:
-      //   0° = parallel to back edge (corners[0]→corners[1])
-      //   90° = parallel to side edges (corners[0]→corners[3])
       const hatchAngleDeg = 45;
       const hatchRad = hatchAngleDeg * Math.PI / 180;
-      for (const stall of state.layout.stalls) {
+      for (const stall of lot.layout.stalls) {
         if (stall.kind !== "Island") continue;
         const c = stall.corners;
         ctx.save();
@@ -550,15 +522,13 @@ export class Renderer {
         ctx.closePath();
         ctx.clip();
 
-        // Stall-local axes: u along back edge, v along left side.
+        // Hatch at 45° relative to the back edge ([0]→[1]).
         const ux = c[1].x - c[0].x, uy = c[1].y - c[0].y;
-        const vx = c[3].x - c[0].x, vy = c[3].y - c[0].y;
         const uLen = Math.sqrt(ux * ux + uy * uy);
-        const vLen = Math.sqrt(vx * vx + vy * vy);
-
-        // Hatch direction in world space from stall-local angle.
-        const hx = Math.cos(hatchRad) * ux / uLen + Math.sin(hatchRad) * vx / vLen;
-        const hy = Math.cos(hatchRad) * uy / uLen + Math.sin(hatchRad) * vy / vLen;
+        const unx = ux / uLen, uny = uy / uLen;
+        // Rotate back-edge direction by 45°.
+        const hx = unx * Math.cos(hatchRad) - uny * Math.sin(hatchRad);
+        const hy = unx * Math.sin(hatchRad) + uny * Math.cos(hatchRad);
         const hLen = Math.sqrt(hx * hx + hy * hy);
         const dhx = hx / hLen, dhy = hy / hLen;
 
@@ -587,10 +557,9 @@ export class Renderer {
         ctx.restore();
       }
 
-      // Island outlines
-      if (state.layout.islands) {
+      if (lot.layout.islands) {
         ctx.beginPath();
-        for (const island of state.layout.islands) {
+        for (const island of lot.layout.islands) {
           this.tracePath(island.contour);
           if (island.holes) {
             for (const hole of island.holes) {
@@ -642,10 +611,11 @@ export class Renderer {
 
   private drawVertexNetwork(state: AppState): void {
     const { ctx } = this;
+    const activeLot = state.lots.find((l) => l.id === state.activeLotId);
 
     const graph: DriveAisleGraph | null =
-      state.aisleGraph ?? state.layout?.resolved_graph ?? null;
-    const isManualGraph = state.aisleGraph != null;
+      activeLot?.aisleGraph ?? activeLot?.layout?.resolved_graph ?? null;
+    const isManualGraph = activeLot?.aisleGraph != null;
 
     // Draw aisle graph edges (dashed lines)
     if (graph && state.layers.vertices) {
@@ -663,7 +633,7 @@ export class Renderer {
         const isChainSelected = isSelected && !isSegmentSelected;
         // Find the annotation (if any) that applies to this edge.
         const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
-        const matchedAnn = state.annotations.find((a) => {
+        const matchedAnn = (activeLot?.annotations ?? []).find((a: any) => {
           if (a.kind !== "OneWay" && a.kind !== "TwoWayOriented") return false;
           if (a._active === false) return false;
           const d = Math.sqrt((a.midpoint.x - mid.x) ** 2 + (a.midpoint.y - mid.y) ** 2);
@@ -763,7 +733,8 @@ export class Renderer {
     }
 
     // Draw drive line edges (solid green + faint infinite extent)
-    for (const dl of state.layers.driveLines ? state.driveLines : []) {
+    const allDriveLines = state.layers.driveLines ? state.lots.flatMap((l) => l.driveLines) : [];
+    for (const dl of allDriveLines) {
       const dir = { x: dl.end.x - dl.start.x, y: dl.end.y - dl.start.y };
       const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y);
       if (len > 1e-9) {
@@ -797,50 +768,65 @@ export class Renderer {
         : "rgba(100, 150, 255, 0.5)",
     }));
 
-    const driveLineVerts = (state.layers.driveLines ? state.driveLines : []).flatMap((dl, i) => [
-      {
-        pos: dl.start,
-        ref: { type: "drive-line" as const, index: i, endpoint: "start" as const },
-        color: "#00ff88",
-      },
-      {
-        pos: dl.end,
-        ref: { type: "drive-line" as const, index: i, endpoint: "end" as const },
-        color: "#00ff88",
-      },
-    ]);
+    const driveLineVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
+    if (state.layers.driveLines) {
+      for (const lot of state.lots) {
+        lot.driveLines.forEach((dl, i) => {
+          driveLineVerts.push({
+            pos: dl.start,
+            ref: { type: "drive-line", index: i, endpoint: "start", lotId: lot.id },
+            color: "#00ff88",
+          });
+          driveLineVerts.push({
+            pos: dl.end,
+            ref: { type: "drive-line", index: i, endpoint: "end", lotId: lot.id },
+            color: "#00ff88",
+          });
+        });
+      }
+    }
 
-    // Draw vertices — boundary/aisle verts gated by layers.vertices,
-    // drive-line verts gated by layers.driveLines.
-    const annotationVerts = state.annotations.map((ann, i) => {
-      const pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
-      const isDelete = ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
-      const isTwoWayOri = ann.kind === "TwoWayOriented";
-      const activeColor = isDelete ? "rgba(255, 80, 80, 0.95)" : isTwoWayOri ? "rgba(100, 200, 255, 0.95)" : "rgba(255, 180, 50, 0.95)";
-      const inactiveColor = isDelete ? "rgba(255, 80, 80, 0.3)" : isTwoWayOri ? "rgba(100, 200, 255, 0.3)" : "rgba(255, 180, 50, 0.3)";
-      return {
-        pos,
-        ref: { type: "annotation" as const, index: i },
-        color: ann._active === false ? inactiveColor : activeColor,
-      };
-    });
+    const annotationVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
+    for (const lot of state.lots) {
+      lot.annotations.forEach((ann, i) => {
+        const pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
+        const isDelete = ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
+        const isTwoWayOri = ann.kind === "TwoWayOriented";
+        const activeColor = isDelete ? "rgba(255, 80, 80, 0.95)" : isTwoWayOri ? "rgba(100, 200, 255, 0.95)" : "rgba(255, 180, 50, 0.95)";
+        const inactiveColor = isDelete ? "rgba(255, 80, 80, 0.3)" : isTwoWayOri ? "rgba(100, 200, 255, 0.3)" : "rgba(255, 180, 50, 0.3)";
+        annotationVerts.push({
+          pos,
+          ref: { type: "annotation", index: i, lotId: lot.id },
+          color: ann._active === false ? inactiveColor : activeColor,
+        });
+      });
+    }
+
+    const boundaryVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
+    if (state.layers.vertices) {
+      for (const lot of state.lots) {
+        const isActive = lot.id === state.activeLotId;
+        lot.boundary.outer.forEach((v, i) => {
+          boundaryVerts.push({
+            pos: v,
+            ref: { type: "boundary-outer", index: i, lotId: lot.id },
+            color: isActive ? "rgba(255, 160, 50, 0.9)" : "rgba(255, 160, 50, 0.4)",
+          });
+        });
+        lot.boundary.holes.forEach((hole, hi) => {
+          hole.forEach((v, vi) => {
+            boundaryVerts.push({
+              pos: v,
+              ref: { type: "boundary-hole", index: vi, holeIndex: hi, lotId: lot.id },
+              color: isActive ? "rgba(255, 120, 50, 0.9)" : "rgba(255, 120, 50, 0.4)",
+            });
+          });
+        });
+      }
+    }
 
     const allVerts = [
-      ...(state.layers.vertices ? [
-        ...state.boundary.outer.map((v, i) => ({
-          pos: v,
-          ref: { type: "boundary-outer" as const, index: i },
-          color: "rgba(255, 160, 50, 0.9)",
-        })),
-        ...state.boundary.holes.flatMap((hole, hi) =>
-          hole.map((v, vi) => ({
-            pos: v,
-            ref: { type: "boundary-hole" as const, index: vi, holeIndex: hi },
-            color: "rgba(255, 120, 50, 0.9)",
-          })),
-        ),
-        ...aisleVerts,
-      ] : []),
+      ...(state.layers.vertices ? [...boundaryVerts, ...aisleVerts] : []),
       ...driveLineVerts,
       ...annotationVerts,
     ];
@@ -891,78 +877,79 @@ export class Renderer {
   }
 
   private drawRegionVectors(state: AppState): void {
-    const rd = state.layout?.region_debug;
-    if (!rd || rd.regions.length === 0) return;
     const { ctx } = this;
     const colors = Renderer.FACE_COLORS;
     const halfLen = 30;
 
-    for (let i = 0; i < rd.regions.length; i++) {
-      const region = rd.regions[i];
-      const [r, g, b] = colors[i % colors.length];
-      const angleRad = region.aisle_angle_deg * (Math.PI / 180);
-      const dirX = Math.cos(angleRad);
-      const dirY = Math.sin(angleRad);
-      const cx = region.center.x;
-      const cy = region.center.y;
-      const sx = cx - dirX * halfLen;
-      const sy = cy - dirY * halfLen;
-      const ex = cx + dirX * halfLen;
-      const ey = cy + dirY * halfLen;
+    for (const lot of state.lots) {
+      const rd = lot.layout?.region_debug;
+      if (!rd || rd.regions.length === 0) continue;
 
-      // Faint infinite extent line.
-      const ext = 10000;
-      ctx.beginPath();
-      ctx.moveTo(cx - dirX * ext, cy - dirY * ext);
-      ctx.lineTo(cx + dirX * ext, cy + dirY * ext);
-      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.15)`;
-      ctx.lineWidth = 0.5;
-      ctx.setLineDash([4, 4]);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      for (let i = 0; i < rd.regions.length; i++) {
+        const region = rd.regions[i];
+        const [r, g, b] = colors[i % colors.length];
+        const angleRad = region.aisle_angle_deg * (Math.PI / 180);
+        const dirX = Math.cos(angleRad);
+        const dirY = Math.sin(angleRad);
+        const cx = region.center.x;
+        const cy = region.center.y;
+        const sx = cx - dirX * halfLen;
+        const sy = cy - dirY * halfLen;
+        const ex = cx + dirX * halfLen;
+        const ey = cy + dirY * halfLen;
 
-      // Solid control segment.
-      ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      ctx.lineTo(ex, ey);
-      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
-      ctx.lineWidth = 2;
-      ctx.stroke();
-
-      // Arrowhead at end.
-      const arrowSize = 7;
-      ctx.beginPath();
-      ctx.moveTo(ex, ey);
-      ctx.lineTo(ex - dirX * arrowSize + dirY * arrowSize * 0.4, ey - dirY * arrowSize - dirX * arrowSize * 0.4);
-      ctx.lineTo(ex - dirX * arrowSize - dirY * arrowSize * 0.4, ey - dirY * arrowSize + dirX * arrowSize * 0.4);
-      ctx.closePath();
-      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
-      ctx.fill();
-
-      // Endpoint dots.
-      const endpoints: { pos: Vec2; endpoint: "start" | "end" }[] = [
-        { pos: { x: sx, y: sy }, endpoint: "start" },
-        { pos: { x: ex, y: ey }, endpoint: "end" },
-      ];
-      for (const ep of endpoints) {
-        const ref: VertexRef = { type: "region-vector", index: i, endpoint: ep.endpoint };
-        const isSelected = this.vertexRefsEqual(ref, state.selectedVertex);
-        const isHovered = this.vertexRefsEqual(ref, state.hoveredVertex);
-        const radius = isSelected || isHovered ? 6 : 4.5;
+        const ext = 10000;
         ctx.beginPath();
-        ctx.arc(ep.pos.x, ep.pos.y, radius, 0, Math.PI * 2);
-        ctx.fillStyle = isSelected ? "#ffffff" : isHovered ? "#ffff00" : `rgba(${r}, ${g}, ${b}, 0.95)`;
-        ctx.fill();
-        ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
-        ctx.lineWidth = 0.8;
+        ctx.moveTo(cx - dirX * ext, cy - dirY * ext);
+        ctx.lineTo(cx + dirX * ext, cy + dirY * ext);
+        ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.15)`;
+        ctx.lineWidth = 0.5;
+        ctx.setLineDash([4, 4]);
         ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
+        ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        const arrowSize = 7;
+        ctx.beginPath();
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(ex - dirX * arrowSize + dirY * arrowSize * 0.4, ey - dirY * arrowSize - dirX * arrowSize * 0.4);
+        ctx.lineTo(ex - dirX * arrowSize - dirY * arrowSize * 0.4, ey - dirY * arrowSize + dirX * arrowSize * 0.4);
+        ctx.closePath();
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
+        ctx.fill();
+
+        const endpoints: { pos: Vec2; endpoint: "start" | "end" }[] = [
+          { pos: { x: sx, y: sy }, endpoint: "start" },
+          { pos: { x: ex, y: ey }, endpoint: "end" },
+        ];
+        for (const ep of endpoints) {
+          const ref: VertexRef = { type: "region-vector", index: i, endpoint: ep.endpoint, lotId: lot.id };
+          const isSelected = this.vertexRefsEqual(ref, state.selectedVertex);
+          const isHovered = this.vertexRefsEqual(ref, state.hoveredVertex);
+          const radius = isSelected || isHovered ? 6 : 4.5;
+          ctx.beginPath();
+          ctx.arc(ep.pos.x, ep.pos.y, radius, 0, Math.PI * 2);
+          ctx.fillStyle = isSelected ? "#ffffff" : isHovered ? "#ffff00" : `rgba(${r}, ${g}, ${b}, 0.95)`;
+          ctx.fill();
+          ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+          ctx.lineWidth = 0.8;
+          ctx.stroke();
+        }
       }
     }
   }
 
   private drawAisleVector(state: AppState): void {
     const { ctx } = this;
-    const vec = state.aisleVector;
+    const activeLot = state.lots.find((l) => l.id === state.activeLotId);
+    if (!activeLot) return;
+    const vec = activeLot.aisleVector;
     const dx = vec.end.x - vec.start.x;
     const dy = vec.end.y - vec.start.y;
     const len = Math.sqrt(dx * dx + dy * dy);
@@ -1031,6 +1018,7 @@ export class Renderer {
   ): boolean {
     if (!a || !b) return false;
     if (a.type !== b.type || a.index !== b.index) return false;
+    if (a.lotId !== b.lotId) return false;
     if (a.type === "boundary-hole")
       return a.holeIndex === (b as VertexRef).holeIndex;
     if (a.type === "drive-line" || a.type === "aisle-vector" || a.type === "region-vector")
@@ -1056,6 +1044,32 @@ export class Renderer {
       ctx.beginPath();
       ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(233, 69, 96, 0.9)";
+      ctx.fill();
+    }
+  }
+
+  private drawPendingBoundary(points: Vec2[]): void {
+    const { ctx } = this;
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = "rgba(100, 200, 255, 0.8)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    if (points.length >= 3) {
+      ctx.closePath();
+      ctx.fillStyle = "rgba(100, 200, 255, 0.1)";
+      ctx.fill();
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    for (const p of points) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(100, 200, 255, 0.9)";
       ctx.fill();
     }
   }

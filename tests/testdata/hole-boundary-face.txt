@@ -19,7 +19,7 @@ set cross_aisle_spacing=179
 
 generate
 ----
-total_stalls: 986
+total_stalls: 902
 
 screenshot
 ----

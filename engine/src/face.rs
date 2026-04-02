@@ -1576,9 +1576,14 @@ fn mark_island_stalls(
 
         // Mark stalls whose absolute grid position matches the island
         // pattern: floor(proj / pitch) % interval == interval/2.
-        // Skip the first and last stall in the row.
-        for (i, &(proj, idx)) in sorted.iter().enumerate() {
-            if i == 0 || i == count - 1 { continue; }
+        // Skip stalls near row ends using a position-based margin rather
+        // than index-based, so paired sides with different stall counts
+        // still agree on which absolute positions are eligible.
+        let end_margin = if seg.is_interior { 1.5 * pitch } else { 0.5 * pitch };
+        let proj_min = sorted.first().map(|s| s.0).unwrap_or(0.0);
+        let proj_max = sorted.last().map(|s| s.0).unwrap_or(0.0);
+        for &(proj, idx) in &sorted {
+            if proj - proj_min < end_margin || proj_max - proj < end_margin { continue; }
             let k = (proj / pitch).floor() as i64;
             if k.rem_euclid(interval as i64) == target_rem {
                 island_keys.insert(stall_key(&stalls_3[idx].0));
@@ -1843,7 +1848,7 @@ fn extend_spines_to_faces(
 
         // End margin: shorten each extension's outer end (the face-boundary
         // side) so the last stall doesn't create a thin sliver island.
-        let end_margin_t = (params.stall_width * 0.6) / ext_total;
+        let end_margin_t = stall_pitch / ext_total;
 
         for &(st0, st1) in &spine_clips {
             for &(ot0, ot1) in &offset_clips {
@@ -3680,34 +3685,49 @@ mod tests {
                 return;
             }
 
-            // A: first stall is not an island.
-            assert!(!row[0].1,
-                "{}: first stall should not be island (count={}, interval={})",
-                label, count, interval);
+            // A+B: stalls within 1.5 pitches of row ends are not islands
+            // (position-based margin, matching mark_island_stalls logic).
+            let pitch = dir.length(); // dir is unit, pitch comes from params
+            let _ = pitch; // pitch is implicit in the stall spacing
+            let proj_min = row.first().unwrap().0;
+            let proj_max = row.last().unwrap().0;
+            let stall_pitch_val = row.get(1).map_or(1.0, |r| r.0 - proj_min);
+            let end_margin = 1.5 * stall_pitch_val;
+            for (j, &(proj, is_isl)) in row.iter().enumerate() {
+                if proj - proj_min < end_margin || proj_max - proj < end_margin {
+                    assert!(!is_isl,
+                        "{}: stall {} at proj={:.1} should not be island (within end margin, count={}, interval={})",
+                        label, j, proj, count, interval);
+                }
+            }
 
-            // B: last stall is not an island.
-            assert!(!row[count - 1].1,
-                "{}: last stall should not be island (count={}, interval={})",
-                label, count, interval);
-
-            // C: at least one island exists.
+            // C: at least one island exists when enough interior stalls
+            // remain after position-based end margins.
             let n_islands = row.iter().filter(|(_, is)| *is).count();
-            assert!(n_islands >= 1,
-                "{}: row with {} stalls and interval {} should have >= 1 island, got {}",
-                label, count, interval, n_islands);
+            let eligible = row.iter().filter(|(proj, _)| {
+                proj - proj_min >= end_margin && proj_max - proj >= end_margin
+            }).count();
+            if eligible >= interval {
+                assert!(n_islands >= 1,
+                    "{}: row with {} stalls ({} eligible) and interval {} should have >= 1 island, got {}",
+                    label, count, eligible, interval, n_islands);
+            }
 
             // D: no run of >= interval consecutive non-island stalls
-            // in the interior (positions 1..count-2).
-            if count > 2 {
+            // in the eligible interior.
+            {
                 let mut run = 0usize;
-                for i in 1..count - 1 {
-                    if row[i].1 {
+                for (j, &(proj, is_isl)) in row.iter().enumerate() {
+                    if proj - proj_min < end_margin || proj_max - proj < end_margin {
+                        continue;
+                    }
+                    if is_isl {
                         run = 0;
                     } else {
                         run += 1;
                         assert!(run < interval,
                             "{}: interior run of {} non-island stalls at position {} exceeds interval {} (count={})",
-                            label, run + 1, i, interval, count);
+                            label, run + 1, j, interval, count);
                     }
                 }
             }

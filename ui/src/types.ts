@@ -179,6 +179,17 @@ export interface GenerateInput {
   regionOverrides?: RegionOverride[];
 }
 
+export interface ParkingLot {
+  id: string;
+  boundary: Polygon;
+  aisleGraph: DriveAisleGraph | null;
+  driveLines: DriveLine[];
+  annotations: Annotation[];
+  aisleVector: { start: Vec2; end: Vec2 };
+  regionOverrides: { [regionIndex: number]: { angle?: number; offset?: number } };
+  layout: ParkingLayout | null;
+}
+
 export interface RegionOverride {
   region_index: number;
   aisle_angle_deg?: number;

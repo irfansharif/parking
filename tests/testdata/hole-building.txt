@@ -22,7 +22,7 @@ set stall_angle_deg=60
 
 generate
 ----
-total_stalls: 0
+total_stalls: 120
 
 screenshot
 ----
