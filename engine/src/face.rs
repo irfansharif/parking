@@ -3776,7 +3776,7 @@ mod tests {
             };
             let dir = Vec2::new(1.0, 0.0);
 
-            for &n in &[5, 8, 12, 20] {
+            for &n in &[6, 8, 12, 20] {
                 let (mut stalls_3, spine) = make_row(n, 0, 0, 0.0, &params);
                 let actual_n = stalls_3.len();
                 let mut tagged: Vec<(StallQuad, usize)> = stalls_3.iter()

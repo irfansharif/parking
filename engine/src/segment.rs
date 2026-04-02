@@ -12,6 +12,13 @@ use crate::types::*;
 /// to stagger stalls from opposing spines in same-direction one-way faces.
 /// `centering_shift` shifts all stall positions along the spine by a fixed
 /// distance (in world units) to center stalls within the spine extent.
+///
+/// Corner layout (viewed from above, spine horizontal, stalls growing up):
+///
+///   corners: [0]=back_left, [1]=back_right, [2]=aisle_right, [3]=aisle_left
+///
+/// The renderer draws [3]→[0]→[1]→[2] (left divider, back edge, right
+/// divider) and leaves [2]→[3] open (the aisle/entrance edge).
 pub fn fill_strip(
     edge_start: Vec2,
     edge_end: Vec2,
@@ -78,13 +85,13 @@ pub fn fill_strip(
     for k in k_min..=k_max {
         let t = (k as f64 + 0.5) * stall_pitch - offset_proj;
         let mid = edge_start + edge_dir * t + normal * edge_width;
-        let p0 = mid - width_dir * (params.stall_width / 2.0);
-        let p1 = mid + width_dir * (params.stall_width / 2.0);
-        let p2 = p1 + depth_dir * stall_depth;
-        let p3 = p0 + depth_dir * stall_depth;
+        let aisle_left  = mid - width_dir * (params.stall_width / 2.0);
+        let aisle_right = mid + width_dir * (params.stall_width / 2.0);
+        let back_right = aisle_right + depth_dir * stall_depth;
+        let back_left  = aisle_left  + depth_dir * stall_depth;
 
         stalls.push(StallQuad {
-            corners: [p0, p1, p2, p3],
+            corners: [back_left, back_right, aisle_right, aisle_left],
             kind: StallKind::Standard,
         });
     }

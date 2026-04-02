@@ -402,7 +402,11 @@ export class App {
     } else if (ref.type === "drive-line" && ref.endpoint) {
       const dl = this.state.driveLines[ref.index];
       if (dl.holePin && ref.endpoint === "start") {
-        // Pinned end — don't move it, it's attached to the hole vertex.
+        // Pinned end — move the underlying hole vertex instead.
+        this.moveVertex(
+          { type: "boundary-hole", index: dl.holePin.vertexIndex, holeIndex: dl.holePin.holeIndex },
+          pos,
+        );
         return;
       }
       if (dl.holePin && ref.endpoint === "end") {

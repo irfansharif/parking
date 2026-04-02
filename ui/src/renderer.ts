@@ -495,22 +495,77 @@ export class Renderer {
     ctx.lineWidth = 0.5;
     ctx.lineCap = "round";
 
-    // Stall paint lines: draw three sides of each stall (not the entrance
-    // edge corners[2]→corners[3], which is the aisle-facing open side).
+    // Stall paint lines: draw three sides, leaving the aisle edge open.
+    // corners: [0]=back_left, [1]=back_right, [2]=aisle_right, [3]=aisle_left
     if (state.layout) {
       ctx.beginPath();
       for (const stall of state.layout.stalls) {
-        if (stall.kind === "Island") continue;
         const c = stall.corners;
-        // Side: corners[3] → corners[0]
+        // Left divider: aisle_left[3] → back_left[0]
         ctx.moveTo(c[3].x, c[3].y);
         ctx.lineTo(c[0].x, c[0].y);
-        // Back: corners[0] → corners[1]
+        // Back edge: back_left[0] → back_right[1]
         ctx.lineTo(c[1].x, c[1].y);
-        // Side: corners[1] → corners[2]
+        // Right divider: back_right[1] → aisle_right[2]
         ctx.lineTo(c[2].x, c[2].y);
+        // Aisle edge [2]→[3] left open (entrance).
       }
       ctx.stroke();
+
+      // Island stalls: hatched fill inside the stall quad.
+      // Hatch angle is relative to the stall's own axes:
+      //   0° = parallel to back edge (corners[0]→corners[1])
+      //   90° = parallel to side edges (corners[0]→corners[3])
+      const hatchAngleDeg = 45;
+      const hatchRad = hatchAngleDeg * Math.PI / 180;
+      for (const stall of state.layout.stalls) {
+        if (stall.kind !== "Island") continue;
+        const c = stall.corners;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(c[0].x, c[0].y);
+        ctx.lineTo(c[1].x, c[1].y);
+        ctx.lineTo(c[2].x, c[2].y);
+        ctx.lineTo(c[3].x, c[3].y);
+        ctx.closePath();
+        ctx.clip();
+
+        // Stall-local axes: u along back edge, v along left side.
+        const ux = c[1].x - c[0].x, uy = c[1].y - c[0].y;
+        const vx = c[3].x - c[0].x, vy = c[3].y - c[0].y;
+        const uLen = Math.sqrt(ux * ux + uy * uy);
+        const vLen = Math.sqrt(vx * vx + vy * vy);
+
+        // Hatch direction in world space from stall-local angle.
+        const hx = Math.cos(hatchRad) * ux / uLen + Math.sin(hatchRad) * vx / vLen;
+        const hy = Math.cos(hatchRad) * uy / uLen + Math.sin(hatchRad) * vy / vLen;
+        const hLen = Math.sqrt(hx * hx + hy * hy);
+        const dhx = hx / hLen, dhy = hy / hLen;
+
+        // Perpendicular to hatch direction (sweep axis).
+        const nx = -dhy, ny = dhx;
+
+        // Project corners onto sweep axis to find range.
+        const projs = [0, 1, 2, 3].map(i => c[i].x * nx + c[i].y * ny);
+        const minP = Math.min(...projs), maxP = Math.max(...projs);
+
+        // Extent along hatch direction for line length.
+        const hProjs = [0, 1, 2, 3].map(i => c[i].x * dhx + c[i].y * dhy);
+        const halfH = (Math.max(...hProjs) - Math.min(...hProjs)) / 2 + 2;
+        const midH = (Math.max(...hProjs) + Math.min(...hProjs)) / 2;
+
+        const spacing = 3;
+        ctx.beginPath();
+        for (let p = minP; p <= maxP; p += spacing) {
+          // Base point on this sweep line.
+          const bx = p * nx + midH * dhx;
+          const by = p * ny + midH * dhy;
+          ctx.moveTo(bx - halfH * dhx, by - halfH * dhy);
+          ctx.lineTo(bx + halfH * dhx, by + halfH * dhy);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
 
       // Island outlines
       if (state.layout.islands) {
@@ -810,8 +865,9 @@ export class Renderer {
       }
     }
 
-    // Region vectors — always rendered (global = single region).
-    this.drawRegionVectors(state);
+    if (state.layers.regions) {
+      this.drawRegionVectors(state);
+    }
   }
 
   private drawRegionVectors(state: AppState): void {

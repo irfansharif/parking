@@ -3,6 +3,25 @@ use crate::clip::point_in_polygon;
 use crate::face::generate_from_spines;
 use crate::inset::{inset_polygon, signed_area};
 use crate::types::*;
+use geo::{Coord, LineString};
+
+fn region_pole(poly: &[Vec2], holes: &[Vec<Vec2>]) -> Vec2 {
+    if poly.len() < 3 {
+        return if poly.is_empty() { Vec2::new(0.0, 0.0) } else { poly[0] };
+    }
+    let to_ls = |pts: &[Vec2]| -> LineString<f64> {
+        LineString::new(pts.iter().map(|v| Coord { x: v.x, y: v.y }).collect())
+    };
+    let inner: Vec<LineString<f64>> = holes.iter()
+        .filter(|h| h.len() >= 3)
+        .map(|h| to_ls(h))
+        .collect();
+    let geo_poly = geo::Polygon::new(to_ls(poly), inner);
+    match polylabel::polylabel(&geo_poly, &1.0) {
+        Ok(pt) => Vec2::new(pt.x(), pt.y()),
+        Err(_) => poly[0],
+    }
+}
 
 pub fn generate(input: GenerateInput) -> ParkingLayout {
     // Extract separator lines from pinned drive lines: (hole_index, vertex_index, boundary_endpoint).
@@ -78,11 +97,12 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
             ensure_ccw(input.boundary.outer.clone())
         };
 
+        let hole_loops: Vec<Vec<Vec2>> = input.boundary.holes.iter()
+            .filter(|h| !h.is_empty())
+            .cloned()
+            .collect();
+
         let mut region_list = if !separator_lines.is_empty() {
-            let hole_loops: Vec<Vec<Vec2>> = input.boundary.holes.iter()
-                .filter(|h| !h.is_empty())
-                .cloned()
-                .collect();
             decompose_regions(&outer_loop, &hole_loops, &separator_lines)
         } else {
             vec![]
@@ -106,18 +126,9 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
             }
         }
 
-        // Pick the top-left vertex of the region polygon as the vector anchor.
-        // "Top-left" = smallest y first (topmost), then smallest x (leftmost).
-        let top_left_vertex = |poly: &[Vec2]| -> Vec2 {
-            if poly.is_empty() { return Vec2::new(0.0, 0.0); }
-            *poly.iter().min_by(|a, b| {
-                a.y.partial_cmp(&b.y).unwrap().then(a.x.partial_cmp(&b.x).unwrap())
-            }).unwrap()
-        };
-
         Some(RegionDebug {
             regions: region_list.into_iter().map(|r| {
-                let center = top_left_vertex(&r.clip_poly);
+                let center = region_pole(&r.clip_poly, &hole_loops);
                 RegionInfo {
                     clip_poly: r.clip_poly,
                     aisle_angle_deg: r.aisle_angle_deg,
@@ -694,4 +705,92 @@ fn point_to_segment_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
     let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
     let proj = a + ab * t;
     (p - proj).length()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clip::point_in_polygon;
+
+    #[test]
+    fn pole_u_shape_no_holes() {
+        // U-shaped polygon (opening at top).
+        let poly = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            Vec2::new(100.0, 100.0),
+            Vec2::new(80.0, 100.0),
+            Vec2::new(80.0, 40.0),
+            Vec2::new(20.0, 40.0),
+            Vec2::new(20.0, 100.0),
+            Vec2::new(0.0, 100.0),
+        ];
+        let center = region_pole(&poly, &[]);
+        assert!(point_in_polygon(&center, &poly),
+            "pole ({}, {}) must be inside U-shape", center.x, center.y);
+        // Must be in the bottom bar, not the empty opening.
+        assert!(center.y < 40.0,
+            "pole ({}, {}) should be in the bottom bar (y < 40)", center.x, center.y);
+    }
+
+    #[test]
+    fn pole_avoids_hole() {
+        // Region polygon that encompasses a building hole (from real debug data).
+        // The polygon traces the outer boundary and the building's right/bottom/left
+        // edges, so the building interior is inside the polygon.
+        let poly = vec![
+            Vec2::new(394.5, 251.8),
+            Vec2::new(752.0, 39.2),
+            Vec2::new(762.2, 244.2),
+            Vec2::new(611.1, 251.8),
+            Vec2::new(613.9, 512.3),
+            Vec2::new(394.5, 512.3),
+        ];
+        // The building hole (approximate rectangle).
+        let hole = vec![
+            Vec2::new(394.5, 251.8),
+            Vec2::new(611.1, 251.8),
+            Vec2::new(613.9, 512.3),
+            Vec2::new(394.5, 512.3),
+        ];
+
+        // Without the hole, polylabel lands inside the building.
+        let center_no_hole = region_pole(&poly, &[]);
+        assert!(point_in_polygon(&center_no_hole, &hole),
+            "without hole, pole ({}, {}) should land inside building",
+            center_no_hole.x, center_no_hole.y);
+
+        // With the hole, polylabel must avoid the building.
+        let center = region_pole(&poly, &[hole.clone()]);
+        assert!(point_in_polygon(&center, &poly),
+            "pole ({}, {}) must be inside region polygon", center.x, center.y);
+        assert!(!point_in_polygon(&center, &hole),
+            "pole ({}, {}) must NOT be inside building hole", center.x, center.y);
+    }
+
+    #[test]
+    fn pole_region1_avoids_hole() {
+        // Second region from the same debug session.
+        let poly = vec![
+            Vec2::new(611.1, 251.8),
+            Vec2::new(762.2, 244.2),
+            Vec2::new(782.8, 654.9),
+            Vec2::new(168.8, 654.9),
+            Vec2::new(76.3, 0.0),
+            Vec2::new(750.0, 0.0),
+            Vec2::new(752.0, 39.2),
+            Vec2::new(394.5, 251.8),
+        ];
+        let hole = vec![
+            Vec2::new(394.5, 251.8),
+            Vec2::new(611.1, 251.8),
+            Vec2::new(613.9, 512.3),
+            Vec2::new(394.5, 512.3),
+        ];
+        let center = region_pole(&poly, &[hole.clone()]);
+        assert!(point_in_polygon(&center, &poly),
+            "pole ({}, {}) must be inside region polygon", center.x, center.y);
+        assert!(!point_in_polygon(&center, &hole),
+            "pole ({}, {}) must NOT be inside building hole", center.x, center.y);
+    }
 }
