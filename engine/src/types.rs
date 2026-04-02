@@ -95,12 +95,13 @@ pub struct Obb {
 // Stalls
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum StallKind {
     Standard,
     Compact,
     Ev,
     Extension,
+    Island,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -201,6 +202,25 @@ pub struct ParkingLayout {
     /// Raw building footprints derived by shrinking aisle-edge rings inward.
     #[serde(default)]
     pub derived_holes: Vec<Vec<Vec2>>,
+    /// Debug: region clip polygons and separator segments for visualization.
+    #[serde(default)]
+    pub region_debug: Option<RegionDebug>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegionDebug {
+    /// One clip polygon per region, each with its aisle angle.
+    pub regions: Vec<RegionInfo>,
+    /// Separator line segments (hole corner → shortened endpoint).
+    pub separators: Vec<(Vec2, Vec2)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegionInfo {
+    pub clip_poly: Vec<Vec2>,
+    pub aisle_angle_deg: f64,
+    pub aisle_offset: f64,
+    pub center: Vec2,
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +252,10 @@ pub struct ParkingParams {
     pub site_offset: f64,
     #[serde(default, alias = "cross_aisle_spacing")]
     pub cross_aisle_max_run: f64,
+    #[serde(default)]
+    pub use_regions: bool,
+    #[serde(default)]
+    pub island_stall_interval: u32,
 }
 
 impl ParkingParams {
@@ -253,6 +277,8 @@ impl Default for ParkingParams {
             aisle_offset: 0.0,
             site_offset: 0.0,
             cross_aisle_max_run: 15.0,
+            use_regions: false,
+            island_stall_interval: 8,
         }
     }
 }
@@ -446,6 +472,17 @@ impl Default for DebugToggles {
 pub struct DriveLine {
     pub start: Vec2,
     pub end: Vec2,
+    /// When set, this drive line is a separator pinned to a hole vertex.
+    #[serde(default, rename = "holePin")]
+    pub hole_pin: Option<HolePin>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HolePin {
+    #[serde(rename = "holeIndex")]
+    pub hole_index: usize,
+    #[serde(rename = "vertexIndex")]
+    pub vertex_index: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -502,4 +539,13 @@ pub struct GenerateInput {
     pub params: ParkingParams,
     #[serde(default)]
     pub debug: DebugToggles,
+    #[serde(default, rename = "regionOverrides")]
+    pub region_overrides: Vec<RegionOverride>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegionOverride {
+    pub region_index: usize,
+    pub aisle_angle_deg: Option<f64>,
+    pub aisle_offset: Option<f64>,
 }

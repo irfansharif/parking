@@ -75,12 +75,388 @@ pub fn derive_raw_holes(holes: &[Vec<Vec2>], inset_d: f64) -> Vec<Vec<Vec2>> {
         .collect()
 }
 
+/// A region defines a sub-area of the parking lot with its own aisle direction.
+/// When region decomposition is disabled, a single region covering the full
+/// outer boundary is used (today's behavior).
+pub struct Region {
+    pub clip_poly: Vec<Vec2>,
+    pub aisle_angle_deg: f64,
+    pub aisle_offset: f64,
+}
+
+/// Decompose the annular area between the outer boundary and holes into
+/// regions based on separator drive lines. Each separator is a segment
+/// from a hole vertex to a user-specified boundary point (the drive line
+/// endpoint). When 2+ separators exist on the same hole, enclosed regions
+/// form between consecutive separators with per-region aisle angles.
+///
+/// `separator_lines` contains (hole_index, vertex_index, boundary_endpoint)
+/// for each pinned separator drive line.
+pub fn decompose_regions(
+    outer_loop: &[Vec2],
+    hole_loops: &[Vec<Vec2>],
+    separator_lines: &[(usize, usize, Vec2)],
+) -> Vec<Region> {
+    let mut regions = Vec::new();
+    let outer_n = outer_loop.len();
+
+    // Group separators by hole index.
+    let mut by_hole: std::collections::HashMap<usize, Vec<(usize, Vec2)>> =
+        std::collections::HashMap::new();
+    for &(hi, vi, boundary_pt) in separator_lines {
+        by_hole.entry(hi).or_default().push((vi, boundary_pt));
+    }
+
+    for (hole_idx, mut seps) in by_hole {
+        let hole = match hole_loops.get(hole_idx) {
+            Some(h) if h.len() >= 3 => h,
+            _ => continue,
+        };
+        let n = hole.len();
+
+        // Need 2+ separators to form regions.
+        if seps.len() < 2 {
+            continue;
+        }
+
+        // Sort by vertex index (CCW order around hole).
+        seps.sort_by_key(|(vi, _)| *vi);
+        seps.dedup_by_key(|(vi, _)| *vi);
+
+        if seps.len() < 2 {
+            continue;
+        }
+
+        // Find which outer boundary edge each separator endpoint is on.
+        let find_boundary_edge = |pt: Vec2| -> (usize, f64) {
+            let mut best_dist = f64::INFINITY;
+            let mut best_edge = 0usize;
+            let mut best_t = 0.0;
+            for ei in 0..outer_n {
+                let ej = (ei + 1) % outer_n;
+                let a = outer_loop[ei];
+                let b = outer_loop[ej];
+                let ab = b - a;
+                let len_sq = ab.dot(ab);
+                if len_sq < 1e-12 { continue; }
+                let t = ((pt - a).dot(ab) / len_sq).clamp(0.0, 1.0);
+                let proj = a + ab * t;
+                let dist = (pt - proj).length();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_edge = ei;
+                    best_t = t;
+                }
+            }
+            (best_edge, best_t)
+        };
+
+        // Build one region per consecutive pair of separators.
+        for idx in 0..seps.len() {
+            let (vi, bpt_i) = seps[idx];
+            let (vj, bpt_j) = seps[(idx + 1) % seps.len()];
+            let (edge_i, t_i) = find_boundary_edge(bpt_i);
+            let (edge_j, t_j) = find_boundary_edge(bpt_j);
+
+            let mut poly = Vec::new();
+
+            // Hole vertex i → boundary point i.
+            poly.push(hole[vi]);
+            poly.push(bpt_i);
+
+            // Walk outer boundary CCW from bpt_i to bpt_j.
+            if edge_i == edge_j {
+                if t_i > t_j {
+                    let mut k = (edge_i + 1) % outer_n;
+                    loop {
+                        poly.push(outer_loop[k]);
+                        if k == edge_j { break; }
+                        k = (k + 1) % outer_n;
+                        if poly.len() > outer_n + 10 { break; }
+                    }
+                }
+            } else {
+                let mut k = (edge_i + 1) % outer_n;
+                loop {
+                    poly.push(outer_loop[k]);
+                    if k == edge_j { break; }
+                    k = (k + 1) % outer_n;
+                    if poly.len() > outer_n + 10 { break; }
+                }
+            }
+
+            // Boundary point j → hole vertex j.
+            poly.push(bpt_j);
+            poly.push(hole[vj]);
+
+            // Walk hole edges from vj back to vi.
+            if vj != vi {
+                let mut k = (vj + 1) % n;
+                while k != vi {
+                    poly.push(hole[k]);
+                    k = (k + 1) % n;
+                }
+            }
+
+            // Aisle angle from the dominant (longest) hole edge in this span.
+            let mut best_len = 0.0f64;
+            let mut best_dir = Vec2::new(1.0, 0.0);
+            let mut k = vi;
+            loop {
+                let kn = (k + 1) % n;
+                let edge_len = (hole[kn] - hole[k]).length();
+                if edge_len > best_len {
+                    best_len = edge_len;
+                    best_dir = (hole[kn] - hole[k]).normalize();
+                }
+                k = kn;
+                if k == vj { break; }
+            }
+            let mut angle = best_dir.y.atan2(best_dir.x).to_degrees();
+            angle = ((angle % 180.0) + 180.0) % 180.0;
+
+            regions.push(Region {
+                clip_poly: poly,
+                aisle_angle_deg: angle,
+                aisle_offset: 0.0,
+            });
+        }
+    }
+
+    regions
+}
+
+/// Result of generating aisles for a single region.
+struct RegionAisleResult {
+    interior_pairs: Vec<(usize, usize)>,
+    cross_pairs: Vec<(usize, usize)>,
+}
+
+/// Generate interior parallel aisles and cross-aisles for a region.
+///
+/// When `clip_poly` is None, aisles are clipped to `outer_loop` only
+/// (today's single-region behavior). When Some, aisles are additionally
+/// intersected with the clip polygon.
+fn generate_region_aisles(
+    clip_poly: Option<&[Vec2]>,
+    outer_loop: &[Vec2],
+    hole_loops: &[Vec<Vec2>],
+    _hole_bases: &[usize],
+    aisle_angle_deg: f64,
+    aisle_offset: f64,
+    row_spacing: f64,
+    params: &ParkingParams,
+    vertices: &mut Vec<Vec2>,
+    perim_splits: &mut [Vec<(f64, usize)>],
+    hole_splits: &mut [Vec<Vec<(f64, usize)>>],
+    _perim_n: usize,
+) -> RegionAisleResult {
+    let angle_rad = aisle_angle_deg.to_radians();
+    let aisle_dir = Vec2::new(angle_rad.cos(), angle_rad.sin());
+    let perp_dir = Vec2::new(-angle_rad.sin(), angle_rad.cos());
+
+    // Project perimeter vertices onto perpendicular direction.
+    let min_proj = outer_loop
+        .iter()
+        .map(|v| v.dot(perp_dir))
+        .fold(f64::INFINITY, f64::min);
+    let max_proj = outer_loop
+        .iter()
+        .map(|v| v.dot(perp_dir))
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    let mut interior_pairs: Vec<(usize, usize)> = Vec::new();
+
+    // Align the aisle grid so that one line passes through aisle_offset
+    // (the perpendicular projection of the drag anchor). When offset is 0,
+    // the grid starts at min_proj + row_spacing as before.
+    let grid_start = min_proj + row_spacing;
+    let grid_end = max_proj - row_spacing;
+    let first = if aisle_offset != 0.0 {
+        // Shift grid_start so that (grid_start + k*row_spacing) == aisle_offset
+        // for some integer k, keeping the result within [grid_start, grid_end].
+        let rem = (aisle_offset - grid_start) % row_spacing;
+        let aligned = grid_start + if rem < 0.0 { rem + row_spacing } else { rem };
+        // If aligned is past grid_end, step back one row.
+        if aligned > grid_end { aligned - row_spacing } else { aligned }
+    } else {
+        grid_start
+    };
+
+    let mut t = first;
+    while t <= grid_end {
+        let origin = perp_dir * t;
+
+        // Intersect with outer perimeter.
+        let outer_hits = intersect_line_polygon(origin, aisle_dir, outer_loop);
+
+        // Convert to intervals (enter/exit pairs).
+        let mut intervals: Vec<(f64, f64)> = Vec::new();
+        for pair in outer_hits.chunks(2) {
+            if pair.len() == 2 {
+                intervals.push((pair[0].t_line, pair[1].t_line));
+            }
+        }
+
+        // Subtract hole interiors from intervals, collecting hits for
+        // deferred split recording.
+        let mut all_hole_hits: Vec<(usize, Vec<Hit>)> = Vec::new();
+        for (hi, hl) in hole_loops.iter().enumerate() {
+            let hole_hits = intersect_line_polygon(origin, aisle_dir, hl);
+            let mut hole_ivs: Vec<(f64, f64)> = Vec::new();
+            for pair in hole_hits.chunks(2) {
+                if pair.len() == 2 {
+                    hole_ivs.push((pair[0].t_line, pair[1].t_line));
+                }
+            }
+            intervals = subtract_intervals(&intervals, &hole_ivs);
+            all_hole_hits.push((hi, hole_hits));
+        }
+
+        // Clip to region polygon if provided.
+        if let Some(clip) = clip_poly {
+            let clip_hits = intersect_line_polygon(origin, aisle_dir, clip);
+            let mut clip_ivs: Vec<(f64, f64)> = Vec::new();
+            for pair in clip_hits.chunks(2) {
+                if pair.len() == 2 {
+                    clip_ivs.push((pair[0].t_line, pair[1].t_line));
+                }
+            }
+            intervals = intersect_intervals(&intervals, &clip_ivs);
+        }
+
+        // Record perimeter and hole splits only for hits that survive
+        // all clipping. This prevents orphaned vertices when aisles are
+        // clipped to a region.
+        for hit in &outer_hits {
+            let t = hit.t_line;
+            let survives = intervals.iter().any(|&(a, b)| t >= a - 0.5 && t <= b + 0.5);
+            if survives {
+                let pt = origin + aisle_dir * t;
+                let vi = find_or_add_vertex(vertices, pt, 0.5);
+                perim_splits[hit.edge_idx].push((hit.t_edge, vi));
+            }
+        }
+        for (hi, hole_hits) in &all_hole_hits {
+            for hit in hole_hits {
+                let t = hit.t_line;
+                let survives = intervals.iter().any(|&(a, b)| t >= a - 0.5 && t <= b + 0.5);
+                if survives {
+                    let pt = origin + aisle_dir * t;
+                    let vi = find_or_add_vertex(vertices, pt, 0.1);
+                    hole_splits[*hi][hit.edge_idx].push((hit.t_edge, vi));
+                }
+            }
+        }
+
+        // Create interior aisle segments from surviving intervals.
+        for &(ta, tb) in &intervals {
+            let pa = origin + aisle_dir * ta;
+            let pb = origin + aisle_dir * tb;
+
+            let via = find_or_add_vertex(vertices, pa, 0.1);
+            let vib = find_or_add_vertex(vertices, pb, 0.1);
+            interior_pairs.push((via, vib));
+        }
+
+        t += row_spacing;
+    }
+
+    // Cross-aisles (perpendicular to main aisles).
+    let mut cross_pairs: Vec<(usize, usize)> = Vec::new();
+    let stall_pitch = params.stall_width / params.stall_angle_deg.to_radians().sin();
+    let col_spacing = params.cross_aisle_max_run * stall_pitch;
+    if col_spacing >= row_spacing {
+        // Project perimeter onto aisle_dir to find extent.
+        let min_along = outer_loop
+            .iter()
+            .map(|v| v.dot(aisle_dir))
+            .fold(f64::INFINITY, f64::min);
+        let max_along = outer_loop
+            .iter()
+            .map(|v| v.dot(aisle_dir))
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        let col_start = min_along + col_spacing;
+        let col_end = max_along - col_spacing;
+
+        let mut s = col_start;
+        while s <= col_end {
+            let origin = aisle_dir * s;
+
+            let outer_hits = intersect_line_polygon(origin, perp_dir, outer_loop);
+
+            let mut intervals: Vec<(f64, f64)> = Vec::new();
+            for pair in outer_hits.chunks(2) {
+                if pair.len() == 2 {
+                    intervals.push((pair[0].t_line, pair[1].t_line));
+                }
+            }
+
+            // Subtract hole interiors.
+            for hl in hole_loops {
+                let hole_hits = intersect_line_polygon(origin, perp_dir, hl);
+                let mut hole_ivs: Vec<(f64, f64)> = Vec::new();
+                for pair in hole_hits.chunks(2) {
+                    if pair.len() == 2 {
+                        hole_ivs.push((pair[0].t_line, pair[1].t_line));
+                    }
+                }
+                intervals = subtract_intervals(&intervals, &hole_ivs);
+            }
+
+            // Clip to region polygon if provided.
+            if let Some(clip) = clip_poly {
+                let clip_hits = intersect_line_polygon(origin, perp_dir, clip);
+                let mut clip_ivs: Vec<(f64, f64)> = Vec::new();
+                for pair in clip_hits.chunks(2) {
+                    if pair.len() == 2 {
+                        clip_ivs.push((pair[0].t_line, pair[1].t_line));
+                    }
+                }
+                intervals = intersect_intervals(&intervals, &clip_ivs);
+            }
+
+            // Record perimeter splits only for hits that survive clipping.
+            for hit in &outer_hits {
+                let t = hit.t_line;
+                let survives = intervals.iter().any(|&(a, b)| t >= a - 0.5 && t <= b + 0.5);
+                if survives {
+                    let pt = origin + perp_dir * t;
+                    let vi = find_or_add_vertex(vertices, pt, 0.5);
+                    perim_splits[hit.edge_idx].push((hit.t_edge, vi));
+                }
+            }
+
+            for &(ta, tb) in &intervals {
+                let pa = origin + perp_dir * ta;
+                let pb = origin + perp_dir * tb;
+                let via = find_or_add_vertex(vertices, pa, 0.1);
+                let vib = find_or_add_vertex(vertices, pb, 0.1);
+                cross_pairs.push((via, vib));
+            }
+
+            s += col_spacing;
+        }
+
+        // Split main aisle segments at intersections with cross-aisle segments
+        // (and vice versa) so the graph is fully connected at every crossing.
+        split_at_crossings(vertices, &mut interior_pairs, &mut cross_pairs, 0.1);
+    }
+
+    RegionAisleResult { interior_pairs, cross_pairs }
+}
+
 /// Automatically generate a connected drive-aisle graph:
 /// 1. Perimeter loop (single inset of outer boundary) — stalls face outward
 /// 2. Hole loops (aisle-edge rings around each hole) — stalls face away from hole
 /// 3. Interior parallel aisles at stall_angle_deg, clipped to perimeter minus holes
 /// 4. Interior aisle endpoints spliced into perimeter edges for full connectivity
-pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGraph {
+/// `separator_lines` contains (hole_index, vertex_index, boundary_endpoint)
+/// for each pinned separator drive line. These are used for region
+/// decomposition only — the drive lines themselves become aisle edges
+/// via clip_drive_lines separately.
+pub fn auto_generate(boundary: &Polygon, params: &ParkingParams, separator_lines: &[(usize, usize, Vec2)], region_overrides: &[RegionOverride]) -> DriveAisleGraph {
     // aisle_width is one driving lane. Auto-generated edges are two-way
     // (two lanes), so their half-width is one full lane width.
     let hw = params.aisle_width;
@@ -170,171 +546,106 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams) -> DriveAisleGr
         .map(|hl| vec![Vec::new(); hl.len()])
         .collect();
 
-    // 3. Interior parallel aisles.
-    let angle_rad = params.aisle_angle_deg.to_radians();
-    let aisle_dir = Vec2::new(angle_rad.cos(), angle_rad.sin());
-    let perp_dir = Vec2::new(-angle_rad.sin(), angle_rad.cos());
-
-    // Project perimeter vertices onto perpendicular direction.
-    let min_proj = outer_loop
-        .iter()
-        .map(|v| v.dot(perp_dir))
-        .fold(f64::INFINITY, f64::min);
-    let max_proj = outer_loop
-        .iter()
-        .map(|v| v.dot(perp_dir))
-        .fold(f64::NEG_INFINITY, f64::max);
-
-    // Collect splits on the outer perimeter edges.
-    // Each split: (edge_idx, t_along_edge, global_vertex_index).
+    // 3. Interior parallel aisles + cross-aisles via region-based generation.
     let mut perim_splits: Vec<Vec<(f64, usize)>> = vec![Vec::new(); perim_n];
 
-    // Interior aisle edge pairs: (vertex_idx_start, vertex_idx_end).
-    let mut interior_pairs: Vec<(usize, usize)> = Vec::new();
+    let (interior_pairs, cross_pairs) = if params.use_regions && !separator_lines.is_empty() {
+        // Decompose around holes using separator drive line positions.
+        // The drive lines themselves become aisle edges via clip_drive_lines
+        // — we only need regions for aisle angle clipping here.
+        let mut regions = decompose_regions(&outer_loop, &hole_loops, separator_lines);
 
-    // Align the aisle grid so that one line passes through aisle_offset
-    // (the perpendicular projection of the drag anchor). When offset is 0,
-    // the grid starts at min_proj + row_spacing as before.
-    let grid_start = min_proj + row_spacing;
-    let grid_end = max_proj - row_spacing;
-    let first = if params.aisle_offset != 0.0 {
-        // Shift grid_start so that (grid_start + k*row_spacing) == aisle_offset
-        // for some integer k, keeping the result within [grid_start, grid_end].
-        let rem = (params.aisle_offset - grid_start) % row_spacing;
-        let aligned = grid_start + if rem < 0.0 { rem + row_spacing } else { rem };
-        // If aligned is past grid_end, step back one row.
-        if aligned > grid_end { aligned - row_spacing } else { aligned }
+        // Apply per-region overrides.
+        for ov in region_overrides {
+            if let Some(r) = regions.get_mut(ov.region_index) {
+                if let Some(a) = ov.aisle_angle_deg { r.aisle_angle_deg = a; }
+                if let Some(o) = ov.aisle_offset { r.aisle_offset = o; }
+            }
+        }
+
+        let mut all_interior: Vec<(usize, usize)> = Vec::new();
+        let mut all_cross: Vec<(usize, usize)> = Vec::new();
+
+        if regions.is_empty() {
+            // Only 1 separator per hole — no enclosed regions yet.
+            // Use global angle/offset with region 0 override applied.
+            let mut angle = params.aisle_angle_deg;
+            let mut offset = params.aisle_offset;
+            for ov in region_overrides {
+                if ov.region_index == 0 {
+                    if let Some(a) = ov.aisle_angle_deg { angle = a; }
+                    if let Some(o) = ov.aisle_offset { offset = o; }
+                }
+            }
+            let result = generate_region_aisles(
+                None,
+                &outer_loop,
+                &hole_loops,
+                &hole_bases,
+                angle,
+                offset,
+                row_spacing,
+                params,
+                &mut vertices,
+                &mut perim_splits,
+                &mut hole_splits,
+                perim_n,
+            );
+            all_interior = result.interior_pairs;
+            all_cross = result.cross_pairs;
+        } else {
+            for region in &regions {
+                let result = generate_region_aisles(
+                    Some(&region.clip_poly),
+                    &outer_loop,
+                    &hole_loops,
+                    &hole_bases,
+                    region.aisle_angle_deg,
+                    region.aisle_offset,
+                    row_spacing,
+                    params,
+                    &mut vertices,
+                    &mut perim_splits,
+                    &mut hole_splits,
+                    perim_n,
+                );
+                all_interior.extend(result.interior_pairs);
+                all_cross.extend(result.cross_pairs);
+            }
+        }
+
+        // Resolve crossings between all interior aisles and cross-aisles.
+        if !all_cross.is_empty() && !all_interior.is_empty() {
+            split_at_crossings(&mut vertices, &mut all_interior, &mut all_cross, 0.1);
+        }
+
+        (all_interior, all_cross)
     } else {
-        grid_start
+        // Single-region path: use global angle/offset, applying region 0 override.
+        let mut angle = params.aisle_angle_deg;
+        let mut offset = params.aisle_offset;
+        for ov in region_overrides {
+            if ov.region_index == 0 {
+                if let Some(a) = ov.aisle_angle_deg { angle = a; }
+                if let Some(o) = ov.aisle_offset { offset = o; }
+            }
+        }
+        let result = generate_region_aisles(
+            None,
+            &outer_loop,
+            &hole_loops,
+            &hole_bases,
+            angle,
+            offset,
+            row_spacing,
+            params,
+            &mut vertices,
+            &mut perim_splits,
+            &mut hole_splits,
+            perim_n,
+        );
+        (result.interior_pairs, result.cross_pairs)
     };
-
-    let mut t = first;
-    while t <= grid_end {
-        let origin = perp_dir * t;
-
-        // Intersect with outer perimeter.
-        let outer_hits = intersect_line_polygon(origin, aisle_dir, &outer_loop);
-
-        // Convert to intervals (enter/exit pairs).
-        let mut intervals: Vec<(f64, f64)> = Vec::new();
-        for pair in outer_hits.chunks(2) {
-            if pair.len() == 2 {
-                intervals.push((pair[0].t_line, pair[1].t_line));
-            }
-        }
-
-        // Record ALL outer perimeter intersection points as splits (even if
-        // holes later trim some segments — extra vertices on the perimeter
-        // are harmless). Use find_or_add_vertex so that snapped hole vertices
-        // and nearby split points get merged.
-        for hit in &outer_hits {
-            let pt = origin + aisle_dir * hit.t_line;
-            let vi = find_or_add_vertex(&mut vertices, pt, 0.5);
-            perim_splits[hit.edge_idx].push((hit.t_edge, vi));
-        }
-
-        // Subtract hole interiors from intervals and record intersection
-        // points as hole edge splits (mirrors perim_splits).
-        for (hi, hl) in hole_loops.iter().enumerate() {
-            let hole_hits = intersect_line_polygon(origin, aisle_dir, hl);
-            let mut hole_ivs: Vec<(f64, f64)> = Vec::new();
-            for pair in hole_hits.chunks(2) {
-                if pair.len() == 2 {
-                    hole_ivs.push((pair[0].t_line, pair[1].t_line));
-                }
-            }
-            for hit in &hole_hits {
-                let pt = origin + aisle_dir * hit.t_line;
-                let vi = find_or_add_vertex(&mut vertices, pt, 0.1);
-                hole_splits[hi][hit.edge_idx].push((hit.t_edge, vi));
-            }
-            intervals = subtract_intervals(&intervals, &hole_ivs);
-        }
-
-        // Create interior aisle segments from surviving intervals.
-        // Match each interval endpoint to the vertex we already created.
-        // The vertices were created from outer_hits, so we need to find
-        // or create vertices for each interval endpoint.
-        for &(ta, tb) in &intervals {
-            let pa = origin + aisle_dir * ta;
-            let pb = origin + aisle_dir * tb;
-
-            // Find existing vertex or create new one.
-            let via = find_or_add_vertex(&mut vertices, pa, 0.1);
-            let vib = find_or_add_vertex(&mut vertices, pb, 0.1);
-            interior_pairs.push((via, vib));
-        }
-
-        t += row_spacing;
-    }
-
-    // 3b. Cross-aisles (perpendicular to main aisles).
-    let mut cross_pairs: Vec<(usize, usize)> = Vec::new();
-    let stall_pitch = params.stall_width / params.stall_angle_deg.to_radians().sin();
-    let col_spacing = params.cross_aisle_max_run * stall_pitch;
-    if col_spacing >= row_spacing {
-
-        // Project perimeter onto aisle_dir to find extent.
-        let min_along = outer_loop
-            .iter()
-            .map(|v| v.dot(aisle_dir))
-            .fold(f64::INFINITY, f64::min);
-        let max_along = outer_loop
-            .iter()
-            .map(|v| v.dot(aisle_dir))
-            .fold(f64::NEG_INFINITY, f64::max);
-
-        let col_start = min_along + col_spacing;
-        let col_end = max_along - col_spacing;
-
-        let mut s = col_start;
-        while s <= col_end {
-            let origin = aisle_dir * s;
-
-            let outer_hits = intersect_line_polygon(origin, perp_dir, &outer_loop);
-
-            // Record perimeter splits.
-            for hit in &outer_hits {
-                let pt = origin + perp_dir * hit.t_line;
-                let vi = vertices.len();
-                vertices.push(pt);
-                perim_splits[hit.edge_idx].push((hit.t_edge, vi));
-            }
-
-            let mut intervals: Vec<(f64, f64)> = Vec::new();
-            for pair in outer_hits.chunks(2) {
-                if pair.len() == 2 {
-                    intervals.push((pair[0].t_line, pair[1].t_line));
-                }
-            }
-
-            // Subtract hole interiors.
-            for hl in &hole_loops {
-                let hole_hits = intersect_line_polygon(origin, perp_dir, hl);
-                let mut hole_ivs: Vec<(f64, f64)> = Vec::new();
-                for pair in hole_hits.chunks(2) {
-                    if pair.len() == 2 {
-                        hole_ivs.push((pair[0].t_line, pair[1].t_line));
-                    }
-                }
-                intervals = subtract_intervals(&intervals, &hole_ivs);
-            }
-
-            for &(ta, tb) in &intervals {
-                let pa = origin + perp_dir * ta;
-                let pb = origin + perp_dir * tb;
-                let via = find_or_add_vertex(&mut vertices, pa, 0.1);
-                let vib = find_or_add_vertex(&mut vertices, pb, 0.1);
-                cross_pairs.push((via, vib));
-            }
-
-            s += col_spacing;
-        }
-
-        // Split main aisle segments at intersections with cross-aisle segments
-        // (and vice versa) so the graph is fully connected at every crossing.
-        split_at_crossings(&mut vertices, &mut interior_pairs, &mut cross_pairs, 0.1);
-    }
 
     // 4. Build perimeter edges with splits spliced in.
     for i in 0..perim_n {
@@ -431,7 +742,7 @@ pub fn merge_with_auto(
     boundary: &Polygon,
     params: &ParkingParams,
 ) -> DriveAisleGraph {
-    let auto = auto_generate(boundary, params);
+    let auto = auto_generate(boundary, params, &[] as &[(usize, usize, Vec2)], &[]);
 
     // Compute corridor polygons for manual edges.
     let manual_corridors: Vec<Vec<Vec2>> = manual
@@ -647,6 +958,27 @@ pub(crate) fn intersect_line_polygon(origin: Vec2, dir: Vec2, polygon: &[Vec2]) 
     }
     hits.sort_by(|a, b| a.t_line.partial_cmp(&b.t_line).unwrap());
     hits
+}
+
+/// Intersect two sets of intervals, returning only the overlapping portions.
+fn intersect_intervals(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut result = Vec::new();
+    let mut bi = 0;
+    for &(a_start, a_end) in a {
+        while bi < b.len() && b[bi].1 <= a_start {
+            bi += 1;
+        }
+        let mut j = bi;
+        while j < b.len() && b[j].0 < a_end {
+            let lo = a_start.max(b[j].0);
+            let hi = a_end.min(b[j].1);
+            if lo < hi {
+                result.push((lo, hi));
+            }
+            j += 1;
+        }
+    }
+    result
 }
 
 /// Subtract hole intervals from base intervals.

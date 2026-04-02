@@ -1384,7 +1384,7 @@ fn place_stalls_on_spines(
     params: &ParkingParams,
     center: bool,
     extensions: Option<&[(SpineSegment, usize)]>,
-) -> (Vec<(StallQuad, usize, usize)>, Vec<f64>) {
+) -> (Vec<(StallQuad, usize, usize)>, Vec<f64>, std::collections::HashMap<usize, usize>) {
     let stall_pitch = params.stall_pitch();
 
     // Pre-compute the full projected range along each spine's oriented
@@ -1425,6 +1425,7 @@ fn place_stalls_on_spines(
     // shift instead of centering independently.
     let mut claimed: Vec<(usize, Vec2, f64)> = Vec::new();
     let mut shifts = vec![0.0_f64; spines.len()];
+    let mut grid_lock_partners: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
 
     let mut stalls = Vec::new();
     for &(spine_idx, _) in &order {
@@ -1437,7 +1438,9 @@ fn place_stalls_on_spines(
 
         let centering = if !center {
             0.0
-        } else if let Some(shift) = find_opposing_shift(&claimed, spines, spine_idx, oriented_dir, eff_pitch, params.aisle_width + 2.0 * params.stall_depth) {
+        } else if let Some((shift, partner_idx)) = find_opposing_shift(&claimed, spines, spine_idx, oriented_dir, eff_pitch, params.aisle_width + 2.0 * params.stall_depth) {
+            grid_lock_partners.insert(spine_idx, partner_idx);
+            grid_lock_partners.insert(partner_idx, spine_idx);
             shift
         } else {
             let (center_proj, center_len) = match &extended_ranges[spine_idx] {
@@ -1454,7 +1457,7 @@ fn place_stalls_on_spines(
             stalls.push((quad, seg.face_idx, spine_idx));
         }
     }
-    (stalls, shifts)
+    (stalls, shifts, grid_lock_partners)
 }
 
 /// Find the centering shift to use for grid-locking to an already-processed
@@ -1470,7 +1473,7 @@ fn find_opposing_shift(
     oriented_dir: Vec2,
     pitch: f64,
     max_dist: f64,
-) -> Option<f64> {
+) -> Option<(f64, usize)> {
     let seg = &spines[spine_idx];
     let dir = (seg.end - seg.start).normalize();
     let mid = (seg.start + seg.end) * 0.5;
@@ -1505,9 +1508,9 @@ fn find_opposing_shift(
         // Same oriented direction: reuse shift directly.
         // Opposite oriented direction: negate shift (mod pitch).
         if oriented_dir.dot(other_oriented_dir) > 0.0 {
-            return Some(other_shift);
+            return Some((other_shift, other_idx));
         } else {
-            return Some((-other_shift).rem_euclid(pitch));
+            return Some(((-other_shift).rem_euclid(pitch), other_idx));
         }
     }
     None
@@ -1533,78 +1536,121 @@ fn stall_key(s: &StallQuad) -> [u64; 8] {
     ]
 }
 
-/// Build strip envelopes from stalls grouped by spine_idx. Each envelope
-/// is the convex hull of all stall corners in the group.
-fn build_strip_envelopes(stalls: &[(StallQuad, usize, usize)]) -> Vec<(Vec<Vec2>, usize)> {
-    // Group stalls by spine_idx, preserving order.
-    let mut by_spine: std::collections::BTreeMap<usize, (usize, Vec<&StallQuad>)> =
+/// Mark every Nth stall per spine row as StallKind::Island. For each
+/// spine, stalls are sorted by position along the spine direction, then
+/// every Nth one is marked (skipping the first and last). Grid-locked
+/// opposing spines use the leader's projection to determine absolute
+/// positions, so islands align across the aisle.
+fn mark_island_stalls(
+    stalls_3: &mut [(StallQuad, usize, usize)],
+    tagged: &mut [(StallQuad, usize)],
+    spines: &[SpineSegment],
+    params: &ParkingParams,
+    _shifts: &[f64],
+    grid_lock_partners: &std::collections::HashMap<usize, usize>,
+) {
+    let interval = params.island_stall_interval as usize;
+    if interval < 2 { return; }
+
+    // Group stall indices (into stalls_3) by spine_idx.
+    let mut by_spine: std::collections::BTreeMap<usize, Vec<usize>> =
         std::collections::BTreeMap::new();
-    for (quad, face_idx, spine_idx) in stalls {
-        by_spine.entry(*spine_idx)
-            .or_insert((*face_idx, Vec::new()))
-            .1.push(quad);
+    for (i, (_, _, spine_idx)) in stalls_3.iter().enumerate() {
+        by_spine.entry(*spine_idx).or_default().push(i);
     }
 
-    let mut envelopes = Vec::new();
-    for (_spine_idx, (face_idx, quads)) in &by_spine {
-        if quads.is_empty() { continue; }
-        let points: Vec<Vec2> = quads.iter()
-            .flat_map(|q| q.corners.iter().copied())
-            .collect();
-        let hull = convex_hull(&points);
-        if hull.len() >= 3 {
-            envelopes.push((hull, *face_idx));
-        }
-    }
-    envelopes
-}
+    // For each spine, sort its stall indices by projection along a
+    // consistent direction. For grid-locked groups, use the leader's
+    // direction so positions are comparable across both sides of the aisle.
+    let mut island_keys: std::collections::HashSet<[u64; 8]> = std::collections::HashSet::new();
+    let mut visited: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
-/// Compute the convex hull of a set of points using Andrew's monotone chain.
-/// Returns vertices in CCW order.
-fn convex_hull(points: &[Vec2]) -> Vec<Vec2> {
-    let mut pts: Vec<Vec2> = points.to_vec();
-    pts.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap().then(a.y.partial_cmp(&b.y).unwrap()));
-    pts.dedup_by(|a, b| (a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9);
+    for &spine_idx in by_spine.keys() {
+        if visited.contains(&spine_idx) { continue; }
+        visited.insert(spine_idx);
 
-    let n = pts.len();
-    if n < 3 {
-        return pts;
-    }
-
-    let mut hull: Vec<Vec2> = Vec::with_capacity(2 * n);
-
-    // Lower hull.
-    for &p in &pts {
-        while hull.len() >= 2 {
-            let a = hull[hull.len() - 2];
-            let b = hull[hull.len() - 1];
-            if (b - a).cross(p - a) <= 0.0 {
-                hull.pop();
-            } else {
-                break;
+        // Build the grid-lock group.
+        let mut group = vec![spine_idx];
+        if let Some(&partner) = grid_lock_partners.get(&spine_idx) {
+            if by_spine.contains_key(&partner) {
+                group.push(partner);
+                visited.insert(partner);
             }
         }
-        hull.push(p);
-    }
 
-    // Upper hull.
-    let lower_len = hull.len();
-    for &p in pts.iter().rev().skip(1) {
-        while hull.len() > lower_len {
-            let a = hull[hull.len() - 2];
-            let b = hull[hull.len() - 1];
-            if (b - a).cross(p - a) <= 0.0 {
-                hull.pop();
-            } else {
-                break;
+        // Pick leader (most stalls) for the projection direction.
+        let leader = *group.iter()
+            .max_by_key(|&&si| by_spine.get(&si).map_or(0, |v| v.len()))
+            .unwrap();
+        if leader >= spines.len() { continue; }
+        let proj_dir = spines[leader].oriented_dir();
+
+        // For the leader spine: sort stalls by position, mark every Nth
+        // (skipping first and last), and record the projection values of
+        // marked stalls so partners can align to them.
+        let leader_indices = by_spine.get(&leader).unwrap();
+        let mut leader_sorted: Vec<(f64, usize)> = leader_indices.iter().map(|&idx| {
+            let center = stall_center(&stalls_3[idx].0);
+            (center.dot(proj_dir), idx)
+        }).collect();
+        leader_sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        let count = leader_sorted.len();
+        if count < interval { continue; }
+
+        // Mark every Nth stall, offset so we skip the first and last.
+        // Offset = interval/2 so the pattern is centered.
+        let offset = interval / 2;
+        let mut marked_projs: Vec<f64> = Vec::new();
+        for (i, &(proj, idx)) in leader_sorted.iter().enumerate() {
+            if i >= offset && i < count - 1 && (i - offset) % interval == 0 {
+                island_keys.insert(stall_key(&stalls_3[idx].0));
+                marked_projs.push(proj);
             }
         }
-        hull.push(p);
+
+        // For partner spines: match each marked projection to the nearest
+        // stall on the partner, so islands align across the aisle.
+        for &si in &group {
+            if si == leader { continue; }
+            let indices = match by_spine.get(&si) {
+                Some(v) => v,
+                None => continue,
+            };
+            let mut sorted: Vec<(f64, usize)> = indices.iter().map(|&idx| {
+                let center = stall_center(&stalls_3[idx].0);
+                (center.dot(proj_dir), idx)
+            }).collect();
+            sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+            for &target_proj in &marked_projs {
+                // Find nearest stall by projection distance.
+                let best = sorted.iter()
+                    .min_by_key(|(p, _)| ((p - target_proj).abs() * 1000.0) as i64);
+                if let Some(&(_, idx)) = best {
+                    island_keys.insert(stall_key(&stalls_3[idx].0));
+                }
+            }
+        }
     }
 
-    hull.pop(); // Remove the duplicate of the first point.
-    hull
+    // Mark matching stalls as Island in both vectors.
+    for (s, _, _) in stalls_3.iter_mut() {
+        if island_keys.contains(&stall_key(s)) {
+            s.kind = StallKind::Island;
+        }
+    }
+    for (s, _) in tagged.iter_mut() {
+        if island_keys.contains(&stall_key(s)) {
+            s.kind = StallKind::Island;
+        }
+    }
 }
+
+fn stall_center(s: &StallQuad) -> Vec2 {
+    (s.corners[0] + s.corners[1] + s.corners[2] + s.corners[3]) * 0.25
+}
+
 
 
 /// Deduplicate overlapping collinear spines. When two spines have the same
@@ -1722,9 +1768,7 @@ fn dedup_overlapping_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<Sp
 /// render on top, covering the ring's stall areas.
 fn compute_islands(
     faces: &[Vec<Vec<Vec2>>],
-    _tagged_stalls: &[(StallQuad, usize)],
     all_stalls: &[StallQuad],
-    strip_envelopes: &[(Vec<Vec2>, usize)],
     min_area: f64,
 ) -> Vec<crate::types::Island> {
     use crate::inset::signed_area;
@@ -1741,6 +1785,7 @@ fn compute_islands(
     };
 
     let all_stall_paths: Vec<Vec<[f64; 2]>> = all_stalls.iter()
+        .filter(|s| s.kind != StallKind::Island)
         .map(|s| to_path(&s.corners))
         .collect();
 
@@ -1757,22 +1802,7 @@ fn compute_islands(
             subj.push(h);
         }
 
-        // Faces with holes subtract ALL individual stalls (some stalls
-        // from adjacent faces physically overlap this face). Simple
-        // faces use strip envelopes (convex hulls covering each spine's
-        // stalls, including extensions) to avoid inter-stall zigzag gaps
-        // appearing as islands.
-        let clip: Vec<Vec<[f64; 2]>> = if shape.len() > 1 {
-            all_stall_paths.clone()
-        } else {
-            strip_envelopes.iter()
-                .filter(|(_, fi)| *fi == face_idx)
-                .map(|(env, _)| to_path(env))
-                .collect()
-        };
-
-        if clip.is_empty() {
-            if shape.len() > 1 { continue; }
+        if all_stall_paths.is_empty() {
             let contour = ensure_ccw(&shape[0]);
             if signed_area(&contour).abs() >= min_area {
                 islands.push(crate::types::Island { contour, holes: vec![], face_idx });
@@ -1780,13 +1810,12 @@ fn compute_islands(
             continue;
         }
 
-        let raw = subj.overlay(&clip, OverlayRule::Difference, FillRule::NonZero);
+        let raw = subj.overlay(&all_stall_paths, OverlayRule::Difference, FillRule::NonZero);
 
         for sc in raw {
             if sc.is_empty() { continue; }
             let contour = ensure_ccw(&to_vec2(&sc[0]));
             let holes: Vec<Vec<Vec2>> = sc[1..].iter().map(|h| to_vec2(h)).collect();
-            // Net area for filtering.
             let net = signed_area(&contour).abs()
                 - holes.iter().map(|h| signed_area(h).abs()).sum::<f64>();
             if net < min_area { continue; }
@@ -2385,7 +2414,7 @@ pub fn generate_from_spines(
     // Place stalls on merged spines (tagged with face_idx + spine_idx).
     // Pass extension spines so centering uses the full projected range.
     let ext_ref = if ext_spines_with_src.is_empty() { None } else { Some(ext_spines_with_src.as_slice()) };
-    let (tagged_stalls_3, spine_shifts) = place_stalls_on_spines(
+    let (tagged_stalls_3, spine_shifts, grid_lock_partners) = place_stalls_on_spines(
         &all_spines, params, debug.stall_centering, ext_ref,
     );
 
@@ -2491,10 +2520,16 @@ pub fn generate_from_spines(
         all_tagged.retain(|(s, _)| surviving_keys.contains(&stall_key(s)));
     }
 
-    let all_stalls: Vec<StallQuad> = all_tagged.iter().map(|(s, _)| s.clone()).collect();
-    let strip_envelopes = build_strip_envelopes(&all_surviving_3);
+    // --- Island stall marking ---
+    if params.island_stall_interval > 0 {
+        mark_island_stalls(
+            &mut all_surviving_3, &mut all_tagged,
+            &all_spines, params, &spine_shifts, &grid_lock_partners,
+        );
+    }
 
-    let islands = compute_islands(&faces, &all_tagged, &all_stalls, &strip_envelopes, 10.0);
+    let all_stalls: Vec<StallQuad> = all_tagged.iter().map(|(s, _)| s.clone()).collect();
+    let islands = compute_islands(&faces, &all_stalls, 10.0);
 
     // Build spine lines for visualization: primary + extension.
     // If the short-segment filter is active, only include spines that
@@ -2586,7 +2621,7 @@ mod tests {
             holes: vec![],
         };
         let params = ParkingParams::default();
-        let graph = auto_generate(&boundary, &params);
+        let graph = auto_generate(&boundary, &params, &[], &[]);
 
         let (stalls, _, spines, _, _, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default());
         eprintln!("\nTotal stalls: {}", stalls.len());
@@ -2606,7 +2641,7 @@ mod tests {
             holes: vec![],
         };
         let params = ParkingParams::default();
-        let graph = auto_generate(&boundary, &params);
+        let graph = auto_generate(&boundary, &params, &[], &[]);
 
         eprintln!("\n=== Attempt polygon debug ===");
         eprintln!("Graph: {} vertices, {} edges", graph.vertices.len(), graph.edges.len());
@@ -2705,7 +2740,7 @@ mod tests {
 
         let (stalls, _, _, faces_out, _, _, islands) =
             generate_from_spines(
-                &crate::aisle_graph::auto_generate(&boundary, &params),
+                &crate::aisle_graph::auto_generate(&boundary, &params, &[], &[]),
                 &boundary, &params, &debug,
             );
 
@@ -2748,7 +2783,7 @@ mod tests {
         };
         let params = ParkingParams::default();
         let debug = DebugToggles::default();
-        let graph = auto_generate(&boundary, &params);
+        let graph = auto_generate(&boundary, &params, &[], &[]);
 
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
@@ -2777,20 +2812,14 @@ mod tests {
             .filter(|s| (s.end - s.start).length() >= effective_depth)
             .collect();
 
-        let (tagged_stalls_3, _) = place_stalls_on_spines(&all_spines, &params, true, None);
+        let (tagged_stalls_3, _, _) = place_stalls_on_spines(&all_spines, &params, true, None);
         let tagged_stalls: Vec<(StallQuad, usize)> = tagged_stalls_3.iter()
             .map(|(s, fi, _)| (s.clone(), *fi)).collect();
         let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces);
         let tagged_stalls = clip_stalls_to_boundary(tagged_stalls, &boundary.outer, &[]);
         let tagged_stalls = remove_conflicting_stalls(tagged_stalls, &[], &[]);
         let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
-        let surviving: std::collections::HashSet<[u64; 8]> = tagged_stalls.iter()
-            .map(|(s, _)| stall_key(s)).collect();
-        let surviving_3: Vec<(StallQuad, usize, usize)> = tagged_stalls_3.into_iter()
-            .filter(|(s, _, _)| surviving.contains(&stall_key(s))).collect();
-        let strip_envelopes = build_strip_envelopes(&surviving_3);
-
-        let islands = compute_islands(&faces, &tagged_stalls, &all_stalls, &strip_envelopes, 10.0);
+        let islands = compute_islands(&faces, &all_stalls, 10.0);
 
         // No island should have area close to the boundary or the hole.
         // No island should be as large as the full boundary or the hole itself.
@@ -2806,84 +2835,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_strip_envelope_orientation() {
-        // User's test case: diagonal drive-line through a rectangle with hole.
-        let boundary = Polygon {
-            outer: vec![
-                Vec2::new(-48.47, 0.0),
-                Vec2::new(750.0, 0.0),
-                Vec2::new(782.80, 654.85),
-                Vec2::new(0.0, 654.85),
-            ],
-            holes: vec![vec![
-                Vec2::new(394.53, 251.80),
-                Vec2::new(611.14, 251.80),
-                Vec2::new(613.91, 512.33),
-                Vec2::new(394.53, 512.33),
-            ]],
-        };
-        let params = ParkingParams::default();
-        let graph = crate::aisle_graph::auto_generate(&boundary, &params);
-
-        let stall_angle_rad = params.stall_angle_deg.to_radians();
-        let effective_depth = params.stall_depth * stall_angle_rad.sin();
-        let dedup_corridors = deduplicate_corridors(&graph);
-        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
-        let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &DebugToggles::default());
-        let faces = extract_faces(&boundary.outer, &merged_corridors, &[]);
-
-        // Generate spines and stalls.
-        let mut all_spines = Vec::new();
-        for (fi, shape) in faces.iter().enumerate() {
-            let spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &DebugToggles::default(), &[], None);
-            for s in spines {
-                all_spines.push(SpineSegment {
-                    start: s.start,
-                    end: s.end,
-                    outward_normal: s.outward_normal,
-                    face_idx: fi,
-                    is_interior: s.is_interior,
-                    travel_dir: s.travel_dir,
-                });
-            }
-        }
-        let (tagged_stalls_3, _) = place_stalls_on_spines(&all_spines, &params, true, None);
-
-        // Dump spine and stall info.
-        for (si, spine) in all_spines.iter().enumerate() {
-            eprintln!("spine {}: ({:.1},{:.1})→({:.1},{:.1}) normal=({:.2},{:.2}) interior={}",
-                si, spine.start.x, spine.start.y, spine.end.x, spine.end.y,
-                spine.outward_normal.x, spine.outward_normal.y, spine.is_interior);
-        }
-
-        // Check a representative stall from each spine.
-        let mut by_spine: std::collections::BTreeMap<usize, Vec<&StallQuad>> = std::collections::BTreeMap::new();
-        for (q, _, si) in &tagged_stalls_3 {
-            by_spine.entry(*si).or_default().push(q);
-        }
-        for (si, quads) in &by_spine {
-            let q = quads[0];
-            let aisle_mid = (q.corners[0] + q.corners[1]) * 0.5;
-            let back_mid = (q.corners[2] + q.corners[3]) * 0.5;
-            let depth_vec = back_mid - aisle_mid;
-            eprintln!("spine {} stall[0]: aisle_mid=({:.1},{:.1}) back_mid=({:.1},{:.1}) depth_vec=({:.2},{:.2})",
-                si, aisle_mid.x, aisle_mid.y, back_mid.x, back_mid.y, depth_vec.x, depth_vec.y);
-            eprintln!("  corners: [0]=({:.1},{:.1}) [1]=({:.1},{:.1}) [2]=({:.1},{:.1}) [3]=({:.1},{:.1})",
-                q.corners[0].x, q.corners[0].y, q.corners[1].x, q.corners[1].y,
-                q.corners[2].x, q.corners[2].y, q.corners[3].x, q.corners[3].y);
-        }
-
-        // Build envelopes and dump them.
-        let envelopes = build_strip_envelopes(&tagged_stalls_3);
-        for (ei, (env, fi)) in envelopes.iter().enumerate() {
-            let area = signed_area(env).abs();
-            eprintln!("envelope {}: face={}, area={:.0}, verts={}", ei, fi, area, env.len());
-            for (vi, v) in env.iter().enumerate() {
-                eprintln!("  v{}: ({:.1}, {:.1})", vi, v.x, v.y);
-            }
-        }
-    }
 
     /// Two aisle edges meeting at an acute corner: unmerged corridor
     /// rectangles produce a jagged overlap (8 vertices from 2 rects),
@@ -3306,7 +3257,7 @@ mod tests {
             drive_lines: vec![],
             annotations: vec![],
             params: ParkingParams::default(),
-            debug: DebugToggles::default(),
+            debug: DebugToggles::default(), region_overrides: vec![],
         };
 
         let layout = generate(input.clone());
@@ -3314,7 +3265,7 @@ mod tests {
         eprintln!("stalls: {}, spines: {}, faces: {}", layout.stalls.len(), layout.spines.len(), layout.faces.len());
 
         // Recompute corridor shapes for debug classification.
-        let graph = auto_generate(&input.boundary, &input.params);
+        let graph = auto_generate(&input.boundary, &input.params, &[], &[]);
         let dedup_corridors = deduplicate_corridors(&graph);
         let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
         let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &DebugToggles::default());
@@ -3398,7 +3349,7 @@ mod tests {
             drive_lines: vec![],
             annotations: vec![],
             params: ParkingParams::default(),
-            debug: DebugToggles::default(),
+            debug: DebugToggles::default(), region_overrides: vec![],
         };
 
         let layout = generate(input.clone());
@@ -3406,7 +3357,7 @@ mod tests {
         eprintln!("stalls: {}, spines: {}, faces: {}", layout.stalls.len(), layout.spines.len(), layout.faces.len());
 
         // Recompute corridor shapes for debug classification.
-        let graph = auto_generate(&input.boundary, &input.params);
+        let graph = auto_generate(&input.boundary, &input.params, &[], &[]);
         let dedup_corridors = deduplicate_corridors(&graph);
         let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
         let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &DebugToggles::default());
@@ -3490,11 +3441,11 @@ mod tests {
                 DriveLine {
                     start: Vec2::new(-50.0, 250.0),
                     end: Vec2::new(800.0, 250.0),
-                },
+                hole_pin: None, },
             ],
             annotations: vec![],
             params: ParkingParams::default(),
-            debug: DebugToggles::default(),
+            debug: DebugToggles::default(), region_overrides: vec![],
         };
 
         let layout = generate(input);
@@ -3681,7 +3632,7 @@ mod tests {
                 DriveLine {
                     start: Vec2::new(150.0, -50.0),
                     end: Vec2::new(150.0, 250.0),
-                },
+                hole_pin: None, },
             ],
             annotations: vec![
                 Annotation::TwoWayOriented {
@@ -3691,7 +3642,7 @@ mod tests {
                 },
             ],
             params: ParkingParams::default(),
-            debug: DebugToggles::default(),
+            debug: DebugToggles::default(), region_overrides: vec![],
         };
 
         let layout = generate(input);

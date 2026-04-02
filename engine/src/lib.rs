@@ -87,18 +87,30 @@ fn format_fixture(input: &GenerateInput) -> String {
     if (p.cross_aisle_max_run - defaults.cross_aisle_max_run).abs() > 1e-6 {
         param_lines.push(format!("set cross_aisle_max_run={}", fmt_coord(p.cross_aisle_max_run)));
     }
+    if p.use_regions != defaults.use_regions {
+        param_lines.push(format!("set use_regions={}", p.use_regions));
+    }
+    if p.island_stall_interval != defaults.island_stall_interval {
+        param_lines.push(format!("set island_stall_interval={}", p.island_stall_interval));
+    }
     for line in &param_lines {
         out.push_str(&format!("\n{}\n----\n{}\n", line, line));
     }
 
     // Drive lines.
     for dl in &input.drive_lines {
+        let pin_suffix = match &dl.hole_pin {
+            Some(p) => format!(" hole-pin={},{}", p.hole_index, p.vertex_index),
+            None => String::new(),
+        };
         out.push_str(&format!(
-            "\ndrive-line\n{},{}\n{},{}\n----\ndrive-line: {},{} -> {},{}\n",
+            "\ndrive-line{}\n{},{}\n{},{}\n----\ndrive-line: {},{} -> {},{}{}\n",
+            pin_suffix,
             fmt_coord(dl.start.x), fmt_coord(dl.start.y),
             fmt_coord(dl.end.x), fmt_coord(dl.end.y),
             fmt_coord(dl.start.x), fmt_coord(dl.start.y),
             fmt_coord(dl.end.x), fmt_coord(dl.end.y),
+            pin_suffix,
         ));
     }
 
@@ -157,6 +169,22 @@ fn format_fixture(input: &GenerateInput) -> String {
                 e.start, e.end, e.start, e.end
             ));
         }
+    }
+
+    // Region overrides.
+    for ov in &input.region_overrides {
+        let mut parts = vec![format!("region={}", ov.region_index)];
+        if let Some(a) = ov.aisle_angle_deg {
+            parts.push(format!("angle={}", fmt_coord(a)));
+        }
+        if let Some(o) = ov.aisle_offset {
+            parts.push(format!("offset={}", fmt_coord(o)));
+        }
+        let spec = parts.join(" ");
+        out.push_str(&format!(
+            "\nregion-override {}\n----\n{}\n",
+            spec, spec,
+        ));
     }
 
     // Generate.

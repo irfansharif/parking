@@ -148,10 +148,18 @@ export function setupInteraction(
           }
         }
       } else {
-        app.state.selectedEdge = null;
-        // No vertex or edge hit — start canvas pan.
-        isPanning = true;
-        panStart = { x: sx, y: sy };
+        // No aisle edge — try region vector body hit test.
+        const bodyHit = hitTestRegionVectorBody(worldPos, app, EDGE_HIT_RADIUS / app.state.camera.zoom);
+        if (bodyHit) {
+          app.state.selectedVertex = bodyHit;
+          app.state.selectedEdge = null;
+          app.state.isDragging = true;
+        } else {
+          app.state.selectedEdge = null;
+          // No vertex or edge hit — start canvas pan.
+          isPanning = true;
+          panStart = { x: sx, y: sy };
+        }
       }
     }
     updateModeHint(app);
@@ -341,12 +349,17 @@ export function setupInteraction(
       updateModeHint(app);
       renderer.render(app.state);
     } else if (e.key === "f" || e.key === "F") {
-      // Cycle direction on selected aisle graph edge or annotation anchor.
-      if (app.state.selectedEdge) {
+      // Toggle region projection on selected hole vertex, or cycle
+      // direction on selected aisle graph edge / annotation anchor.
+      const sel = app.state.selectedVertex;
+      if (sel?.type === "boundary-hole" && sel.holeIndex !== undefined) {
+        app.toggleSeparator(sel.holeIndex, sel.index);
+        renderer.render(app.state);
+      } else if (app.state.selectedEdge) {
         app.cycleEdgeDirection(app.state.selectedEdge.index);
         renderer.render(app.state);
-      } else if (app.state.selectedVertex?.type === "annotation") {
-        app.cycleAnnotationDirection(app.state.selectedVertex.index);
+      } else if (sel?.type === "annotation") {
+        app.cycleAnnotationDirection(sel.index);
         renderer.render(app.state);
       }
     } else if (e.key === "Delete" || e.key === "Backspace" || e.key === "d" || e.key === "D") {
@@ -463,6 +476,35 @@ export function findCollinearChain(graph: DriveAisleGraph, seedIdx: number): num
     }
   }
   return chain;
+}
+
+/// Hit-test against region vector line segments (body, not endpoints).
+function hitTestRegionVectorBody(worldPos: Vec2, app: App, worldRadius: number): VertexRef | null {
+  const rd = app.state.layout?.region_debug;
+  if (!rd) return null;
+  const halfLen = 30;
+  let best: { index: number; dist: number } | null = null;
+
+  for (let i = 0; i < rd.regions.length; i++) {
+    const region = rd.regions[i];
+    const angleRad = region.aisle_angle_deg * (Math.PI / 180);
+    const dirX = Math.cos(angleRad);
+    const dirY = Math.sin(angleRad);
+    const cx = region.center.x;
+    const cy = region.center.y;
+    const sx = cx - dirX * halfLen;
+    const sy = cy - dirY * halfLen;
+    const ex = cx + dirX * halfLen;
+    const ey = cy + dirY * halfLen;
+
+    const dist = pointToSegmentDist(worldPos, { x: sx, y: sy }, { x: ex, y: ey });
+    if (dist < worldRadius && (!best || dist < best.dist)) {
+      best = { index: i, dist };
+    }
+  }
+
+  if (!best) return null;
+  return { type: "region-vector", index: best.index, endpoint: "body" };
 }
 
 export function updateModeHint(app: App): void {

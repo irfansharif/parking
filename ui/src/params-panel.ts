@@ -84,6 +84,15 @@ const PARAM_DEFS: ParamDef[] = [
     unit: "stalls",
     type: "range",
   },
+  {
+    key: "island_stall_interval",
+    label: "Island Interval",
+    min: 0,
+    max: 20,
+    step: 1,
+    unit: "stalls",
+    type: "range",
+  },
 ];
 
 export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () => void): void {
@@ -138,6 +147,23 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     container.appendChild(group);
   }
 
+  // Region decomposition toggle
+  const regGroup = document.createElement("div");
+  regGroup.className = "param-group layer-toggle";
+  const regLabel = document.createElement("label");
+  const regCheckbox = document.createElement("input");
+  regCheckbox.type = "checkbox";
+  regCheckbox.checked = !!app.state.params.use_regions;
+  regCheckbox.addEventListener("change", () => {
+    (app.state.params as any).use_regions = regCheckbox.checked;
+    app.state.aisleGraph = null;
+    app.generate();
+  });
+  regLabel.appendChild(regCheckbox);
+  regLabel.appendChild(document.createTextNode(" Region Decomposition"));
+  regGroup.appendChild(regLabel);
+  container.appendChild(regGroup);
+
   // Layers section
   const layersTitle = document.createElement("h2");
   layersTitle.textContent = "Layers";
@@ -155,6 +181,8 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     { key: "skeletonDebug", label: "Skeleton" },
     { key: "islands", label: "Islands" },
     { key: "extensionStalls", label: "Extension Stalls" },
+    { key: "regions", label: "Regions" },
+    { key: "paintLines", label: "Paint Lines" },
   ];
 
   for (const def of LAYER_DEFS) {

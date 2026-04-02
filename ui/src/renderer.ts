@@ -49,6 +49,47 @@ export class Renderer {
         }
       }
 
+      // 2b2. Region debug overlay
+      if (state.layers.regions && state.layout.region_debug) {
+        const rd = state.layout.region_debug;
+        const colors = Renderer.FACE_COLORS;
+
+        // Draw each region polygon with a distinct color, subtracting holes.
+        for (let i = 0; i < rd.regions.length; i++) {
+          const [r, g, b] = colors[i % colors.length];
+          ctx.beginPath();
+          this.tracePath(rd.regions[i].clip_poly);
+          // Subtract hole interiors so they don't get colored.
+          for (const hole of state.boundary.holes) {
+            if (hole.length >= 3) {
+              this.tracePath(hole);
+            }
+          }
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.15)`;
+          ctx.fill("evenodd");
+          ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.5)`;
+          ctx.lineWidth = 1.0;
+          ctx.stroke();
+        }
+
+        // Draw separator segments.
+        for (const [start, end] of rd.separators) {
+          ctx.beginPath();
+          ctx.moveTo(start.x, start.y);
+          ctx.lineTo(end.x, end.y);
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          // Draw endpoint dots.
+          for (const pt of [start, end]) {
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+            ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+            ctx.fill();
+          }
+        }
+      }
+
       // 2c. Miter fills (debug overlay)
       if (state.layers.miterFills && state.layout.miter_fills) {
         for (const fill of state.layout.miter_fills) {
@@ -154,6 +195,11 @@ export class Renderer {
         for (const stall of state.layout.stalls) {
           this.drawStall(stall, highlightExt);
         }
+      }
+
+      // 5b. Paint lines — thin white strokes mimicking real parking lot paint
+      if (state.layers.paintLines) {
+        this.drawPaintLines(state);
       }
 
     }
@@ -282,11 +328,13 @@ export class Renderer {
     ctx.fill();
 
     // Outer boundary stroke at aisle-edge perimeter (where orange dots are).
-    ctx.beginPath();
-    this.tracePath(boundary.outer);
-    ctx.strokeStyle = "rgba(233, 69, 96, 0.8)";
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    if (state.layers.vertices) {
+      ctx.beginPath();
+      this.tracePath(boundary.outer);
+      ctx.strokeStyle = "rgba(233, 69, 96, 0.8)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
 
     // Holes (buildings): fill at derived (raw) positions, stroke at aisle-edge ring positions.
     const derivedHoles = state.layout?.derived_holes ?? [];
@@ -296,12 +344,14 @@ export class Renderer {
       ctx.fillStyle = "rgba(30, 30, 50, 0.95)";
       ctx.fill();
     }
-    for (const hole of boundary.holes) {
-      ctx.beginPath();
-      this.tracePath(hole);
-      ctx.strokeStyle = "rgba(233, 69, 96, 0.6)";
-      ctx.lineWidth = 0.8;
-      ctx.stroke();
+    if (state.layers.vertices) {
+      for (const hole of boundary.holes) {
+        ctx.beginPath();
+        this.tracePath(hole);
+        ctx.strokeStyle = "rgba(233, 69, 96, 0.6)";
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+      }
     }
   }
 
@@ -418,6 +468,10 @@ export class Renderer {
         fill: "rgba(255, 160, 80, 0.35)",
         stroke: "rgba(230, 120, 50, 0.65)",
       },
+      Island: {
+        fill: "rgba(75, 140, 60, 0.5)",
+        stroke: "rgba(60, 120, 45, 0.7)",
+      },
     };
     const effectiveKind = (stall.kind === "Extension" && !highlightExtensions) ? "Standard" : stall.kind;
     const c = colors[effectiveKind] || colors.Standard;
@@ -432,6 +486,48 @@ export class Renderer {
     ctx.strokeStyle = c.stroke;
     ctx.lineWidth = 0.3;
     ctx.stroke();
+  }
+
+  private drawPaintLines(state: AppState): void {
+    const { ctx } = this;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.lineWidth = 0.5;
+    ctx.lineCap = "round";
+
+    // Stall paint lines: draw three sides of each stall (not the entrance
+    // edge corners[2]→corners[3], which is the aisle-facing open side).
+    if (state.layout) {
+      ctx.beginPath();
+      for (const stall of state.layout.stalls) {
+        if (stall.kind === "Island") continue;
+        const c = stall.corners;
+        // Side: corners[3] → corners[0]
+        ctx.moveTo(c[3].x, c[3].y);
+        ctx.lineTo(c[0].x, c[0].y);
+        // Back: corners[0] → corners[1]
+        ctx.lineTo(c[1].x, c[1].y);
+        // Side: corners[1] → corners[2]
+        ctx.lineTo(c[2].x, c[2].y);
+      }
+      ctx.stroke();
+
+      // Island outlines
+      if (state.layout.islands) {
+        ctx.beginPath();
+        for (const island of state.layout.islands) {
+          this.tracePath(island.contour);
+          if (island.holes) {
+            for (const hole of island.holes) {
+              this.tracePath(hole);
+            }
+          }
+        }
+        ctx.stroke();
+      }
+    }
+
+    ctx.restore();
   }
 
   private drawSpine(spine: SpineLine): void {
@@ -714,8 +810,78 @@ export class Renderer {
       }
     }
 
-    // Aisle vector control — rendered last so it's always on top.
-    this.drawAisleVector(state);
+    // Region vectors — always rendered (global = single region).
+    this.drawRegionVectors(state);
+  }
+
+  private drawRegionVectors(state: AppState): void {
+    const rd = state.layout?.region_debug;
+    if (!rd || rd.regions.length === 0) return;
+    const { ctx } = this;
+    const colors = Renderer.FACE_COLORS;
+    const halfLen = 30;
+
+    for (let i = 0; i < rd.regions.length; i++) {
+      const region = rd.regions[i];
+      const [r, g, b] = colors[i % colors.length];
+      const angleRad = region.aisle_angle_deg * (Math.PI / 180);
+      const dirX = Math.cos(angleRad);
+      const dirY = Math.sin(angleRad);
+      const cx = region.center.x;
+      const cy = region.center.y;
+      const sx = cx - dirX * halfLen;
+      const sy = cy - dirY * halfLen;
+      const ex = cx + dirX * halfLen;
+      const ey = cy + dirY * halfLen;
+
+      // Faint infinite extent line.
+      const ext = 10000;
+      ctx.beginPath();
+      ctx.moveTo(cx - dirX * ext, cy - dirY * ext);
+      ctx.lineTo(cx + dirX * ext, cy + dirY * ext);
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.15)`;
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Solid control segment.
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(ex, ey);
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Arrowhead at end.
+      const arrowSize = 7;
+      ctx.beginPath();
+      ctx.moveTo(ex, ey);
+      ctx.lineTo(ex - dirX * arrowSize + dirY * arrowSize * 0.4, ey - dirY * arrowSize - dirX * arrowSize * 0.4);
+      ctx.lineTo(ex - dirX * arrowSize - dirY * arrowSize * 0.4, ey - dirY * arrowSize + dirX * arrowSize * 0.4);
+      ctx.closePath();
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
+      ctx.fill();
+
+      // Endpoint dots.
+      const endpoints: { pos: Vec2; endpoint: "start" | "end" }[] = [
+        { pos: { x: sx, y: sy }, endpoint: "start" },
+        { pos: { x: ex, y: ey }, endpoint: "end" },
+      ];
+      for (const ep of endpoints) {
+        const ref: VertexRef = { type: "region-vector", index: i, endpoint: ep.endpoint };
+        const isSelected = this.vertexRefsEqual(ref, state.selectedVertex);
+        const isHovered = this.vertexRefsEqual(ref, state.hoveredVertex);
+        const radius = isSelected || isHovered ? 6 : 4.5;
+        ctx.beginPath();
+        ctx.arc(ep.pos.x, ep.pos.y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = isSelected ? "#ffffff" : isHovered ? "#ffff00" : `rgba(${r}, ${g}, ${b}, 0.95)`;
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+      }
+    }
   }
 
   private drawAisleVector(state: AppState): void {
@@ -791,7 +957,7 @@ export class Renderer {
     if (a.type !== b.type || a.index !== b.index) return false;
     if (a.type === "boundary-hole")
       return a.holeIndex === (b as VertexRef).holeIndex;
-    if (a.type === "drive-line" || a.type === "aisle-vector")
+    if (a.type === "drive-line" || a.type === "aisle-vector" || a.type === "region-vector")
       return a.endpoint === (b as VertexRef).endpoint;
     return true;
   }

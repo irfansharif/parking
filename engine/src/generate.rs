@@ -1,14 +1,19 @@
-use crate::aisle_graph::{auto_generate, compute_inset_d, derive_raw_holes, derive_raw_outer, find_or_add_vertex, intersect_line_polygon, merge_with_auto, subtract_intervals};
+use crate::aisle_graph::{auto_generate, compute_inset_d, decompose_regions, derive_raw_holes, derive_raw_outer, find_or_add_vertex, intersect_line_polygon, merge_with_auto, subtract_intervals, Region};
 use crate::clip::point_in_polygon;
 use crate::face::generate_from_spines;
 use crate::inset::{inset_polygon, signed_area};
 use crate::types::*;
 
 pub fn generate(input: GenerateInput) -> ParkingLayout {
+    // Extract separator lines from pinned drive lines: (hole_index, vertex_index, boundary_endpoint).
+    let separator_lines: Vec<(usize, usize, Vec2)> = input.drive_lines.iter()
+        .filter_map(|dl| dl.hole_pin.as_ref().map(|p| (p.hole_index, p.vertex_index, dl.end)))
+        .collect();
+
     // First, resolve the aisle graph from manual + auto as usual.
     let mut graph = match input.aisle_graph {
         Some(manual) => merge_with_auto(manual, &input.boundary, &input.params),
-        None => auto_generate(&input.boundary, &input.params),
+        None => auto_generate(&input.boundary, &input.params, &separator_lines, &input.region_overrides),
     };
 
     // Then append drive line edges on top — they're additive and should not
@@ -63,6 +68,67 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
 
     let total = stalls.len();
 
+    // Always compute region debug info. When no separators exist, the
+    // entire lot is a single region with the global aisle angle/offset.
+    let region_debug = {
+        let outer_loop = if input.params.site_offset > 0.0 {
+            let p = inset_polygon(&input.boundary.outer, input.params.site_offset);
+            if p.is_empty() { input.boundary.outer.clone() } else { ensure_ccw(p) }
+        } else {
+            ensure_ccw(input.boundary.outer.clone())
+        };
+
+        let mut region_list = if !separator_lines.is_empty() {
+            let hole_loops: Vec<Vec<Vec2>> = input.boundary.holes.iter()
+                .filter(|h| !h.is_empty())
+                .cloned()
+                .collect();
+            decompose_regions(&outer_loop, &hole_loops, &separator_lines)
+        } else {
+            vec![]
+        };
+
+        // If no regions formed (0 separators or only 1 per hole), fall
+        // back to a single region covering the whole lot.
+        if region_list.is_empty() {
+            region_list.push(Region {
+                clip_poly: outer_loop.clone(),
+                aisle_angle_deg: input.params.aisle_angle_deg,
+                aisle_offset: input.params.aisle_offset,
+            });
+        }
+
+        // Apply per-region overrides.
+        for ov in &input.region_overrides {
+            if let Some(r) = region_list.get_mut(ov.region_index) {
+                if let Some(a) = ov.aisle_angle_deg { r.aisle_angle_deg = a; }
+                if let Some(o) = ov.aisle_offset { r.aisle_offset = o; }
+            }
+        }
+
+        // Pick the top-left vertex of the region polygon as the vector anchor.
+        // "Top-left" = smallest y first (topmost), then smallest x (leftmost).
+        let top_left_vertex = |poly: &[Vec2]| -> Vec2 {
+            if poly.is_empty() { return Vec2::new(0.0, 0.0); }
+            *poly.iter().min_by(|a, b| {
+                a.y.partial_cmp(&b.y).unwrap().then(a.x.partial_cmp(&b.x).unwrap())
+            }).unwrap()
+        };
+
+        Some(RegionDebug {
+            regions: region_list.into_iter().map(|r| {
+                let center = top_left_vertex(&r.clip_poly);
+                RegionInfo {
+                    clip_poly: r.clip_poly,
+                    aisle_angle_deg: r.aisle_angle_deg,
+                    aisle_offset: r.aisle_offset,
+                    center,
+                }
+            }).collect(),
+            separators: vec![],
+        })
+    };
+
     ParkingLayout {
         aisle_polygons,
         stalls,
@@ -77,6 +143,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         islands,
         derived_outer,
         derived_holes,
+        region_debug,
     }
 }
 

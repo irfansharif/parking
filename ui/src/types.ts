@@ -45,6 +45,19 @@ export interface ParkingLayout {
   islands: Island[];
   derived_outer?: Vec2[];
   derived_holes?: Vec2[][];
+  region_debug?: RegionDebug;
+}
+
+export interface RegionDebug {
+  regions: RegionInfo[];
+  separators: [Vec2, Vec2][];
+}
+
+export interface RegionInfo {
+  clip_poly: Vec2[];
+  aisle_angle_deg: number;
+  aisle_offset: number;
+  center: Vec2;
 }
 
 export type AisleDirection = "TwoWay" | "TwoWayOriented" | "OneWay";
@@ -77,6 +90,8 @@ export interface ParkingParams {
   aisle_offset: number;
   site_offset: number;
   cross_aisle_max_run: number;
+  use_regions?: boolean;
+  island_stall_interval?: number;
 }
 
 export interface DebugToggles {
@@ -116,6 +131,8 @@ export interface DebugToggles {
 export interface DriveLine {
   start: Vec2;
   end: Vec2;
+  /** When set, start is pinned to a hole vertex (separator). */
+  holePin?: { holeIndex: number; vertexIndex: number };
 }
 
 export type Annotation = OneWayAnnotation | TwoWayOrientedAnnotation | DeleteVertexAnnotation | DeleteEdgeAnnotation;
@@ -159,4 +176,11 @@ export interface GenerateInput {
   annotations: Annotation[];
   params: ParkingParams;
   debug: DebugToggles;
+  regionOverrides?: RegionOverride[];
+}
+
+export interface RegionOverride {
+  region_index: number;
+  aisle_angle_deg?: number;
+  aisle_offset?: number;
 }

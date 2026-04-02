@@ -19,10 +19,10 @@ export interface Camera {
 }
 
 export interface VertexRef {
-  type: "boundary-outer" | "boundary-hole" | "aisle" | "drive-line" | "annotation" | "aisle-vector";
+  type: "boundary-outer" | "boundary-hole" | "aisle" | "drive-line" | "annotation" | "aisle-vector" | "region-vector";
   index: number;
   holeIndex?: number;
-  endpoint?: "start" | "end";
+  endpoint?: "start" | "end" | "body";
 }
 
 export interface EdgeRef {
@@ -48,6 +48,8 @@ export interface LayerVisibility {
   skeletonDebug: boolean;
   islands: boolean;
   extensionStalls: boolean;
+  regions: boolean;
+  paintLines: boolean;
 }
 
 export interface AppState {
@@ -75,6 +77,8 @@ export interface AppState {
   layers: LayerVisibility;
   snapGuides: SnapGuide[];
   snapState: SnapState;
+  // Per-region aisle angle/offset overrides, keyed by region index.
+  regionOverrides: { [regionIndex: number]: { angle?: number; offset?: number } };
 }
 
 export type GenerateFn = (input: string) => string;
@@ -90,7 +94,7 @@ export class App {
     this.state = {
       boundary: {
         outer: [
-          { x: 112.96, y: 0 },
+          { x: 76.30, y: 0 },
           { x: 750, y: 0 },
           { x: 782.80, y: 654.85 },
           { x: 168.78, y: 654.85 },
@@ -114,6 +118,8 @@ export class App {
         aisle_offset: 0,
         site_offset: 0,
         cross_aisle_max_run: 15,
+        use_regions: true,
+        island_stall_interval: 8,
       },
       debug: {
         miter_fills: true,
@@ -148,24 +154,29 @@ export class App {
       annotations: [],
       aisleVector: aisleVectorFromAngle(90, 0, { x: -80, y: 250 }),
       driveLines: [
-        { start: { x: 447.88, y: 0 }, end: { x: 224.60, y: 654.85 } },
+        { start: { x: 824.53, y: 531.97 }, end: { x: 224.60, y: 654.85 } },
+        { start: { x: 611.14, y: 251.80 }, end: { x: 762.23, y: 244.23 }, holePin: { holeIndex: 0, vertexIndex: 1 } },
+        { start: { x: 394.53, y: 251.80 }, end: { x: 250.39, y: 0 }, holePin: { holeIndex: 0, vertexIndex: 0 } },
       ],
       pendingDriveLine: null,
       pendingDriveLinePreview: null,
       snapGuides: [],
       snapState: emptySnapState(),
+      regionOverrides: {},
       layers: {
-        stalls: true,
+        stalls: false,
         aisles: false,
         vertices: true,
-        driveLines: true,
+        driveLines: false,
         spines: false,
         faces: false,
         faceColors: false,
         miterFills: false,
         skeletonDebug: false,
-        islands: true,
+        islands: false,
         extensionStalls: false,
+        regions: false,
+        paintLines: true,
       },
     };
   }
@@ -178,6 +189,11 @@ export class App {
       annotations: this.state.annotations.filter((a) => a._active !== false),
       params: this.state.params,
       debug: this.state.debug,
+      regionOverrides: Object.entries(this.state.regionOverrides).map(([k, v]) => ({
+        region_index: Number(k),
+        aisle_angle_deg: v.angle,
+        aisle_offset: v.offset,
+      })),
     };
     const inputJson = JSON.stringify(input);
     // Stash on window so you can grab it from the console:
@@ -238,15 +254,28 @@ export class App {
 
   getAllVertices(): { ref: VertexRef; pos: Vec2 }[] {
     const result: { ref: VertexRef; pos: Vec2 }[] = [];
-    // Aisle vector endpoints — highest hit-test priority.
-    result.push({
-      ref: { type: "aisle-vector", index: 0, endpoint: "start" },
-      pos: this.state.aisleVector.start,
-    });
-    result.push({
-      ref: { type: "aisle-vector", index: 0, endpoint: "end" },
-      pos: this.state.aisleVector.end,
-    });
+    // Region vector endpoints — highest hit-test priority.
+    // Always present: at minimum 1 region (the whole lot).
+    const rd = this.state.layout?.region_debug;
+    if (rd) {
+      const halfLen = 30;
+      for (let i = 0; i < rd.regions.length; i++) {
+        const region = rd.regions[i];
+        const angleRad = region.aisle_angle_deg * (Math.PI / 180);
+        const dirX = Math.cos(angleRad);
+        const dirY = Math.sin(angleRad);
+        const cx = region.center.x;
+        const cy = region.center.y;
+        result.push({
+          ref: { type: "region-vector", index: i, endpoint: "start" },
+          pos: { x: cx - dirX * halfLen, y: cy - dirY * halfLen },
+        });
+        result.push({
+          ref: { type: "region-vector", index: i, endpoint: "end" },
+          pos: { x: cx + dirX * halfLen, y: cy + dirY * halfLen },
+        });
+      }
+    }
     // Annotation anchors next.
     this.state.annotations.forEach((ann, i) => {
       const pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
@@ -290,6 +319,12 @@ export class App {
       this.state.aisleGraph = null;
     } else if (ref.type === "boundary-hole" && ref.holeIndex !== undefined) {
       this.state.boundary.holes[ref.holeIndex][ref.index] = pos;
+      // Update any pinned separator drive lines attached to this vertex.
+      for (const dl of this.state.driveLines) {
+        if (dl.holePin?.holeIndex === ref.holeIndex && dl.holePin?.vertexIndex === ref.index) {
+          dl.start = pos;
+        }
+      }
       this.state.aisleGraph = null;
     } else if (ref.type === "annotation") {
       const ann = this.state.annotations[ref.index];
@@ -365,7 +400,49 @@ export class App {
         }
       }
     } else if (ref.type === "drive-line" && ref.endpoint) {
-      this.state.driveLines[ref.index][ref.endpoint] = pos;
+      const dl = this.state.driveLines[ref.index];
+      if (dl.holePin && ref.endpoint === "start") {
+        // Pinned end — don't move it, it's attached to the hole vertex.
+        return;
+      }
+      if (dl.holePin && ref.endpoint === "end") {
+        // Free end of a separator — snap to nearest boundary edge.
+        dl.end = this.nearestBoundaryProjection(pos);
+      } else if (ref.endpoint === "start" || ref.endpoint === "end") {
+        dl[ref.endpoint] = pos;
+      }
+      this.state.aisleGraph = null;
+    } else if (ref.type === "region-vector") {
+      const rd = this.state.layout?.region_debug;
+      const region = rd?.regions[ref.index];
+      if (!region) return;
+      const cx = region.center.x;
+      const cy = region.center.y;
+
+      if (ref.endpoint === "start" || ref.endpoint === "end") {
+        // Endpoint drag: rotate the vector around its center (fixed length).
+        const dx = pos.x - cx;
+        const dy = pos.y - cy;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len > 1) {
+          let angleDeg = Math.atan2(dy, dx) * (180 / Math.PI);
+          angleDeg = ((angleDeg % 180) + 180) % 180;
+          if (!this.state.regionOverrides[ref.index]) {
+            this.state.regionOverrides[ref.index] = {};
+          }
+          this.state.regionOverrides[ref.index].angle = Math.round(angleDeg);
+        }
+      } else if (ref.endpoint === "body") {
+        // Body drag: translate perpendicular to direction → offset.
+        const angleRad = region.aisle_angle_deg * (Math.PI / 180);
+        const perpX = -Math.sin(angleRad);
+        const perpY = Math.cos(angleRad);
+        const offset = pos.x * perpX + pos.y * perpY;
+        if (!this.state.regionOverrides[ref.index]) {
+          this.state.regionOverrides[ref.index] = {};
+        }
+        this.state.regionOverrides[ref.index].offset = offset;
+      }
       this.state.aisleGraph = null;
     } else if (ref.type === "aisle-vector") {
       const vec = this.state.aisleVector;
@@ -469,6 +546,56 @@ export class App {
     this.state.annotations.splice(index, 1);
     this.state.selectedVertex = null;
     this.generate();
+  }
+
+  toggleSeparator(holeIndex: number, vertexIndex: number): void {
+    // Check if a pinned drive line already exists for this hole vertex.
+    const idx = this.state.driveLines.findIndex(
+      (dl) => dl.holePin?.holeIndex === holeIndex && dl.holePin?.vertexIndex === vertexIndex,
+    );
+    if (idx >= 0) {
+      // Remove it.
+      this.state.driveLines.splice(idx, 1);
+    } else {
+      // Create a separator drive line: start = hole vertex, end = nearest
+      // boundary perpendicular projection.
+      const hole = this.state.boundary.holes[holeIndex];
+      if (!hole || vertexIndex >= hole.length) return;
+      const vertex = hole[vertexIndex];
+      const end = this.nearestBoundaryProjection(vertex);
+      this.state.driveLines.push({
+        start: vertex,
+        end,
+        holePin: { holeIndex, vertexIndex },
+      });
+    }
+    // Clear stale region overrides — regions will be recomputed.
+    this.state.regionOverrides = {};
+    this.state.aisleGraph = null;
+    this.generate();
+  }
+
+  /** Project a point onto the nearest outer boundary edge. */
+  private nearestBoundaryProjection(pt: Vec2): Vec2 {
+    const outer = this.state.boundary.outer;
+    let bestDist = Infinity;
+    let bestProj = pt;
+    for (let i = 0; i < outer.length; i++) {
+      const a = outer[i];
+      const b = outer[(i + 1) % outer.length];
+      const ab = { x: b.x - a.x, y: b.y - a.y };
+      const lenSq = ab.x * ab.x + ab.y * ab.y;
+      if (lenSq < 1e-12) continue;
+      const t = Math.max(0, Math.min(1, ((pt.x - a.x) * ab.x + (pt.y - a.y) * ab.y) / lenSq));
+      const proj = { x: a.x + ab.x * t, y: a.y + ab.y * t };
+      const dx = pt.x - proj.x, dy = pt.y - proj.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestProj = proj;
+      }
+    }
+    return bestProj;
   }
 
   cycleAnnotationDirection(index: number): void {
@@ -640,7 +767,7 @@ function aisleVectorFromAngle(angleDeg: number, _offset: number, center: Vec2): 
   const angleRad = angleDeg * (Math.PI / 180);
   const dirX = Math.cos(angleRad);
   const dirY = Math.sin(angleRad);
-  const halfLen = 60;
+  const halfLen = 30;
   return {
     start: { x: center.x - dirX * halfLen, y: center.y - dirY * halfLen },
     end: { x: center.x + dirX * halfLen, y: center.y + dirY * halfLen },
