@@ -1,5 +1,5 @@
 import { AppState, Camera, VertexRef } from "./app";
-import { Vec2, ParkingLot, StallQuad, DriveAisleGraph, SpineLine, Face, AisleDirection } from "./types";
+import { Vec2, EdgeCurve, ParkingLot, StallQuad, DriveAisleGraph, SpineLine, Face, AisleDirection } from "./types";
 import { SnapGuide } from "./snap";
 
 export class Renderer {
@@ -309,7 +309,7 @@ export class Renderer {
 
     if (state.layers.vertices) {
       ctx.beginPath();
-      this.tracePath(boundary.outer);
+      this.tracePathWithCurves(boundary.outer, boundary.outer_curves);
       ctx.strokeStyle = isActive ? "rgba(233, 69, 96, 0.8)" : "rgba(233, 69, 96, 0.4)";
       ctx.lineWidth = 1;
       ctx.stroke();
@@ -323,11 +323,83 @@ export class Renderer {
       ctx.fill();
     }
     if (state.layers.vertices) {
-      for (const hole of boundary.holes) {
+      for (let hi = 0; hi < boundary.holes.length; hi++) {
+        const hole = boundary.holes[hi];
+        const holeCurves = boundary.hole_curves?.[hi];
         ctx.beginPath();
-        this.tracePath(hole);
+        this.tracePathWithCurves(hole, holeCurves);
         ctx.strokeStyle = isActive ? "rgba(233, 69, 96, 0.6)" : "rgba(233, 69, 96, 0.3)";
         ctx.lineWidth = 0.8;
+        ctx.stroke();
+      }
+
+      // Draw edge midpoint handles and curve control points.
+      this.drawEdgeHandles(boundary.outer, boundary.outer_curves, isActive);
+      for (let hi = 0; hi < boundary.holes.length; hi++) {
+        this.drawEdgeHandles(boundary.holes[hi], boundary.hole_curves?.[hi], isActive);
+      }
+    }
+  }
+
+  private drawEdgeHandles(
+    points: Vec2[],
+    curves: (EdgeCurve | null)[] | undefined,
+    isActive: boolean,
+  ): void {
+    const { ctx } = this;
+    const alpha = isActive ? 0.6 : 0.25;
+    const ghostAlpha = isActive ? 0.4 : 0.15;
+
+    for (let i = 0; i < points.length; i++) {
+      const p0 = points[i];
+      const p1 = points[(i + 1) % points.length];
+      const c = curves?.[i];
+
+      if (c) {
+        // Handle lines from endpoints to control points.
+        ctx.beginPath();
+        ctx.moveTo(p0.x, p0.y);
+        ctx.lineTo(c.cp1.x, c.cp1.y);
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(c.cp2.x, c.cp2.y);
+        ctx.strokeStyle = `rgba(255, 160, 50, ${ghostAlpha})`;
+        ctx.lineWidth = 0.5;
+        ctx.setLineDash([3, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Ghost control point dots.
+        for (const cp of [c.cp1, c.cp2]) {
+          ctx.beginPath();
+          ctx.arc(cp.x, cp.y, 2, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255, 160, 50, ${ghostAlpha})`;
+          ctx.fill();
+          ctx.strokeStyle = `rgba(255, 255, 255, ${ghostAlpha * 0.7})`;
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+        }
+
+        // Edge midpoint handle (solid, on the curve at t=0.5).
+        const mid = {
+          x: (p0.x + 3 * c.cp1.x + 3 * c.cp2.x + p1.x) / 8,
+          y: (p0.y + 3 * c.cp1.y + 3 * c.cp2.y + p1.y) / 8,
+        };
+        ctx.beginPath();
+        ctx.arc(mid.x, mid.y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, 160, 50, ${alpha})`;
+        ctx.fill();
+        ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+        ctx.lineWidth = 0.6;
+        ctx.stroke();
+      } else {
+        // Straight edge — ghost midpoint handle.
+        const mid = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+        ctx.beginPath();
+        ctx.arc(mid.x, mid.y, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, 160, 50, ${ghostAlpha})`;
+        ctx.fill();
+        ctx.strokeStyle = `rgba(255, 255, 255, ${ghostAlpha * 0.5})`;
+        ctx.lineWidth = 0.5;
         ctx.stroke();
       }
     }
@@ -1119,6 +1191,24 @@ export class Renderer {
       this.ctx.lineTo(points[i].x, points[i].y);
     }
     this.ctx.closePath();
+  }
+
+  private tracePathWithCurves(points: Vec2[], curves?: (EdgeCurve | null)[]): void {
+    if (points.length === 0) return;
+    this.ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 0; i < points.length; i++) {
+      const next = (i + 1) % points.length;
+      const curve = curves?.[i];
+      if (curve) {
+        this.ctx.bezierCurveTo(
+          curve.cp1.x, curve.cp1.y,
+          curve.cp2.x, curve.cp2.y,
+          points[next].x, points[next].y,
+        );
+      } else {
+        this.ctx.lineTo(points[next].x, points[next].y);
+      }
+    }
   }
 
   private drawPolygon(

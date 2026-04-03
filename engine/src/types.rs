@@ -74,10 +74,25 @@ impl Mul<f64> for Vec2 {
 // Polygon
 // ---------------------------------------------------------------------------
 
+/// Cubic bezier control points for a polygon edge.
+/// Edge i goes from vertex[i] to vertex[(i+1) % n].
+/// The full curve is: vertex[i], cp1, cp2, vertex[(i+1) % n].
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EdgeCurve {
+    pub cp1: Vec2,
+    pub cp2: Vec2,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Polygon {
     pub outer: Vec<Vec2>,
     pub holes: Vec<Vec<Vec2>>,
+    /// Per-edge curve data for outer boundary. Parallel to `outer` edges.
+    #[serde(default)]
+    pub outer_curves: Vec<Option<EdgeCurve>>,
+    /// Per-hole per-edge curve data. Outer index = hole index.
+    #[serde(default)]
+    pub hole_curves: Vec<Vec<Option<EdgeCurve>>>,
 }
 
 // ---------------------------------------------------------------------------

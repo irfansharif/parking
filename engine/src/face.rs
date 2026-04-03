@@ -2604,6 +2604,7 @@ mod tests {
                 Vec2::new(0.0, 200.0),
             ],
             holes: vec![],
+            ..Default::default()
         };
         let params = ParkingParams::default();
         let graph = auto_generate(&boundary, &params, &[], &[]);
@@ -2624,6 +2625,7 @@ mod tests {
                 Vec2::new(0.0, 200.0),
             ],
             holes: vec![],
+            ..Default::default()
         };
         let params = ParkingParams::default();
         let graph = auto_generate(&boundary, &params, &[], &[]);
@@ -2719,6 +2721,7 @@ mod tests {
                 Vec2::new(475.0, 150.0),
                 Vec2::new(375.0, 350.0),
             ]],
+            ..Default::default()
         };
         let params = ParkingParams::default();
         let debug = DebugToggles::default();
@@ -2765,6 +2768,7 @@ mod tests {
                 Vec2::new(475.0, 150.0),
                 Vec2::new(375.0, 350.0),
             ]],
+            ..Default::default()
         };
         let params = ParkingParams::default();
         let debug = DebugToggles::default();
@@ -3237,6 +3241,7 @@ mod tests {
                     Vec2::new(0.0, 200.0),
                 ],
                 holes: vec![],
+                ..Default::default()
             },
             aisle_graph: None,
             drive_lines: vec![],
@@ -3329,6 +3334,7 @@ mod tests {
                     Vec2::new(0.0, 200.0),
                 ],
                 holes: vec![],
+                ..Default::default()
             },
             aisle_graph: None,
             drive_lines: vec![],
@@ -3420,6 +3426,7 @@ mod tests {
                     Vec2::new(475.0, 150.0),
                     Vec2::new(375.0, 350.0),
                 ]],
+                ..Default::default()
             },
             aisle_graph: None,
             drive_lines: vec![
@@ -3472,6 +3479,7 @@ mod tests {
                 Vec2::new(0.0, 300.0),
             ],
             holes: vec![],
+            ..Default::default()
         };
         let params = ParkingParams::default();
         let hw = params.aisle_width / 2.0;
@@ -3611,6 +3619,7 @@ mod tests {
                     Vec2::new(0.0, 200.0),
                 ],
                 holes: vec![],
+                ..Default::default()
             },
             aisle_graph: None,
             drive_lines: vec![

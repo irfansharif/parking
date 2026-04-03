@@ -1,6 +1,7 @@
 pub mod types;
 pub mod inset;
 pub mod aisle_graph;
+pub mod bezier;
 pub mod segment;
 pub mod clip;
 pub mod skeleton;
@@ -43,17 +44,28 @@ fn format_fixture(input: &GenerateInput) -> String {
 
     // Boundary outer polygon.
     out.push_str("polygon outer\n");
-    for v in &input.boundary.outer {
+    for (i, v) in input.boundary.outer.iter().enumerate() {
         out.push_str(&format!("{},{}\n", fmt_coord(v.x), fmt_coord(v.y)));
+        if let Some(Some(c)) = input.boundary.outer_curves.get(i) {
+            out.push_str(&format!("curve {},{} {},{}\n",
+                fmt_coord(c.cp1.x), fmt_coord(c.cp1.y),
+                fmt_coord(c.cp2.x), fmt_coord(c.cp2.y)));
+        }
     }
     out.push_str("----\n");
     out.push_str(&format!("polygon outer: {} vertices\n", input.boundary.outer.len()));
 
     // Boundary holes.
-    for hole in &input.boundary.holes {
+    for (hi, hole) in input.boundary.holes.iter().enumerate() {
         out.push_str("\npolygon hole\n");
-        for v in hole {
+        let hole_curves = input.boundary.hole_curves.get(hi);
+        for (i, v) in hole.iter().enumerate() {
             out.push_str(&format!("{},{}\n", fmt_coord(v.x), fmt_coord(v.y)));
+            if let Some(Some(c)) = hole_curves.and_then(|hc| hc.get(i)) {
+                out.push_str(&format!("curve {},{} {},{}\n",
+                    fmt_coord(c.cp1.x), fmt_coord(c.cp1.y),
+                    fmt_coord(c.cp2.x), fmt_coord(c.cp2.y)));
+            }
         }
         out.push_str("----\n");
         out.push_str(&format!("hole: {} vertices\n", hole.len()));

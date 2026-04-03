@@ -1,6 +1,6 @@
 import { App, VertexRef, EdgeRef } from "./app";
 import { Renderer } from "./renderer";
-import { Vec2, DriveAisleGraph } from "./types";
+import { Vec2, EdgeCurve, DriveAisleGraph } from "./types";
 import { computeSnap, emptySnapState } from "./snap";
 
 export function setupInteraction(
@@ -306,7 +306,10 @@ export function setupInteraction(
       for (let i = 0; i < outer.length; i++) {
         const a = outer[i];
         const b = outer[(i + 1) % outer.length];
-        const dist = pointToSegmentDist(worldPos, a, b);
+        const curve = lot.boundary.outer_curves?.[i];
+        const dist = curve
+          ? pointToCurveDist(worldPos, a, curve, b)
+          : pointToSegmentDist(worldPos, a, b);
         if (dist < bestDist) {
           bestDist = dist;
           bestIdx = i;
@@ -319,7 +322,10 @@ export function setupInteraction(
         for (let i = 0; i < hole.length; i++) {
           const a = hole[i];
           const b = hole[(i + 1) % hole.length];
-          const dist = pointToSegmentDist(worldPos, a, b);
+          const curve = lot.boundary.hole_curves?.[hi]?.[i];
+          const dist = curve
+            ? pointToCurveDist(worldPos, a, curve, b)
+            : pointToSegmentDist(worldPos, a, b);
           if (dist < bestDist) {
             bestDist = dist;
             bestIdx = i;
@@ -417,6 +423,20 @@ function pointToSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
   const projX = a.x + t * dx;
   const projY = a.y + t * dy;
   return Math.sqrt((p.x - projX) ** 2 + (p.y - projY) ** 2);
+}
+
+function pointToCurveDist(p: Vec2, a: Vec2, curve: EdgeCurve, b: Vec2): number {
+  const N = 20;
+  let best = Infinity;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const s = 1 - t;
+    const x = s * s * s * a.x + 3 * s * s * t * curve.cp1.x + 3 * s * t * t * curve.cp2.x + t * t * t * b.x;
+    const y = s * s * s * a.y + 3 * s * s * t * curve.cp1.y + 3 * s * t * t * curve.cp2.y + t * t * t * b.y;
+    const d = Math.sqrt((p.x - x) ** 2 + (p.y - y) ** 2);
+    if (d < best) best = d;
+  }
+  return best;
 }
 
 /// Hit-test against aisle graph edges in world space.

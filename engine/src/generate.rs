@@ -24,6 +24,11 @@ fn region_pole(poly: &[Vec2], holes: &[Vec<Vec2>]) -> Vec2 {
 }
 
 pub fn generate(input: GenerateInput) -> ParkingLayout {
+    // Discretize curved boundary edges into dense polylines so the
+    // entire downstream pipeline works on straight-line segments.
+    let mut input = input;
+    input.boundary = crate::bezier::discretize_polygon(&input.boundary);
+
     // Extract separator lines from pinned drive lines: (hole_index, vertex_index, boundary_endpoint).
     let separator_lines: Vec<(usize, usize, Vec2)> = input.drive_lines.iter()
         .filter_map(|dl| dl.hole_pin.as_ref().map(|p| (p.hole_index, p.vertex_index, dl.end)))

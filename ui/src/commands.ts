@@ -264,6 +264,44 @@ export function createCommandAPI(app: App): CommandAPI {
           return spec;
         }
 
+        case "curve": {
+          // Set a cubic bezier curve on a boundary edge.
+          // Usage: curve outer 1 cp1x,cp1y cp2x,cp2y
+          //        curve hole 0 2 cp1x,cp1y cp2x,cp2y
+          const target = parts[1]; // "outer" or "hole"
+          const lot = app.activeLot();
+          if (target === "outer") {
+            const edgeIdx = parseInt(parts[2]);
+            const [cp1x, cp1y] = parts[3].split(",").map(Number);
+            const [cp2x, cp2y] = parts[4].split(",").map(Number);
+            if (!lot.boundary.outer_curves) {
+              lot.boundary.outer_curves = new Array(lot.boundary.outer.length).fill(null);
+            }
+            lot.boundary.outer_curves[edgeIdx] = {
+              cp1: { x: cp1x, y: cp1y },
+              cp2: { x: cp2x, y: cp2y },
+            };
+            lot.aisleGraph = null;
+            return `curve outer edge ${edgeIdx}`;
+          } else if (target === "hole") {
+            const holeIdx = parseInt(parts[2]);
+            const edgeIdx = parseInt(parts[3]);
+            const [cp1x, cp1y] = parts[4].split(",").map(Number);
+            const [cp2x, cp2y] = parts[5].split(",").map(Number);
+            if (!lot.boundary.hole_curves) lot.boundary.hole_curves = [];
+            if (!lot.boundary.hole_curves[holeIdx]) {
+              lot.boundary.hole_curves[holeIdx] = new Array(lot.boundary.holes[holeIdx].length).fill(null);
+            }
+            lot.boundary.hole_curves[holeIdx][edgeIdx] = {
+              cp1: { x: cp1x, y: cp1y },
+              cp2: { x: cp2x, y: cp2y },
+            };
+            lot.aisleGraph = null;
+            return `curve hole ${holeIdx} edge ${edgeIdx}`;
+          }
+          return "error: curve target must be 'outer' or 'hole'";
+        }
+
         case "layers": {
           // Toggle layer visibility. Usage: layers stalls=on aisles=off spines=on
           const rest = parts.slice(1).join(" ");
