@@ -529,29 +529,26 @@ export class Renderer {
         // Rotate back-edge direction by 45°.
         const hx = unx * Math.cos(hatchRad) - uny * Math.sin(hatchRad);
         const hy = unx * Math.sin(hatchRad) + uny * Math.cos(hatchRad);
-        const hLen = Math.sqrt(hx * hx + hy * hy);
-        const dhx = hx / hLen, dhy = hy / hLen;
-
+        // hx,hy is already unit length (rotation of unit vector).
         // Perpendicular to hatch direction (sweep axis).
-        const nx = -dhy, ny = dhx;
+        const nx = -hy, ny = hx;
 
         // Project corners onto sweep axis to find range.
         const projs = [0, 1, 2, 3].map(i => c[i].x * nx + c[i].y * ny);
         const minP = Math.min(...projs), maxP = Math.max(...projs);
 
         // Extent along hatch direction for line length.
-        const hProjs = [0, 1, 2, 3].map(i => c[i].x * dhx + c[i].y * dhy);
+        const hProjs = [0, 1, 2, 3].map(i => c[i].x * hx + c[i].y * hy);
         const halfH = (Math.max(...hProjs) - Math.min(...hProjs)) / 2 + 2;
         const midH = (Math.max(...hProjs) + Math.min(...hProjs)) / 2;
 
         const spacing = 3;
         ctx.beginPath();
         for (let p = minP; p <= maxP; p += spacing) {
-          // Base point on this sweep line.
-          const bx = p * nx + midH * dhx;
-          const by = p * ny + midH * dhy;
-          ctx.moveTo(bx - halfH * dhx, by - halfH * dhy);
-          ctx.lineTo(bx + halfH * dhx, by + halfH * dhy);
+          const bx = p * nx + midH * hx;
+          const by = p * ny + midH * hy;
+          ctx.moveTo(bx - halfH * hx, by - halfH * hy);
+          ctx.lineTo(bx + halfH * hx, by + halfH * hy);
         }
         ctx.stroke();
         ctx.restore();

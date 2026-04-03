@@ -9,6 +9,7 @@ import {
   GenerateInput,
   DebugToggles,
   Annotation,
+  computeBoundaryPin,
 } from "./types";
 import { SnapGuide, SnapState, emptySnapState } from "./snap";
 import { findCollinearChain } from "./interaction";
@@ -380,6 +381,9 @@ export class App {
     const lot = this.lotForRef(ref);
     if (ref.type === "boundary-outer") {
       lot.boundary.outer[ref.index] = pos;
+      for (const dl of lot.driveLines) {
+        this.resolveBoundaryPin(dl, lot);
+      }
       lot.aisleGraph = null;
     } else if (ref.type === "boundary-hole" && ref.holeIndex !== undefined) {
       lot.boundary.holes[ref.holeIndex][ref.index] = pos;
@@ -469,7 +473,9 @@ export class App {
         return;
       }
       if (dl.holePin && ref.endpoint === "end") {
-        dl.end = this.nearestBoundaryProjection(pos, lot);
+        const proj = this.nearestBoundaryProjection(pos, lot);
+        dl.end = proj.pos;
+        dl.boundaryPin = { edgeIndex: proj.edgeIndex, t: proj.t };
       } else if (ref.endpoint === "start" || ref.endpoint === "end") {
         dl[ref.endpoint] = pos;
       }
@@ -633,11 +639,12 @@ export class App {
       const hole = lot.boundary.holes[holeIndex];
       if (!hole || vertexIndex >= hole.length) return;
       const vertex = hole[vertexIndex];
-      const end = this.nearestBoundaryProjection(vertex, lot);
+      const proj = this.nearestBoundaryProjection(vertex, lot);
       lot.driveLines.push({
         start: vertex,
-        end,
+        end: proj.pos,
         holePin: { holeIndex, vertexIndex },
+        boundaryPin: { edgeIndex: proj.edgeIndex, t: proj.t },
       });
     }
     lot.regionOverrides = {};
@@ -646,26 +653,23 @@ export class App {
   }
 
   /** Project a point onto the nearest outer boundary edge. */
-  private nearestBoundaryProjection(pt: Vec2, lot?: ParkingLot): Vec2 {
-    const outer = (lot ?? this.activeLot()).boundary.outer;
-    let bestDist = Infinity;
-    let bestProj = pt;
-    for (let i = 0; i < outer.length; i++) {
-      const a = outer[i];
-      const b = outer[(i + 1) % outer.length];
-      const ab = { x: b.x - a.x, y: b.y - a.y };
-      const lenSq = ab.x * ab.x + ab.y * ab.y;
-      if (lenSq < 1e-12) continue;
-      const t = Math.max(0, Math.min(1, ((pt.x - a.x) * ab.x + (pt.y - a.y) * ab.y) / lenSq));
-      const proj = { x: a.x + ab.x * t, y: a.y + ab.y * t };
-      const dx = pt.x - proj.x, dy = pt.y - proj.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestProj = proj;
-      }
+  private nearestBoundaryProjection(pt: Vec2, lot?: ParkingLot): { pos: Vec2; edgeIndex: number; t: number } {
+    return computeBoundaryPin(pt, (lot ?? this.activeLot()).boundary.outer);
+  }
+
+  /** Recompute the end position of a drive line from its boundaryPin. */
+  private resolveBoundaryPin(dl: DriveLine, lot: ParkingLot): void {
+    if (!dl.holePin) return;
+    if (!dl.boundaryPin) {
+      // Migrate: compute boundaryPin from current end position.
+      const proj = this.nearestBoundaryProjection(dl.end, lot);
+      dl.boundaryPin = { edgeIndex: proj.edgeIndex, t: proj.t };
     }
-    return bestProj;
+    const outer = lot.boundary.outer;
+    const { edgeIndex, t } = dl.boundaryPin;
+    const a = outer[edgeIndex % outer.length];
+    const b = outer[(edgeIndex + 1) % outer.length];
+    dl.end = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
   }
 
   cycleAnnotationDirection(index: number, lotId?: string): void {

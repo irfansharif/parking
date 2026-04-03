@@ -791,6 +791,8 @@ pub fn merge_with_auto(
 
     for e in &surviving_auto_edges {
         if let (Some(s), Some(t)) = (auto_to_merged[e.start], auto_to_merged[e.end]) {
+            // Skip zero-length edges (both endpoints merged to the same vertex).
+            if s == t { continue; }
             merged_edges.push(AisleEdge {
                 start: s,
                 end: t,

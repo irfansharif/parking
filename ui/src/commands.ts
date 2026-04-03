@@ -1,5 +1,5 @@
 import { App } from "./app";
-import { Vec2 } from "./types";
+import { Vec2, computeBoundaryPin } from "./types";
 
 export interface CommandAPI {
   execute(command: string, body?: string): string;
@@ -181,10 +181,12 @@ export function createCommandAPI(app: App): CommandAPI {
           if (pinMatch) {
             const holeIndex = parseInt(pinMatch[1]);
             const vertexIndex = parseInt(pinMatch[2]);
+            const bpin = computeBoundaryPin(points[1], lot.boundary.outer);
             lot.driveLines.push({
               start: points[0],
-              end: points[1],
+              end: bpin.pos,
               holePin: { holeIndex, vertexIndex },
+              boundaryPin: { edgeIndex: bpin.edgeIndex, t: bpin.t },
             });
           } else {
             lot.driveLines.push({ start: points[0], end: points[1] });

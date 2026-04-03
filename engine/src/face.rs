@@ -903,6 +903,7 @@ fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<(Vec<Vec2>, bool, Optio
     let mut seen = std::collections::HashSet::new();
     let mut corridors = Vec::new();
     for edge in &graph.edges {
+        if edge.start == edge.end { continue; }
         let key = if edge.start < edge.end {
             (edge.start, edge.end)
         } else {
@@ -949,6 +950,7 @@ fn generate_miter_fills(graph: &DriveAisleGraph, debug: &DebugToggles) -> Vec<Ve
         }
         let s = graph.vertices[edge.start];
         let e = graph.vertices[edge.end];
+        if (e - s).length() < 1e-9 { continue; }
         let dir = (e - s).normalize();
         let w = edge.width;
 
@@ -1333,7 +1335,28 @@ fn clip_stalls_to_faces(
                 *c + (centroid - *c) * 0.4
             }).collect();
             // Every shrunk corner must be inside the stall's own face.
-            shrunk.iter().all(|corner| point_in_face(*corner, shape))
+            if !shrunk.iter().all(|corner| point_in_face(*corner, shape)) {
+                return false;
+            }
+            // Corner ray check: rays from p2 (dir p1→p2) and p3 (dir p0→p3)
+            // must hit the same face boundary edge. Reject stalls that
+            // straddle a face corner (each depth side projects to a
+            // different edge).
+            if !shape.is_empty() {
+                let origin_a = stall.corners[2] + (centroid - stall.corners[2]) * 0.2;
+                let origin_b = stall.corners[3] + (centroid - stall.corners[3]) * 0.2;
+                let dir_a = (stall.corners[2] - stall.corners[1]).normalize();
+                let dir_b = (stall.corners[3] - stall.corners[0]).normalize();
+                let hit_a = ray_hit_face_edge(origin_a, dir_a, shape);
+                let hit_b = ray_hit_face_edge(origin_b, dir_b, shape);
+                match (hit_a, hit_b) {
+                    (Some((ci_a, ei_a)), Some((ci_b, ei_b))) => {
+                        if ci_a != ci_b || ei_a != ei_b { return false; }
+                    }
+                    _ => { return false; }
+                }
+            }
+            true
         })
         .collect()
 }
@@ -1580,8 +1603,13 @@ fn mark_island_stalls(
         // than index-based, so paired sides with different stall counts
         // still agree on which absolute positions are eligible.
         let end_margin = if seg.is_interior { 1.5 * pitch } else { 0.5 * pitch };
-        let proj_min = sorted.first().map(|s| s.0).unwrap_or(0.0);
-        let proj_max = sorted.last().map(|s| s.0).unwrap_or(0.0);
+        // Use the spine segment's own endpoints as the reference for end
+        // margins — not the stalls'. Paired sides share the same spine
+        // endpoints, so both sides agree on which positions are eligible
+        // even when extensions add different stall counts per side.
+        let (seg_start, seg_end) = seg.oriented_endpoints();
+        let proj_min = seg_start.dot(proj_dir).min(seg_end.dot(proj_dir));
+        let proj_max = seg_start.dot(proj_dir).max(seg_end.dot(proj_dir));
         for &(proj, idx) in &sorted {
             if proj - proj_min < end_margin || proj_max - proj < end_margin { continue; }
             let k = (proj / pitch).floor() as i64;
@@ -1848,7 +1876,7 @@ fn extend_spines_to_faces(
 
         // End margin: shorten each extension's outer end (the face-boundary
         // side) so the last stall doesn't create a thin sliver island.
-        let end_margin_t = stall_pitch / ext_total;
+        let end_margin_t = (stall_pitch * 1.5) / ext_total;
 
         for &(st0, st1) in &spine_clips {
             for &(ot0, ot1) in &offset_clips {
@@ -3666,12 +3694,21 @@ mod tests {
             s
         }
 
+        fn spine_range(spine: &SpineSegment, dir: Vec2) -> (f64, f64) {
+            let a = spine.start.dot(dir);
+            let b = spine.end.dot(dir);
+            (a.min(b), a.max(b))
+        }
+
         // Check all invariants for a single row.
+        // spine_proj_range: (proj_min, proj_max) from spine endpoints,
+        // matching how mark_island_stalls computes the end margin.
         fn check_invariants(
             stalls: &[(StallQuad, usize, usize)],
             spine_idx: usize,
             dir: Vec2,
             interval: usize,
+            spine_proj_range: (f64, f64),
             label: &str,
         ) {
             let row = sorted_row(stalls, spine_idx, dir);
@@ -3685,14 +3722,12 @@ mod tests {
                 return;
             }
 
-            // A+B: stalls within 1.5 pitches of row ends are not islands
-            // (position-based margin, matching mark_island_stalls logic).
-            let pitch = dir.length(); // dir is unit, pitch comes from params
-            let _ = pitch; // pitch is implicit in the stall spacing
-            let proj_min = row.first().unwrap().0;
-            let proj_max = row.last().unwrap().0;
-            let stall_pitch_val = row.get(1).map_or(1.0, |r| r.0 - proj_min);
+            // A+B: stalls within 1.5 pitches of spine ends are not islands
+            // (position-based margin from spine endpoints, matching
+            // mark_island_stalls logic).
+            let stall_pitch_val = row.get(1).map_or(1.0, |r| r.0 - row[0].0);
             let end_margin = 1.5 * stall_pitch_val;
+            let (proj_min, proj_max) = spine_proj_range;
             for (j, &(proj, is_isl)) in row.iter().enumerate() {
                 if proj - proj_min < end_margin || proj_max - proj < end_margin {
                     assert!(!is_isl,
@@ -3757,7 +3792,8 @@ mod tests {
                 let spines = vec![spine];
 
                 mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params);
-                check_invariants(&stalls_3, 0, dir, 5, &format!("single_90deg_n{}", actual_n));
+                let spr = spine_range(&spines[0], dir);
+                check_invariants(&stalls_3, 0, dir, 5, spr, &format!("single_90deg_n{}", actual_n));
             }
         }
 
@@ -3780,7 +3816,8 @@ mod tests {
                 let spines = vec![spine];
 
                 mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params);
-                check_invariants(&stalls_3, 0, dir, interval as usize,
+                let spr = spine_range(&spines[0], dir);
+                check_invariants(&stalls_3, 0, dir, interval as usize, spr,
                     &format!("single_interval{}_n{}", interval, actual_n));
             }
         }
@@ -3804,7 +3841,8 @@ mod tests {
                 let spines = vec![spine];
 
                 mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params);
-                check_invariants(&stalls_3, 0, dir, 5, &format!("angled45_n{}", actual_n));
+                let spr = spine_range(&spines[0], dir);
+                check_invariants(&stalls_3, 0, dir, 5, spr, &format!("angled45_n{}", actual_n));
             }
         }
 
@@ -3828,8 +3866,10 @@ mod tests {
             let spines = vec![spine_a, spine_b];
 
             mark_island_stalls(&mut stalls_a, &mut tagged, &spines, &params);
-            check_invariants(&stalls_a, 0, dir, 5, "two_rows_spine0");
-            check_invariants(&stalls_a, 1, dir, 5, "two_rows_spine1");
+            let spr0 = spine_range(&spines[0], dir);
+            let spr1 = spine_range(&spines[1], dir);
+            check_invariants(&stalls_a, 0, dir, 5, spr0, "two_rows_spine0");
+            check_invariants(&stalls_a, 1, dir, 5, spr1, "two_rows_spine1");
         }
 
         // =========================================================

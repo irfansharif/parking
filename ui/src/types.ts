@@ -133,6 +133,34 @@ export interface DriveLine {
   end: Vec2;
   /** When set, start is pinned to a hole vertex (separator). */
   holePin?: { holeIndex: number; vertexIndex: number };
+  /** When set, end is pinned to a boundary edge at parameter t. */
+  boundaryPin?: { edgeIndex: number; t: number };
+}
+
+/** Project a point onto the nearest outer boundary edge. */
+export function computeBoundaryPin(pt: Vec2, outer: Vec2[]): { pos: Vec2; edgeIndex: number; t: number } {
+  let bestDist = Infinity;
+  let bestProj = pt;
+  let bestEdge = 0;
+  let bestT = 0;
+  for (let i = 0; i < outer.length; i++) {
+    const a = outer[i];
+    const b = outer[(i + 1) % outer.length];
+    const ab = { x: b.x - a.x, y: b.y - a.y };
+    const lenSq = ab.x * ab.x + ab.y * ab.y;
+    if (lenSq < 1e-12) continue;
+    const t = Math.max(0, Math.min(1, ((pt.x - a.x) * ab.x + (pt.y - a.y) * ab.y) / lenSq));
+    const proj = { x: a.x + ab.x * t, y: a.y + ab.y * t };
+    const dx = pt.x - proj.x, dy = pt.y - proj.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestProj = proj;
+      bestEdge = i;
+      bestT = t;
+    }
+  }
+  return { pos: bestProj, edgeIndex: bestEdge, t: bestT };
 }
 
 export type Annotation = OneWayAnnotation | TwoWayOrientedAnnotation | DeleteVertexAnnotation | DeleteEdgeAnnotation;
