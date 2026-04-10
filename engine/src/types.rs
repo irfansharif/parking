@@ -739,16 +739,6 @@ pub struct DebugToggles {
     // Skeleton debug visualization
     #[serde(default)]
     pub skeleton_debug: bool,
-
-    /// Feature flag for the new abstract-grid stamp phase. When true,
-    /// parallel and cross driving aisles are placed at integer
-    /// positions of the per-region AbstractFrame (aligned to the
-    /// canvas origin), replacing today's aisle_offset-based
-    /// alignment. Transitional — will become the default and the flag
-    /// will be deleted once the stamp pipeline owns generation
-    /// end-to-end.
-    #[serde(default)]
-    pub use_abstract_stamp: bool,
 }
 
 impl Default for DebugToggles {
@@ -774,7 +764,6 @@ impl Default for DebugToggles {
             short_segment_filter: false,
             edge_provenance: true,
             skeleton_debug: false,
-            use_abstract_stamp: true,
         }
     }
 }

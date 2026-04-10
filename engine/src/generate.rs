@@ -42,7 +42,6 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
             &input.params,
             &separator_lines,
             &input.region_overrides,
-            input.debug.use_abstract_stamp,
         ),
     };
 

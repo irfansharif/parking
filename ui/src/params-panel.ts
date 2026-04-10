@@ -250,12 +250,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
         { key: "short_segment_filter", label: "Short Segment Filter" },
       ],
     },
-    {
-      label: "Abstract Grid (experimental)",
-      toggles: [
-        { key: "use_abstract_stamp", label: "Use Abstract Stamp" },
-      ],
-    },
   ];
 
   const checkboxMap = new Map<keyof DebugToggles, HTMLInputElement>();

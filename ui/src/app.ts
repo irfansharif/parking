@@ -238,7 +238,6 @@ export class App {
         conflict_removal: true,
         short_segment_filter: true,
         skeleton_debug: false,
-        use_abstract_stamp: true,
       },
       selectedVertex: null,
       hoveredVertex: null,
@@ -852,26 +851,6 @@ export class App {
     return true;
   }
 
-  deleteAisleVertex(index: number, lotId?: string): void {
-    const lot = lotId ? this.lotById(lotId)! : this.activeLot();
-    this.materializeAisleGraph(lot);
-    if (!lot.aisleGraph) return;
-    const g = lot.aisleGraph;
-    g.vertices.splice(index, 1);
-    g.edges = g.edges
-      .filter((e) => e.start !== index && e.end !== index)
-      .map((e) => ({
-        ...e,
-        start: e.start > index ? e.start - 1 : e.start,
-        end: e.end > index ? e.end - 1 : e.end,
-      }));
-    if (g.vertices.length === 0) {
-      lot.aisleGraph = null;
-    }
-    this.state.selectedVertex = null;
-    this.generate();
-  }
-
   deleteHoleVertex(holeIndex: number, vertexIndex: number, lotId?: string): void {
     const lot = lotId ? this.lotById(lotId)! : this.activeLot();
     const hole = lot.boundary.holes[holeIndex];
@@ -1106,34 +1085,28 @@ export class App {
     const v = graph.vertices[vertexIndex];
     if (!v) return;
 
-    // Under the abstract-stamp path, prefer an abstract-handle
-    // annotation if the clicked vertex sits on a grid intersection —
-    // that way the deletion survives future parameter changes. Fall
-    // back to the legacy world-space DeleteVertex otherwise.
-    if (this.state.debug.use_abstract_stamp && lot.layout?.region_debug) {
-      const abs = worldToAbstractVertex(
-        v,
-        this.state.params,
-        lot.layout.region_debug,
-      );
-      if (abs) {
-        lot.annotations.push({
-          kind: "AbstractDeleteVertex",
-          region: abs.region,
-          xi: abs.xi,
-          yi: abs.yi,
-        });
-        this.state.selectedVertex = null;
-        lot.aisleGraph = null;
-        this.generate();
-        return;
-      }
+    // Try to resolve the clicked vertex to an abstract grid
+    // intersection in its host region. If it lands on a grid point,
+    // store an AbstractDeleteVertex keyed by (region, xi, yi) so the
+    // deletion survives every parameter change. Off-grid clicks
+    // (e.g., drive-line splice vertices) fall back to the legacy
+    // world-space DeleteVertex.
+    const abs = lot.layout?.region_debug
+      ? worldToAbstractVertex(v, this.state.params, lot.layout.region_debug)
+      : null;
+    if (abs) {
+      lot.annotations.push({
+        kind: "AbstractDeleteVertex",
+        region: abs.region,
+        xi: abs.xi,
+        yi: abs.yi,
+      });
+    } else {
+      lot.annotations.push({
+        kind: "DeleteVertex",
+        point: { x: v.x, y: v.y },
+      });
     }
-
-    lot.annotations.push({
-      kind: "DeleteVertex",
-      point: { x: v.x, y: v.y },
-    });
     this.state.selectedVertex = null;
     lot.aisleGraph = null;
     this.generate();
@@ -1154,32 +1127,32 @@ export class App {
     const len = Math.sqrt(dx * dx + dy * dy);
     if (len < 1e-9) return;
 
-    // Prefer an abstract-handle annotation under the stamp path.
-    if (this.state.debug.use_abstract_stamp && lot.layout?.region_debug) {
-      const a = worldToAbstractVertex(s, this.state.params, lot.layout.region_debug);
-      const b = worldToAbstractVertex(e, this.state.params, lot.layout.region_debug);
-      if (a && b && a.region === b.region) {
-        lot.annotations.push({
-          kind: "AbstractDeleteEdge",
-          region: a.region,
-          xa: a.xi,
-          ya: a.yi,
-          xb: b.xi,
-          yb: b.yi,
-        });
-        this.state.selectedEdge = null;
-        lot.aisleGraph = null;
-        this.generate();
-        return;
-      }
+    // Try to resolve both endpoints to abstract grid points so the
+    // deletion survives parameter changes. If either endpoint is
+    // off-grid, fall back to the legacy world-space DeleteEdge.
+    const a = lot.layout?.region_debug
+      ? worldToAbstractVertex(s, this.state.params, lot.layout.region_debug)
+      : null;
+    const b = lot.layout?.region_debug
+      ? worldToAbstractVertex(e, this.state.params, lot.layout.region_debug)
+      : null;
+    if (a && b && a.region === b.region) {
+      lot.annotations.push({
+        kind: "AbstractDeleteEdge",
+        region: a.region,
+        xa: a.xi,
+        ya: a.yi,
+        xb: b.xi,
+        yb: b.yi,
+      });
+    } else {
+      lot.annotations.push({
+        kind: "DeleteEdge",
+        midpoint: mid,
+        edge_dir: { x: dx / len, y: dy / len },
+        chain: sel.mode === "chain",
+      });
     }
-
-    lot.annotations.push({
-      kind: "DeleteEdge",
-      midpoint: mid,
-      edge_dir: { x: dx / len, y: dy / len },
-      chain: sel.mode === "chain",
-    });
     this.state.selectedEdge = null;
     lot.aisleGraph = null;
     this.generate();
@@ -1206,48 +1179,52 @@ export class App {
     if (len < 1e-9) return;
     const edgeDir = { x: (e.x - s.x) / len, y: (e.y - s.y) / len };
 
-    // Prefer an abstract-handle annotation under the stamp path.
-    if (this.state.debug.use_abstract_stamp && lot.layout?.region_debug) {
-      const a = worldToAbstractVertex(s, this.state.params, lot.layout.region_debug);
-      const b = worldToAbstractVertex(e, this.state.params, lot.layout.region_debug);
-      if (a && b && a.region === b.region) {
-        // Check for an existing abstract direction annotation on the
-        // same edge (either direction). If present, cycle; else add a
-        // new AbstractTwoWayOriented.
-        const existing = lot.annotations.findIndex((ann) => {
-          if (
-            ann.kind !== "AbstractOneWay" &&
-            ann.kind !== "AbstractTwoWayOriented"
-          ) {
-            return false;
-          }
-          if (ann.region !== a.region) return false;
-          const matchFwd =
-            ann.xa === a.xi && ann.ya === a.yi && ann.xb === b.xi && ann.yb === b.yi;
-          const matchRev =
-            ann.xa === b.xi && ann.ya === b.yi && ann.xb === a.xi && ann.yb === a.yi;
-          return matchFwd || matchRev;
-        });
-        if (existing < 0) {
-          const annIdx = lot.annotations.length;
-          lot.annotations.push({
-            kind: "AbstractTwoWayOriented",
-            region: a.region,
-            xa: a.xi,
-            ya: a.yi,
-            xb: b.xi,
-            yb: b.yi,
-            _active: true,
-          });
-          this.state.selectedVertex = { type: "annotation", index: annIdx, lotId: lot.id };
-        } else {
-          this.cycleAnnotationDirection(existing, lot.id);
-          this.state.selectedVertex = { type: "annotation", index: existing, lotId: lot.id };
-          return;
+    // Try to resolve both endpoints to abstract grid points so the
+    // direction annotation survives parameter changes. Off-grid
+    // clicks fall back to the legacy world-space variant below.
+    const absA = lot.layout?.region_debug
+      ? worldToAbstractVertex(s, this.state.params, lot.layout.region_debug)
+      : null;
+    const absB = lot.layout?.region_debug
+      ? worldToAbstractVertex(e, this.state.params, lot.layout.region_debug)
+      : null;
+    if (absA && absB && absA.region === absB.region) {
+      // Check for an existing abstract direction annotation on the
+      // same edge (either direction). If present, cycle; else add a
+      // new AbstractTwoWayOriented.
+      const existing = lot.annotations.findIndex((ann) => {
+        if (
+          ann.kind !== "AbstractOneWay" &&
+          ann.kind !== "AbstractTwoWayOriented"
+        ) {
+          return false;
         }
-        this.generate();
+        if (ann.region !== absA.region) return false;
+        const matchFwd =
+          ann.xa === absA.xi && ann.ya === absA.yi && ann.xb === absB.xi && ann.yb === absB.yi;
+        const matchRev =
+          ann.xa === absB.xi && ann.ya === absB.yi && ann.xb === absA.xi && ann.yb === absA.yi;
+        return matchFwd || matchRev;
+      });
+      if (existing < 0) {
+        const annIdx = lot.annotations.length;
+        lot.annotations.push({
+          kind: "AbstractTwoWayOriented",
+          region: absA.region,
+          xa: absA.xi,
+          ya: absA.yi,
+          xb: absB.xi,
+          yb: absB.yi,
+          _active: true,
+        });
+        this.state.selectedVertex = { type: "annotation", index: annIdx, lotId: lot.id };
+      } else {
+        this.cycleAnnotationDirection(existing, lot.id);
+        this.state.selectedVertex = { type: "annotation", index: existing, lotId: lot.id };
         return;
       }
+      this.generate();
+      return;
     }
 
     const tolerance = 5.0;
