@@ -101,6 +101,105 @@ export interface ParkingParams {
   island_stall_interval?: number;
 }
 
+// ---------------------------------------------------------------------------
+// AbstractFrame — mirrors engine/src/types.rs::AbstractFrame.
+//
+// Per-region transformation from the abstract integer grid into world
+// space. Derived fresh on every generate, never serialized.
+//
+//     world(x, y) = origin_world + x * dx * x_dir + y * dy * y_dir
+//
+// ---------------------------------------------------------------------------
+
+export interface AbstractFrame {
+  origin_world: Vec2;
+  x_dir: Vec2;           // unit, perpendicular to parallel aisle
+  y_dir: Vec2;           // unit, along parallel aisle
+  dx: number;            // 2*effective_depth + 2*aisle_width
+  dy: number;            // stalls_per_face * stall_pitch
+  stalls_per_face: number;
+}
+
+/** Real-valued point in an abstract frame. */
+export interface AbstractPoint2 {
+  x: number;
+  y: number;
+}
+
+function stallPitch(p: ParkingParams): number {
+  const sinA = Math.sin((p.stall_angle_deg * Math.PI) / 180);
+  return Math.abs(sinA) > 1e-12 ? p.stall_width / sinA : p.stall_width;
+}
+
+function effectiveDepth(p: ParkingParams): number {
+  const rad = (p.stall_angle_deg * Math.PI) / 180;
+  return p.stall_depth * Math.sin(rad) + Math.cos(rad) * p.stall_width / 2;
+}
+
+/** Compute the root (lot-wide) abstract frame from params. */
+export function computeRootFrame(params: ParkingParams): AbstractFrame {
+  return computeFrameForAngle(params, params.aisle_angle_deg);
+}
+
+/**
+ * Compute a region frame with a possibly-overridden aisle angle. Used
+ * for regions whose `aisle_angle_deg` differs from the lot-wide base.
+ */
+export function computeRegionFrame(
+  params: ParkingParams,
+  aisleAngleDeg: number,
+): AbstractFrame {
+  return computeFrameForAngle(params, aisleAngleDeg);
+}
+
+function computeFrameForAngle(
+  params: ParkingParams,
+  aisleAngleDeg: number,
+): AbstractFrame {
+  const rad = (aisleAngleDeg * Math.PI) / 180;
+  const y_dir: Vec2 = { x: Math.cos(rad), y: Math.sin(rad) };
+  const x_dir: Vec2 = { x: -Math.sin(rad), y: Math.cos(rad) };
+  const dx = 2 * effectiveDepth(params) + 2 * params.aisle_width;
+  const stalls_per_face = Math.max(1, Math.round(params.cross_aisle_max_run));
+  const dy = stalls_per_face * stallPitch(params);
+  return {
+    origin_world: { x: 0, y: 0 },
+    x_dir,
+    y_dir,
+    dx,
+    dy,
+    stalls_per_face,
+  };
+}
+
+/** Forward transform: abstract → world. */
+export function frameForward(frame: AbstractFrame, p: AbstractPoint2): Vec2 {
+  return {
+    x:
+      frame.origin_world.x +
+      p.x * frame.dx * frame.x_dir.x +
+      p.y * frame.dy * frame.y_dir.x,
+    y:
+      frame.origin_world.y +
+      p.x * frame.dx * frame.x_dir.y +
+      p.y * frame.dy * frame.y_dir.y,
+  };
+}
+
+/**
+ * Inverse transform: world → abstract. Relies on x_dir and y_dir being
+ * orthonormal, so the inverse is just a projection onto each axis
+ * followed by a division by the corresponding scale.
+ */
+export function frameInverse(frame: AbstractFrame, w: Vec2): AbstractPoint2 {
+  const rx = w.x - frame.origin_world.x;
+  const ry = w.y - frame.origin_world.y;
+  return {
+    x: (rx * frame.x_dir.x + ry * frame.x_dir.y) / frame.dx,
+    y: (rx * frame.y_dir.x + ry * frame.y_dir.y) / frame.dy,
+  };
+}
+
 export interface DebugToggles {
   // Corridor merging
   miter_fills: boolean;
