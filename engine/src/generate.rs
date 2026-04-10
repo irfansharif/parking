@@ -46,6 +46,18 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         ),
     };
 
+    // Append drive line edges on top — they're additive and should
+    // not cause auto edges to be filtered out. Drive-line vertices
+    // are placed at arbitrary world coordinates (not on the integer
+    // grid), so they're naturally invisible to abstract annotation
+    // lookups that only match integer grid points. Legacy proximity
+    // annotations intentionally run AFTER this so they can target
+    // drive-line edges.
+    let drive_graph = clip_drive_lines(&input.drive_lines, &input.boundary, &input.params, &graph);
+    if !drive_graph.vertices.is_empty() {
+        graph = append_graph(graph, drive_graph);
+    }
+
     // Build the per-region frame list once, for both abstract annotation
     // lookup and the debug info returned to the UI below. Decomposition is
     // cheap enough to compute here again (auto_generate also runs it
@@ -53,23 +65,12 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     let resolved_regions: Vec<ResolvedRegion> =
         resolve_regions_for_frames(&input, &separator_lines);
 
-    // Apply spatial annotations to the resolved graph BEFORE splicing
-    // in drive lines. Abstract annotations resolve by integer grid
-    // lookup into the region frames; the legacy variants fall through
-    // to proximity matching. Running annotations first means the
-    // drive-line splice pass sees the post-annotation graph and can
-    // extend edges whose neighbours were just deleted.
-    apply_annotations(&mut graph, &input.annotations, &resolved_regions);
-
-    // Then append drive line edges on top — they're additive and
-    // should not cause auto edges to be filtered out. Drive-line
-    // vertices are placed at arbitrary world coordinates (not on the
-    // integer grid), so they're naturally invisible to abstract
-    // annotation lookups that only match integer grid points.
-    let drive_graph = clip_drive_lines(&input.drive_lines, &input.boundary, &input.params, &graph);
-    if !drive_graph.vertices.is_empty() {
-        graph = append_graph(graph, drive_graph);
-    }
+    // Apply spatial annotations to the resolved graph. Abstract
+    // annotations resolve by integer grid lookup into the region
+    // frames; the legacy variants fall through to proximity matching
+    // and can target both grid edges and drive-line-spliced edges.
+    let dormant_annotations =
+        apply_annotations(&mut graph, &input.annotations, &resolved_regions);
 
     let inset_d = compute_inset_d(&input.params);
     let derived_outer = derive_raw_outer(&input.boundary.outer, inset_d, input.params.site_offset);
@@ -183,6 +184,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         derived_outer,
         derived_holes,
         region_debug,
+        dormant_annotations,
     }
 }
 
@@ -557,7 +559,10 @@ fn build_abstract_vertex_lookup(
 /// Apply an AbstractOneWay / AbstractTwoWayOriented direction to every
 /// graph edge connecting the two abstract grid points. Flips
 /// `start`/`end` so the stored ordering points from `a` to `b`,
-/// matching the user's declared travel direction.
+/// matching the user's declared travel direction. Returns true if at
+/// least one graph edge was touched — false means the annotation
+/// target didn't resolve and the annotation should be reported as
+/// dormant.
 fn apply_abstract_direction(
     graph: &mut DriveAisleGraph,
     abstract_lookup: &std::collections::HashMap<(RegionId, i32, i32), usize>,
@@ -565,9 +570,10 @@ fn apply_abstract_direction(
     a: (i32, i32),
     b: (i32, i32),
     direction: AisleDirection,
-) {
-    let Some(&via) = abstract_lookup.get(&(region, a.0, a.1)) else { return };
-    let Some(&vib) = abstract_lookup.get(&(region, b.0, b.1)) else { return };
+) -> bool {
+    let Some(&via) = abstract_lookup.get(&(region, a.0, a.1)) else { return false };
+    let Some(&vib) = abstract_lookup.get(&(region, b.0, b.1)) else { return false };
+    let mut touched = false;
     for i in 0..graph.edges.len() {
         let ei = &graph.edges[i];
         let is_forward = ei.start == via && ei.end == vib;
@@ -580,20 +586,24 @@ fn apply_abstract_direction(
             graph.edges[i].start = via;
             graph.edges[i].end = vib;
         }
+        touched = true;
     }
+    touched
 }
 
 /// Apply spatial annotations to a resolved graph. Each annotation is matched
 /// to the edge that passes closest to the annotation point (point-to-segment
 /// distance), with a tight threshold so annotations only bind to edges that
-/// geometrically pass through them.
+/// geometrically pass through them. Returns the indices (into the
+/// `annotations` slice) of annotations whose abstract handle didn't
+/// resolve to any graph feature — the UI surfaces these as "dormant."
 fn apply_annotations(
     graph: &mut DriveAisleGraph,
     annotations: &[Annotation],
     regions: &[ResolvedRegion],
-) {
+) -> Vec<usize> {
     if annotations.is_empty() {
-        return;
+        return Vec::new();
     }
 
     // Pre-compute the abstract-grid vertex lookup lazily — we only
@@ -640,7 +650,12 @@ fn apply_annotations(
     // Tight threshold: annotation must be essentially on top of the edge.
     let max_dist = 3.0;
 
-    for ann in annotations {
+    // Indices of annotations whose abstract handle didn't resolve this
+    // pass. Populated by the two match blocks below and returned at
+    // the bottom so the caller can surface them as dormant.
+    let mut dormant: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+
+    for (ann_idx, ann) in annotations.iter().enumerate() {
         match ann {
             Annotation::OneWay { midpoint, travel_dir, chain: expand_chain } => {
                 // Find the edge that passes closest to the annotation point.
@@ -744,7 +759,7 @@ fn apply_annotations(
                 }
             }
             Annotation::AbstractOneWay { region, xa, ya, xb, yb } => {
-                apply_abstract_direction(
+                let touched = apply_abstract_direction(
                     graph,
                     &abstract_lookup,
                     *region,
@@ -752,9 +767,12 @@ fn apply_annotations(
                     (*xb, *yb),
                     AisleDirection::OneWay,
                 );
+                if !touched {
+                    dormant.insert(ann_idx);
+                }
             }
             Annotation::AbstractTwoWayOriented { region, xa, ya, xb, yb } => {
-                apply_abstract_direction(
+                let touched = apply_abstract_direction(
                     graph,
                     &abstract_lookup,
                     *region,
@@ -762,6 +780,9 @@ fn apply_annotations(
                     (*xb, *yb),
                     AisleDirection::TwoWayOriented,
                 );
+                if !touched {
+                    dormant.insert(ann_idx);
+                }
             }
             _ => {} // DeleteVertex/DeleteEdge/AbstractDelete* handled in second pass
         }
@@ -772,7 +793,7 @@ fn apply_annotations(
     let mut vertices_to_remove = std::collections::HashSet::new();
     let mut edges_to_remove = std::collections::HashSet::new();
 
-    for ann in annotations {
+    for (ann_idx, ann) in annotations.iter().enumerate() {
         match ann {
             Annotation::DeleteVertex { point } => {
                 // Find nearest vertex.
@@ -823,21 +844,34 @@ fn apply_annotations(
             Annotation::AbstractDeleteVertex { region, xi, yi } => {
                 if let Some(&vi) = abstract_lookup.get(&(*region, *xi, *yi)) {
                     vertices_to_remove.insert(vi);
+                } else {
+                    dormant.insert(ann_idx);
                 }
             }
             Annotation::AbstractDeleteEdge { region, xa, ya, xb, yb } => {
-                let Some(&via) = abstract_lookup.get(&(*region, *xa, *ya)) else { continue };
-                let Some(&vib) = abstract_lookup.get(&(*region, *xb, *yb)) else { continue };
+                let Some(&via) = abstract_lookup.get(&(*region, *xa, *ya)) else {
+                    dormant.insert(ann_idx);
+                    continue;
+                };
+                let Some(&vib) = abstract_lookup.get(&(*region, *xb, *yb)) else {
+                    dormant.insert(ann_idx);
+                    continue;
+                };
                 // Find all graph edges that connect via↔vib in either
                 // direction (the stamp emits bidirectional edges, and
                 // drive-line splicing may introduce mid-edge vertices we
                 // don't yet handle). Delete each matching edge.
+                let mut touched = false;
                 for (i, ei) in graph.edges.iter().enumerate() {
                     if (ei.start == via && ei.end == vib)
                         || (ei.start == vib && ei.end == via)
                     {
                         edges_to_remove.insert(i);
+                        touched = true;
                     }
+                }
+                if !touched {
+                    dormant.insert(ann_idx);
                 }
             }
             _ => {}
@@ -865,6 +899,8 @@ fn apply_annotations(
         // indices are referenced by edges and the perimeter_vertex_count.
         // Orphaned vertices are harmless.
     }
+
+    dormant.into_iter().collect()
 }
 
 /// Find all edges in the same collinear chain as the seed edge. Two edges

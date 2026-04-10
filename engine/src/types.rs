@@ -220,6 +220,17 @@ pub struct ParkingLayout {
     /// Debug: region clip polygons and separator segments for visualization.
     #[serde(default)]
     pub region_debug: Option<RegionDebug>,
+    /// Indices into `GenerateInput.annotations` for annotations that
+    /// didn't resolve to any graph feature in this pass. For abstract
+    /// annotations that means the (region, xi, yi) lookup missed —
+    /// the target grid point isn't inside any current region, or the
+    /// region's clip polygon excludes it. For legacy proximity
+    /// annotations it means no edge/vertex landed within the
+    /// proximity threshold. Either way the annotation is stored but
+    /// not applied this regenerate; the UI can surface these as
+    /// "dormant."
+    #[serde(default)]
+    pub dormant_annotations: Vec<usize>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
