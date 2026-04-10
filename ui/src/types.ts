@@ -238,6 +238,12 @@ export interface DebugToggles {
   edge_provenance: boolean;
   // Skeleton debug visualization
   skeleton_debug: boolean;
+  /**
+   * Feature flag for the new abstract-grid stamp phase. When true,
+   * parallel/cross driving aisles are placed at integer positions of
+   * the per-region AbstractFrame aligned to the canvas origin.
+   */
+  use_abstract_stamp?: boolean;
 }
 
 export interface DriveLine {

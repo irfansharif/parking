@@ -2607,7 +2607,7 @@ mod tests {
             ..Default::default()
         };
         let params = ParkingParams::default();
-        let graph = auto_generate(&boundary, &params, &[], &[]);
+        let graph = auto_generate(&boundary, &params, &[], &[], false);
 
         let (stalls, _, spines, _, _, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default());
         eprintln!("\nTotal stalls: {}", stalls.len());
@@ -2628,7 +2628,7 @@ mod tests {
             ..Default::default()
         };
         let params = ParkingParams::default();
-        let graph = auto_generate(&boundary, &params, &[], &[]);
+        let graph = auto_generate(&boundary, &params, &[], &[], false);
 
         eprintln!("\n=== Attempt polygon debug ===");
         eprintln!("Graph: {} vertices, {} edges", graph.vertices.len(), graph.edges.len());
@@ -2728,7 +2728,7 @@ mod tests {
 
         let (stalls, _, _, faces_out, _, _, islands) =
             generate_from_spines(
-                &crate::aisle_graph::auto_generate(&boundary, &params, &[], &[]),
+                &crate::aisle_graph::auto_generate(&boundary, &params, &[], &[], false),
                 &boundary, &params, &debug,
             );
 
@@ -2772,7 +2772,7 @@ mod tests {
         };
         let params = ParkingParams::default();
         let debug = DebugToggles::default();
-        let graph = auto_generate(&boundary, &params, &[], &[]);
+        let graph = auto_generate(&boundary, &params, &[], &[], false);
 
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
@@ -3255,7 +3255,7 @@ mod tests {
         eprintln!("stalls: {}, spines: {}, faces: {}", layout.stalls.len(), layout.spines.len(), layout.faces.len());
 
         // Recompute corridor shapes for debug classification.
-        let graph = auto_generate(&input.boundary, &input.params, &[], &[]);
+        let graph = auto_generate(&input.boundary, &input.params, &[], &[], false);
         let dedup_corridors = deduplicate_corridors(&graph);
         let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
         let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &DebugToggles::default());
@@ -3348,7 +3348,7 @@ mod tests {
         eprintln!("stalls: {}, spines: {}, faces: {}", layout.stalls.len(), layout.spines.len(), layout.faces.len());
 
         // Recompute corridor shapes for debug classification.
-        let graph = auto_generate(&input.boundary, &input.params, &[], &[]);
+        let graph = auto_generate(&input.boundary, &input.params, &[], &[], false);
         let dedup_corridors = deduplicate_corridors(&graph);
         let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
         let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &DebugToggles::default());

@@ -252,6 +252,7 @@ fn generate_region_aisles(
     perim_splits: &mut [Vec<(f64, usize)>],
     hole_splits: &mut [Vec<Vec<(f64, usize)>>],
     _perim_n: usize,
+    use_abstract_stamp: bool,
 ) -> RegionAisleResult {
     let angle_rad = aisle_angle_deg.to_radians();
     let aisle_dir = Vec2::new(angle_rad.cos(), angle_rad.sin());
@@ -269,20 +270,30 @@ fn generate_region_aisles(
 
     let mut interior_pairs: Vec<(usize, usize)> = Vec::new();
 
-    // Align the aisle grid so that one line passes through aisle_offset
-    // (the perpendicular projection of the drag anchor). When offset is 0,
-    // the grid starts at min_proj + row_spacing as before.
-    let grid_start = min_proj + row_spacing;
-    let grid_end = max_proj - row_spacing;
-    let first = if aisle_offset != 0.0 {
-        // Shift grid_start so that (grid_start + k*row_spacing) == aisle_offset
-        // for some integer k, keeping the result within [grid_start, grid_end].
-        let rem = (aisle_offset - grid_start) % row_spacing;
-        let aligned = grid_start + if rem < 0.0 { rem + row_spacing } else { rem };
-        // If aligned is past grid_end, step back one row.
-        if aligned > grid_end { aligned - row_spacing } else { aligned }
+    // Align the aisle grid. In the legacy path this uses aisle_offset to
+    // place one line at the drag anchor's perpendicular projection; the
+    // abstract-stamp path instead locks parallel driving aisles to
+    // integer positions of the canonical abstract frame (origin at
+    // world (0,0), period row_spacing).
+    let (first, grid_end) = if use_abstract_stamp {
+        let k_min = (min_proj / row_spacing).ceil() as i64;
+        (k_min as f64 * row_spacing, max_proj)
     } else {
-        grid_start
+        let grid_start = min_proj + row_spacing;
+        let grid_end_legacy = max_proj - row_spacing;
+        let first = if aisle_offset != 0.0 {
+            let rem = (aisle_offset - grid_start) % row_spacing;
+            let aligned =
+                grid_start + if rem < 0.0 { rem + row_spacing } else { rem };
+            if aligned > grid_end_legacy {
+                aligned - row_spacing
+            } else {
+                aligned
+            }
+        } else {
+            grid_start
+        };
+        (first, grid_end_legacy)
     };
 
     let mut t = first;
@@ -368,7 +379,10 @@ fn generate_region_aisles(
     let mut cross_pairs: Vec<(usize, usize)> = Vec::new();
     let stall_pitch = params.stall_width / params.stall_angle_deg.to_radians().sin();
     let col_spacing = (params.stalls_per_face as f64) * stall_pitch;
-    if col_spacing >= row_spacing {
+    // Legacy path requires col_spacing >= row_spacing (cross aisles are
+    // the "rare" direction). Abstract-stamp treats both axes uniformly,
+    // so every integer y is a cross aisle regardless of col_spacing.
+    if use_abstract_stamp || col_spacing >= row_spacing {
         // Project perimeter onto aisle_dir to find extent.
         let min_along = outer_loop
             .iter()
@@ -379,8 +393,12 @@ fn generate_region_aisles(
             .map(|v| v.dot(aisle_dir))
             .fold(f64::NEG_INFINITY, f64::max);
 
-        let col_start = min_along + col_spacing;
-        let col_end = max_along - col_spacing;
+        let (col_start, col_end) = if use_abstract_stamp {
+            let k_min = (min_along / col_spacing).ceil() as i64;
+            (k_min as f64 * col_spacing, max_along)
+        } else {
+            (min_along + col_spacing, max_along - col_spacing)
+        };
 
         let mut s = col_start;
         while s <= col_end {
@@ -458,7 +476,13 @@ fn generate_region_aisles(
 /// for each pinned separator drive line. These are used for region
 /// decomposition only — the drive lines themselves become aisle edges
 /// via clip_drive_lines separately.
-pub fn auto_generate(boundary: &Polygon, params: &ParkingParams, separator_lines: &[(usize, usize, Vec2)], region_overrides: &[RegionOverride]) -> DriveAisleGraph {
+pub fn auto_generate(
+    boundary: &Polygon,
+    params: &ParkingParams,
+    separator_lines: &[(usize, usize, Vec2)],
+    region_overrides: &[RegionOverride],
+    use_abstract_stamp: bool,
+) -> DriveAisleGraph {
     // aisle_width is one driving lane. Auto-generated edges are two-way
     // (two lanes), so their half-width is one full lane width.
     let hw = params.aisle_width;
@@ -593,6 +617,7 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams, separator_lines
                 &mut perim_splits,
                 &mut hole_splits,
                 perim_n,
+                use_abstract_stamp,
             );
             all_interior = result.interior_pairs;
             all_cross = result.cross_pairs;
@@ -611,6 +636,7 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams, separator_lines
                     &mut perim_splits,
                     &mut hole_splits,
                     perim_n,
+                    use_abstract_stamp,
                 );
                 all_interior.extend(result.interior_pairs);
                 all_cross.extend(result.cross_pairs);
@@ -647,6 +673,7 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams, separator_lines
             &mut perim_splits,
             &mut hole_splits,
             perim_n,
+            use_abstract_stamp,
         );
         (result.interior_pairs, result.cross_pairs)
     };
@@ -746,7 +773,11 @@ pub fn merge_with_auto(
     boundary: &Polygon,
     params: &ParkingParams,
 ) -> DriveAisleGraph {
-    let auto = auto_generate(boundary, params, &[] as &[(usize, usize, Vec2)], &[]);
+    // merge_with_auto is called from the manual-graph path which does
+    // not itself know whether the caller intends the abstract stamp.
+    // Default to false here — manual overlays don't participate in
+    // the abstract grid refactor.
+    let auto = auto_generate(boundary, params, &[] as &[(usize, usize, Vec2)], &[], false);
 
     // Compute corridor polygons for manual edges.
     let manual_corridors: Vec<Vec<Vec2>> = manual

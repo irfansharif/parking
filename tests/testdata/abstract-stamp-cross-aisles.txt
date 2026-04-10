@@ -1,0 +1,26 @@
+# Small stalls_per_face so cross driving aisles land visibly within
+# the lot. Under the abstract-grid stamp, every integer y is a cross
+# driving aisle regardless of the col_spacing >= row_spacing check.
+
+polygon outer
+0,0
+300,0
+300,250
+0,250
+----
+polygon outer: 4 vertices
+
+set stalls_per_face=4
+----
+set stalls_per_face=4
+
+debug use_abstract_stamp=true
+----
+debug use_abstract_stamp=true
+
+generate
+----
+total_stalls: 128
+
+screenshot
+----

@@ -85,6 +85,22 @@ export function createCommandAPI(app: App): CommandAPI {
           return `set ${key}=${val}`;
         }
 
+        case "debug": {
+          // Toggle a field on app.state.debug. Usage: debug <key>=<bool>
+          const rest = parts.slice(1).join(" ");
+          const eqIdx = rest.indexOf("=");
+          if (eqIdx === -1) return "error: debug requires key=value";
+          const key = rest.slice(0, eqIdx).replace(/-/g, "_");
+          const rawVal = rest.slice(eqIdx + 1);
+          if (rawVal !== "true" && rawVal !== "false") {
+            return `error: debug ${key} requires true|false`;
+          }
+          (app.state.debug as any)[key] = rawVal === "true";
+          for (const lot of app.state.lots) lot.aisleGraph = null;
+          app.generate();
+          return `debug ${key}=${rawVal}`;
+        }
+
         case "vertex": {
           const action = parts[1];
           const lot = app.activeLot();

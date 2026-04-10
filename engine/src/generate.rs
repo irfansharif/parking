@@ -37,7 +37,13 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     // First, resolve the aisle graph from manual + auto as usual.
     let mut graph = match input.aisle_graph {
         Some(manual) => merge_with_auto(manual, &input.boundary, &input.params),
-        None => auto_generate(&input.boundary, &input.params, &separator_lines, &input.region_overrides),
+        None => auto_generate(
+            &input.boundary,
+            &input.params,
+            &separator_lines,
+            &input.region_overrides,
+            input.debug.use_abstract_stamp,
+        ),
     };
 
     // Then append drive line edges on top — they're additive and should not
