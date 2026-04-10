@@ -241,23 +241,34 @@ export function createCommandAPI(app: App): CommandAPI {
         }
 
         case "region-override": {
-          // Usage: region-override region=0 angle=90 offset=10
+          // Usage: region-override region=<id> angle=90 offset=10
+          //
+          // <id> is a RegionId (stable hash of the bounding separator
+          // pair) — accepted as a decimal u64 or "0x..." hex. Look it up
+          // in the last layout's region_debug.regions[].id.
           const lot = app.activeLot();
-          let regionIdx = -1;
+          let regionId: number | undefined;
           let angle: number | undefined;
           let offset: number | undefined;
           for (const p of parts.slice(1)) {
             const [k, v] = p.split("=");
-            if (k === "region") regionIdx = parseInt(v);
-            else if (k === "angle") angle = parseFloat(v);
-            else if (k === "offset") offset = parseFloat(v);
+            if (k === "region") {
+              regionId = v.startsWith("0x") ? parseInt(v.slice(2), 16) : Number(v);
+            } else if (k === "angle") {
+              angle = parseFloat(v);
+            } else if (k === "offset") {
+              offset = parseFloat(v);
+            }
           }
-          if (regionIdx < 0) return "error: region-override requires region=N";
-          if (!lot.regionOverrides[regionIdx]) {
-            lot.regionOverrides[regionIdx] = {};
+          if (regionId === undefined || Number.isNaN(regionId)) {
+            return "error: region-override requires region=<id>";
           }
-          if (angle !== undefined) lot.regionOverrides[regionIdx].angle = angle;
-          if (offset !== undefined) lot.regionOverrides[regionIdx].offset = offset;
+          const regionKey = String(regionId);
+          if (!lot.regionOverrides[regionKey]) {
+            lot.regionOverrides[regionKey] = {};
+          }
+          if (angle !== undefined) lot.regionOverrides[regionKey].angle = angle;
+          if (offset !== undefined) lot.regionOverrides[regionKey].offset = offset;
           lot.aisleGraph = null;
           app.generate();
           const spec = parts.slice(1).join(" ");

@@ -54,6 +54,7 @@ export interface RegionDebug {
 }
 
 export interface RegionInfo {
+  id: RegionId;
   clip_poly: Vec2[];
   aisle_angle_deg: number;
   aisle_offset: number;
@@ -381,12 +382,25 @@ export interface ParkingLot {
   driveLines: DriveLine[];
   annotations: Annotation[];
   aisleVector: { start: Vec2; end: Vec2 };
-  regionOverrides: { [regionIndex: number]: { angle?: number; offset?: number } };
+  /**
+   * Region overrides keyed by RegionId (u64 encoded as a JS number —
+   * RegionIds are constrained to 53-bit safe integers on the engine
+   * side specifically so JS can hold them losslessly). The string key
+   * comes from `String(regionId)`.
+   */
+  regionOverrides: { [regionId: string]: { angle?: number; offset?: number } };
   layout: ParkingLayout | null;
 }
 
+/**
+ * Stable identifier for a region. Mirrors engine/src/types.rs::RegionId.
+ * Values come from the engine; the UI never constructs them from raw
+ * fields.
+ */
+export type RegionId = number;
+
 export interface RegionOverride {
-  region_index: number;
+  region_id: RegionId;
   aisle_angle_deg?: number;
   aisle_offset?: number;
 }

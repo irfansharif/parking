@@ -232,6 +232,7 @@ pub struct RegionDebug {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RegionInfo {
+    pub id: RegionId,
     pub clip_poly: Vec<Vec2>,
     pub aisle_angle_deg: f64,
     pub aisle_offset: f64,
@@ -806,7 +807,54 @@ pub struct GenerateInput {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RegionOverride {
-    pub region_index: usize,
+    pub region_id: RegionId,
     pub aisle_angle_deg: Option<f64>,
     pub aisle_offset: Option<f64>,
+}
+
+// ---------------------------------------------------------------------------
+// RegionId
+// ---------------------------------------------------------------------------
+//
+// Stable identifier for a region derived from the decomposition inputs.
+// Today, regions are built from consecutive pairs of separators on a
+// shared hole (sorted CCW by hole-vertex index), so the identifying
+// tuple is (hole_index, hole_vertex_start, hole_vertex_end). Packing
+// those into a u64 gives a stable ID that:
+//
+// - does NOT shuffle when the sort order of separators changes
+//   (the pair is stable, unlike the integer array position)
+// - changes only when a separator is added, removed, or moved to a
+//   different hole vertex
+// - is deterministic across regenerates and serialization roundtrips
+//
+// 20 bits per field gives up to ~1M hole vertices per hole and ~1M
+// holes per lot, comfortably beyond any realistic limit.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RegionId(pub u64);
+
+impl RegionId {
+    /// Build a stable ID from the three identifying integers. Ordered:
+    /// the pair (vi, vj) is directed CCW around the hole and must not be
+    /// swapped. Each field is 16 bits to keep the whole value inside
+    /// JavaScript's 53-bit safe integer range after JSON roundtrip.
+    /// The top bit is set to 0 to distinguish from the reserved
+    /// single-region-fallback ID.
+    pub fn from_signature(hole_index: usize, vi: usize, vj: usize) -> Self {
+        let h = (hole_index as u64) & 0xFFFF;
+        let i = (vi as u64) & 0xFFFF;
+        let j = (vj as u64) & 0xFFFF;
+        Self((h << 32) | (i << 16) | j)
+    }
+
+    /// Reserved ID for the single-region fallback case (no separators or
+    /// only one separator per hole, so no enclosed regions exist). Uses
+    /// a sentinel value with a high bit set, outside the range of
+    /// `from_signature` outputs but still within JavaScript's safe
+    /// integer range.
+    pub fn single_region_fallback() -> Self {
+        Self(1 << 48)
+    }
 }

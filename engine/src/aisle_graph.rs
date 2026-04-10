@@ -79,6 +79,7 @@ pub fn derive_raw_holes(holes: &[Vec<Vec2>], inset_d: f64) -> Vec<Vec<Vec2>> {
 /// When region decomposition is disabled, a single region covering the full
 /// outer boundary is used (today's behavior).
 pub struct Region {
+    pub id: RegionId,
     pub clip_poly: Vec<Vec2>,
     pub aisle_angle_deg: f64,
     pub aisle_offset: f64,
@@ -216,6 +217,7 @@ pub fn decompose_regions(
             angle = ((angle % 180.0) + 180.0) % 180.0;
 
             regions.push(Region {
+                id: RegionId::from_signature(hole_idx, vi, vj),
                 clip_poly: poly,
                 aisle_angle_deg: angle,
                 aisle_offset: 0.0,
@@ -557,7 +559,7 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams, separator_lines
 
         // Apply per-region overrides.
         for ov in region_overrides {
-            if let Some(r) = regions.get_mut(ov.region_index) {
+            if let Some(r) = regions.iter_mut().find(|r| r.id == ov.region_id) {
                 if let Some(a) = ov.aisle_angle_deg { r.aisle_angle_deg = a; }
                 if let Some(o) = ov.aisle_offset { r.aisle_offset = o; }
             }
@@ -568,11 +570,12 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams, separator_lines
 
         if regions.is_empty() {
             // Only 1 separator per hole — no enclosed regions yet.
-            // Use global angle/offset with region 0 override applied.
+            // Use global angle/offset with the single-region fallback
+            // override applied.
             let mut angle = params.aisle_angle_deg;
             let mut offset = params.aisle_offset;
             for ov in region_overrides {
-                if ov.region_index == 0 {
+                if ov.region_id == RegionId::single_region_fallback() {
                     if let Some(a) = ov.aisle_angle_deg { angle = a; }
                     if let Some(o) = ov.aisle_offset { offset = o; }
                 }
@@ -621,11 +624,12 @@ pub fn auto_generate(boundary: &Polygon, params: &ParkingParams, separator_lines
 
         (all_interior, all_cross)
     } else {
-        // Single-region path: use global angle/offset, applying region 0 override.
+        // Single-region path: use global angle/offset, applying the
+        // single-region-fallback override.
         let mut angle = params.aisle_angle_deg;
         let mut offset = params.aisle_offset;
         for ov in region_overrides {
-            if ov.region_index == 0 {
+            if ov.region_id == RegionId::single_region_fallback() {
                 if let Some(a) = ov.aisle_angle_deg { angle = a; }
                 if let Some(o) = ov.aisle_offset { offset = o; }
             }

@@ -78,7 +78,7 @@ async function main() {
         params: app.state.params,
         debug: app.state.debug,
         regionOverrides: Object.entries(lot.regionOverrides).map(([k, v]: [string, any]) => ({
-          region_index: Number(k),
+          region_id: Number(k),
           aisle_angle_deg: v.angle,
           aisle_offset: v.offset,
         })),

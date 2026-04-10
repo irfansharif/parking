@@ -114,9 +114,11 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         };
 
         // If no regions formed (0 separators or only 1 per hole), fall
-        // back to a single region covering the whole lot.
+        // back to a single region covering the whole lot, tagged with
+        // the reserved single-region-fallback ID.
         if region_list.is_empty() {
             region_list.push(Region {
+                id: RegionId::single_region_fallback(),
                 clip_poly: outer_loop.clone(),
                 aisle_angle_deg: input.params.aisle_angle_deg,
                 aisle_offset: input.params.aisle_offset,
@@ -125,7 +127,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
 
         // Apply per-region overrides.
         for ov in &input.region_overrides {
-            if let Some(r) = region_list.get_mut(ov.region_index) {
+            if let Some(r) = region_list.iter_mut().find(|r| r.id == ov.region_id) {
                 if let Some(a) = ov.aisle_angle_deg { r.aisle_angle_deg = a; }
                 if let Some(o) = ov.aisle_offset { r.aisle_offset = o; }
             }
@@ -135,6 +137,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
             regions: region_list.into_iter().map(|r| {
                 let center = region_pole(&r.clip_poly, &hole_loops);
                 RegionInfo {
+                    id: r.id,
                     clip_poly: r.clip_poly,
                     aisle_angle_deg: r.aisle_angle_deg,
                     aisle_offset: r.aisle_offset,

@@ -183,9 +183,10 @@ fn format_fixture(input: &GenerateInput) -> String {
         }
     }
 
-    // Region overrides.
+    // Region overrides. Keyed by RegionId (u64 hex) rather than the
+    // old unstable integer index.
     for ov in &input.region_overrides {
-        let mut parts = vec![format!("region={}", ov.region_index)];
+        let mut parts = vec![format!("region=0x{:016x}", ov.region_id.0)];
         if let Some(a) = ov.aisle_angle_deg {
             parts.push(format!("angle={}", fmt_coord(a)));
         }

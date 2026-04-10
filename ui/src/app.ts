@@ -328,7 +328,7 @@ export class App {
       params: this.state.params,
       debug: this.state.debug,
       regionOverrides: Object.entries(lot.regionOverrides).map(([k, v]) => ({
-        region_index: Number(k),
+        region_id: Number(k),
         aisle_angle_deg: v.angle,
         aisle_offset: v.offset,
       })),
@@ -695,6 +695,7 @@ export class App {
       const rd = lot.layout?.region_debug;
       const region = rd?.regions[ref.index];
       if (!region) return;
+      const regionKey = String(region.id);
       const cx = region.center.x;
       const cy = region.center.y;
 
@@ -705,20 +706,20 @@ export class App {
         if (len > 1) {
           let angleDeg = Math.atan2(dy, dx) * (180 / Math.PI);
           angleDeg = ((angleDeg % 180) + 180) % 180;
-          if (!lot.regionOverrides[ref.index]) {
-            lot.regionOverrides[ref.index] = {};
+          if (!lot.regionOverrides[regionKey]) {
+            lot.regionOverrides[regionKey] = {};
           }
-          lot.regionOverrides[ref.index].angle = Math.round(angleDeg);
+          lot.regionOverrides[regionKey].angle = Math.round(angleDeg);
         }
       } else if (ref.endpoint === "body") {
         const angleRad = region.aisle_angle_deg * (Math.PI / 180);
         const perpX = -Math.sin(angleRad);
         const perpY = Math.cos(angleRad);
         const offset = pos.x * perpX + pos.y * perpY;
-        if (!lot.regionOverrides[ref.index]) {
-          lot.regionOverrides[ref.index] = {};
+        if (!lot.regionOverrides[regionKey]) {
+          lot.regionOverrides[regionKey] = {};
         }
-        lot.regionOverrides[ref.index].offset = offset;
+        lot.regionOverrides[regionKey].offset = offset;
       }
       lot.aisleGraph = null;
     } else if (ref.type === "aisle-vector") {
