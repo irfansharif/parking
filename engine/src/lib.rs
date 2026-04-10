@@ -163,6 +163,18 @@ fn format_fixture(input: &GenerateInput) -> String {
                     fmt_coord(midpoint.x), fmt_coord(midpoint.y),
                 ));
             }
+            Annotation::AbstractDeleteVertex { region, xi, yi } => {
+                out.push_str(&format!(
+                    "\nannotation abstract-delete-vertex region=0x{:016x} x={} y={}\n----\nannotation abstract-delete-vertex region=0x{:016x} x={} y={}\n",
+                    region.0, xi, yi, region.0, xi, yi,
+                ));
+            }
+            Annotation::AbstractDeleteEdge { region, xa, ya, xb, yb } => {
+                out.push_str(&format!(
+                    "\nannotation abstract-delete-edge region=0x{:016x} from={},{} to={},{}\n----\nannotation abstract-delete-edge region=0x{:016x} from={},{} to={},{}\n",
+                    region.0, xa, ya, xb, yb, region.0, xa, ya, xb, yb,
+                ));
+            }
         }
     }
 

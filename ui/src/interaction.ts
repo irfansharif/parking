@@ -101,7 +101,12 @@ export function setupInteraction(
       if (closest.ref.type === "annotation") {
         const lot = app.lotForRef(closest.ref);
         const ann = lot.annotations[closest.ref.index];
-        if (ann && ann.kind !== "DeleteVertex") {
+        if (
+          ann &&
+          ann.kind !== "DeleteVertex" &&
+          ann.kind !== "AbstractDeleteVertex" &&
+          ann.kind !== "AbstractDeleteEdge"
+        ) {
           const pt = ann.midpoint;
           const graph = app.getEffectiveAisleGraph(lot);
           if (graph) {

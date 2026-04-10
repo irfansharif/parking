@@ -243,7 +243,7 @@ export interface DebugToggles {
    * parallel/cross driving aisles are placed at integer positions of
    * the per-region AbstractFrame aligned to the canvas origin.
    */
-  use_abstract_stamp?: boolean;
+  use_abstract_stamp: boolean;
 }
 
 export interface DriveLine {
@@ -342,7 +342,13 @@ export function computeBoundaryPin(
   return { pos: bestProj, edgeIndex: bestEdge, t: bestT };
 }
 
-export type Annotation = OneWayAnnotation | TwoWayOrientedAnnotation | DeleteVertexAnnotation | DeleteEdgeAnnotation;
+export type Annotation =
+  | OneWayAnnotation
+  | TwoWayOrientedAnnotation
+  | DeleteVertexAnnotation
+  | DeleteEdgeAnnotation
+  | AbstractDeleteVertexAnnotation
+  | AbstractDeleteEdgeAnnotation;
 
 export interface OneWayAnnotation {
   kind: "OneWay";
@@ -373,6 +379,36 @@ export interface DeleteEdgeAnnotation {
   midpoint: Vec2;
   edge_dir: Vec2;
   chain?: boolean;
+  _active?: boolean;
+}
+
+/**
+ * Delete the grid vertex identified by integer abstract coordinates
+ * (xi, yi) in the given region's abstract frame. Stable under every
+ * parameter change — the same (region, xi, yi) triple always points
+ * to the same grid intersection.
+ */
+export interface AbstractDeleteVertexAnnotation {
+  kind: "AbstractDeleteVertex";
+  region: RegionId;
+  xi: number;
+  yi: number;
+  _active?: boolean;
+}
+
+/**
+ * Delete the grid-aligned edge connecting two integer abstract grid
+ * points in the same region. One of the two axes must match (it's
+ * either a parallel-aisle segment at fixed xi or a cross-aisle
+ * segment at fixed yi).
+ */
+export interface AbstractDeleteEdgeAnnotation {
+  kind: "AbstractDeleteEdge";
+  region: RegionId;
+  xa: number;
+  ya: number;
+  xb: number;
+  yb: number;
   _active?: boolean;
 }
 

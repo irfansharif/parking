@@ -858,6 +858,15 @@ export class Renderer {
     const annotationVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
     for (const lot of state.lots) {
       lot.annotations.forEach((ann, i) => {
+        // Abstract annotations don't have a persistent world-space
+        // anchor point — they're integer grid handles. Nothing to
+        // render here; they're visualized by the engine output.
+        if (
+          ann.kind === "AbstractDeleteVertex" ||
+          ann.kind === "AbstractDeleteEdge"
+        ) {
+          return;
+        }
         const pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
         const isDelete = ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
         const isTwoWayOri = ann.kind === "TwoWayOriented";

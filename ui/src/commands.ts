@@ -217,8 +217,13 @@ export function createCommandAPI(app: App): CommandAPI {
 
         case "annotation": {
           const subtype = parts[1]; // "one-way", "delete-vertex", "delete-edge"
-          if (!body) return "error: annotation requires body";
-          const points = parsePoints(body);
+          const isAbstract =
+            subtype === "abstract-delete-vertex" ||
+            subtype === "abstract-delete-edge";
+          // Abstract variants carry their payload in the command line,
+          // not in the body, so they don't need a body.
+          if (!isAbstract && !body) return "error: annotation requires body";
+          const points = body ? parsePoints(body) : [];
           const noChain = parts.includes("no-chain");
           const lot = app.activeLot();
           if (subtype === "one-way") {
@@ -255,6 +260,73 @@ export function createCommandAPI(app: App): CommandAPI {
               chain: !noChain,
             });
             return `annotation delete-edge at ${points[0].x},${points[0].y}`;
+          } else if (
+            subtype === "abstract-delete-vertex" ||
+            subtype === "abstract-delete-edge"
+          ) {
+            // Usage:
+            //   annotation abstract-delete-vertex region=<id> x=<xi> y=<yi>
+            //   annotation abstract-delete-edge   region=<id> from=<xa>,<ya> to=<xb>,<yb>
+            //
+            // <id> is a RegionId, accepted as decimal u64 or "0x..." hex.
+            let regionId: number | undefined;
+            let xi: number | undefined;
+            let yi: number | undefined;
+            let xa: number | undefined;
+            let ya: number | undefined;
+            let xb: number | undefined;
+            let yb: number | undefined;
+            for (const p of parts.slice(2)) {
+              const [k, v] = p.split("=");
+              if (k === "region") {
+                regionId = v.startsWith("0x") ? parseInt(v.slice(2), 16) : Number(v);
+              } else if (k === "x") {
+                xi = Number(v);
+              } else if (k === "y") {
+                yi = Number(v);
+              } else if (k === "from") {
+                const [a, b] = v.split(",");
+                xa = Number(a);
+                ya = Number(b);
+              } else if (k === "to") {
+                const [a, b] = v.split(",");
+                xb = Number(a);
+                yb = Number(b);
+              }
+            }
+            if (regionId === undefined || Number.isNaN(regionId)) {
+              return `error: ${subtype} requires region=<id>`;
+            }
+            if (subtype === "abstract-delete-vertex") {
+              if (xi === undefined || yi === undefined) {
+                return "error: abstract-delete-vertex requires x=<xi> y=<yi>";
+              }
+              lot.annotations.push({
+                kind: "AbstractDeleteVertex",
+                region: regionId,
+                xi,
+                yi,
+              } as any);
+              return `annotation abstract-delete-vertex region=0x${regionId.toString(16).padStart(16, "0")} x=${xi} y=${yi}`;
+            } else {
+              if (
+                xa === undefined ||
+                ya === undefined ||
+                xb === undefined ||
+                yb === undefined
+              ) {
+                return "error: abstract-delete-edge requires from=<xa>,<ya> to=<xb>,<yb>";
+              }
+              lot.annotations.push({
+                kind: "AbstractDeleteEdge",
+                region: regionId,
+                xa,
+                ya,
+                xb,
+                yb,
+              } as any);
+              return `annotation abstract-delete-edge region=0x${regionId.toString(16).padStart(16, "0")} from=${xa},${ya} to=${xb},${yb}`;
+            }
           }
           return `error: unknown annotation type '${subtype}'`;
         }

@@ -35,7 +35,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         .collect();
 
     // First, resolve the aisle graph from manual + auto as usual.
-    let mut graph = match input.aisle_graph {
+    let mut graph = match input.aisle_graph.clone() {
         Some(manual) => merge_with_auto(manual, &input.boundary, &input.params),
         None => auto_generate(
             &input.boundary,
@@ -53,9 +53,17 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         graph = append_graph(graph, drive_graph);
     }
 
-    // Apply spatial annotations to the resolved graph. Annotations are
-    // matched by proximity so they survive graph regeneration.
-    apply_annotations(&mut graph, &input.annotations);
+    // Build the per-region frame list once, for both abstract annotation
+    // lookup and the debug info returned to the UI below. Decomposition is
+    // cheap enough to compute here again (auto_generate also runs it
+    // internally) — a future cleanup could share the result.
+    let resolved_regions: Vec<ResolvedRegion> =
+        resolve_regions_for_frames(&input, &separator_lines);
+
+    // Apply spatial annotations to the resolved graph. Abstract annotations
+    // resolve by integer grid lookup into the region frames; the legacy
+    // variants fall through to proximity matching.
+    apply_annotations(&mut graph, &input.annotations, &resolved_regions);
 
     let inset_d = compute_inset_d(&input.params);
     let derived_outer = derive_raw_outer(&input.boundary.outer, inset_d, input.params.site_offset);
@@ -432,6 +440,114 @@ fn append_graph(a: DriveAisleGraph, b: DriveAisleGraph) -> DriveAisleGraph {
     }
 }
 
+/// One region's abstract frame plus its clip polygon — what
+/// `apply_annotations` needs to resolve AbstractDelete* annotations.
+struct ResolvedRegion {
+    id: RegionId,
+    clip_poly: Vec<Vec2>,
+    frame: AbstractFrame,
+}
+
+/// Build the (id, frame, clip_poly) triples for the current generate
+/// input. Mirrors the decomposition logic in the region_debug block
+/// below but returns the frames for annotation resolution.
+fn resolve_regions_for_frames(
+    input: &GenerateInput,
+    separator_lines: &[(usize, usize, Vec2)],
+) -> Vec<ResolvedRegion> {
+    let outer_loop = if input.params.site_offset > 0.0 {
+        let p = inset_polygon(&input.boundary.outer, input.params.site_offset);
+        if p.is_empty() {
+            input.boundary.outer.clone()
+        } else {
+            ensure_ccw(p)
+        }
+    } else {
+        ensure_ccw(input.boundary.outer.clone())
+    };
+    let hole_loops: Vec<Vec<Vec2>> = input
+        .boundary
+        .holes
+        .iter()
+        .filter(|h| !h.is_empty())
+        .cloned()
+        .collect();
+
+    let mut region_list = if !separator_lines.is_empty() {
+        decompose_regions(&outer_loop, &hole_loops, separator_lines)
+    } else {
+        vec![]
+    };
+    if region_list.is_empty() {
+        region_list.push(Region {
+            id: RegionId::single_region_fallback(),
+            clip_poly: outer_loop.clone(),
+            aisle_angle_deg: input.params.aisle_angle_deg,
+            aisle_offset: input.params.aisle_offset,
+        });
+    }
+    for ov in &input.region_overrides {
+        if let Some(r) = region_list.iter_mut().find(|r| r.id == ov.region_id) {
+            if let Some(a) = ov.aisle_angle_deg {
+                r.aisle_angle_deg = a;
+            }
+            if let Some(o) = ov.aisle_offset {
+                r.aisle_offset = o;
+            }
+        }
+    }
+    region_list
+        .into_iter()
+        .map(|r| {
+            let frame = AbstractFrame::region(&input.params, r.aisle_angle_deg);
+            ResolvedRegion {
+                id: r.id,
+                clip_poly: r.clip_poly,
+                frame,
+            }
+        })
+        .collect()
+}
+
+/// Snap tolerance for treating a vertex as "on" an integer abstract
+/// grid point. 0.1 world units ≈ 1.2 inches — tight enough to catch
+/// numerical drift but loose enough to tolerate it.
+const ABSTRACT_SNAP_TOL: f64 = 0.1;
+
+/// For each vertex in the graph, find the region frame (if any) in
+/// which the vertex sits exactly on an integer grid point. Returns a
+/// lookup `(region, xi, yi) → vertex_index`.
+fn build_abstract_vertex_lookup(
+    graph: &DriveAisleGraph,
+    regions: &[ResolvedRegion],
+) -> std::collections::HashMap<(RegionId, i32, i32), usize> {
+    use std::collections::HashMap;
+    let mut lookup: HashMap<(RegionId, i32, i32), usize> = HashMap::new();
+    for (vi, v) in graph.vertices.iter().enumerate() {
+        for region in regions {
+            if !point_in_polygon(v, &region.clip_poly) {
+                continue;
+            }
+            let abs = region.frame.inverse(*v);
+            let xi_round = abs.x.round();
+            let yi_round = abs.y.round();
+            // Snap tolerance in abstract units: divide world tolerance by
+            // the axis scale so 0.1 world units maps to an
+            // axis-independent abstract tolerance.
+            let dx_abs = (abs.x - xi_round).abs();
+            let dy_abs = (abs.y - yi_round).abs();
+            if dx_abs * region.frame.dx > ABSTRACT_SNAP_TOL
+                || dy_abs * region.frame.dy > ABSTRACT_SNAP_TOL
+            {
+                continue;
+            }
+            lookup.insert((region.id, xi_round as i32, yi_round as i32), vi);
+            break;
+        }
+    }
+    lookup
+}
+
 /// Apply spatial annotations to a resolved graph. Each annotation is matched
 /// to the edge that passes closest to the annotation point (point-to-segment
 /// distance), with a tight threshold so annotations only bind to edges that
@@ -439,10 +555,26 @@ fn append_graph(a: DriveAisleGraph, b: DriveAisleGraph) -> DriveAisleGraph {
 fn apply_annotations(
     graph: &mut DriveAisleGraph,
     annotations: &[Annotation],
+    regions: &[ResolvedRegion],
 ) {
     if annotations.is_empty() {
         return;
     }
+
+    // Pre-compute the abstract-grid vertex lookup lazily — we only
+    // need it if there's at least one abstract annotation in the list.
+    let has_abstract = annotations.iter().any(|a| {
+        matches!(
+            a,
+            Annotation::AbstractDeleteVertex { .. }
+                | Annotation::AbstractDeleteEdge { .. }
+        )
+    });
+    let abstract_lookup = if has_abstract {
+        build_abstract_vertex_lookup(graph, regions)
+    } else {
+        std::collections::HashMap::new()
+    };
 
     // Precompute edge endpoints and directions (one per undirected edge).
     struct EdgeInfo {
@@ -628,6 +760,26 @@ fn apply_annotations(
                                 edges_to_remove.insert(i);
                             }
                         }
+                    }
+                }
+            }
+            Annotation::AbstractDeleteVertex { region, xi, yi } => {
+                if let Some(&vi) = abstract_lookup.get(&(*region, *xi, *yi)) {
+                    vertices_to_remove.insert(vi);
+                }
+            }
+            Annotation::AbstractDeleteEdge { region, xa, ya, xb, yb } => {
+                let Some(&via) = abstract_lookup.get(&(*region, *xa, *ya)) else { continue };
+                let Some(&vib) = abstract_lookup.get(&(*region, *xb, *yb)) else { continue };
+                // Find all graph edges that connect via↔vib in either
+                // direction (the stamp emits bidirectional edges, and
+                // drive-line splicing may introduce mid-edge vertices we
+                // don't yet handle). Delete each matching edge.
+                for (i, ei) in graph.edges.iter().enumerate() {
+                    if (ei.start == via && ei.end == vib)
+                        || (ei.start == vib && ei.end == via)
+                    {
+                        edges_to_remove.insert(i);
                     }
                 }
             }

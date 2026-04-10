@@ -796,6 +796,26 @@ pub enum Annotation {
         #[serde(default = "default_true")]
         chain: bool,
     },
+    /// Delete a vertex identified by its position in a region's abstract
+    /// grid. Stable under parameter changes because (region, xi, yi) is
+    /// an integer triple that doesn't move when the frame rotates or
+    /// stretches.
+    AbstractDeleteVertex {
+        region: RegionId,
+        xi: i32,
+        yi: i32,
+    },
+    /// Delete a grid-aligned edge between two integer grid points in
+    /// the same region's abstract frame. One of the two axes must match
+    /// (it's either a parallel-aisle segment at fixed xi or a
+    /// cross-aisle segment at fixed yi).
+    AbstractDeleteEdge {
+        region: RegionId,
+        xa: i32,
+        ya: i32,
+        xb: i32,
+        yb: i32,
+    },
 }
 
 // ---------------------------------------------------------------------------
