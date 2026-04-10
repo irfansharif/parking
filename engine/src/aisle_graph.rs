@@ -275,9 +275,20 @@ fn generate_region_aisles(
     // abstract-stamp path instead locks parallel driving aisles to
     // integer positions of the canonical abstract frame (origin at
     // world (0,0), period row_spacing).
+    //
+    // Under the abstract stamp, we also apply a sliver suppression rule
+    // inline: an aisle whose face would be narrower than half a
+    // row_spacing (i.e., less than one half-face of stalls) against
+    // either the boundary or the lot is dropped. This matches the
+    // "suppress rows near the edges" mental model from the design
+    // discussion. A later refactor should lift this into a separate
+    // suppression pass over a tagged graph; the effect is the same.
     let (first, grid_end) = if use_abstract_stamp {
-        let k_min = (min_proj / row_spacing).ceil() as i64;
-        (k_min as f64 * row_spacing, max_proj)
+        let sliver_threshold = row_spacing / 2.0;
+        let k_min = ((min_proj + sliver_threshold) / row_spacing).ceil() as i64;
+        let k_max =
+            ((max_proj - sliver_threshold) / row_spacing).floor() as i64;
+        (k_min as f64 * row_spacing, k_max as f64 * row_spacing)
     } else {
         let grid_start = min_proj + row_spacing;
         let grid_end_legacy = max_proj - row_spacing;
@@ -394,8 +405,15 @@ fn generate_region_aisles(
             .fold(f64::NEG_INFINITY, f64::max);
 
         let (col_start, col_end) = if use_abstract_stamp {
-            let k_min = (min_along / col_spacing).ceil() as i64;
-            (k_min as f64 * col_spacing, max_along)
+            // Same sliver suppression rule as parallel aisles: drop a
+            // cross aisle whose face would be narrower than half a
+            // col_spacing.
+            let sliver_threshold = col_spacing / 2.0;
+            let k_min =
+                ((min_along + sliver_threshold) / col_spacing).ceil() as i64;
+            let k_max =
+                ((max_along - sliver_threshold) / col_spacing).floor() as i64;
+            (k_min as f64 * col_spacing, k_max as f64 * col_spacing)
         } else {
             (min_along + col_spacing, max_along - col_spacing)
         };
