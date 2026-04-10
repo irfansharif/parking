@@ -222,9 +222,12 @@ export function createCommandAPI(app: App): CommandAPI {
             subtype === "abstract-delete-edge" ||
             subtype === "abstract-one-way" ||
             subtype === "abstract-two-way-oriented";
-          // Abstract variants carry their payload in the command line,
-          // not in the body, so they don't need a body.
-          if (!isAbstract && !body) return "error: annotation requires body";
+          // These subtypes carry their payload on the command line,
+          // not in the body, so they don't need a body. The abstract
+          // variants above plus `delete-vertex-at-index` (which wraps
+          // an interactive UI entry point).
+          const bodyless = isAbstract || subtype === "delete-vertex-at-index";
+          if (!bodyless && !body) return "error: annotation requires body";
           const points = body ? parsePoints(body) : [];
           const noChain = parts.includes("no-chain");
           const lot = app.activeLot();
@@ -253,6 +256,23 @@ export function createCommandAPI(app: App): CommandAPI {
               point: points[0],
             });
             return `annotation delete-vertex at ${points[0].x},${points[0].y}`;
+          } else if (subtype === "delete-vertex-at-index") {
+            // Usage: annotation delete-vertex-at-index index=<i>
+            // Routes through deleteAisleVertexByAnnotation so it
+            // exercises the UI auto-upgrade path — under the
+            // abstract-stamp flag this produces an
+            // AbstractDeleteVertex, otherwise a world-space
+            // DeleteVertex.
+            let idx: number | undefined;
+            for (const p of parts.slice(2)) {
+              const [k, v] = p.split("=");
+              if (k === "index") idx = Number(v);
+            }
+            if (idx === undefined || Number.isNaN(idx)) {
+              return "error: delete-vertex-at-index requires index=<i>";
+            }
+            app.deleteAisleVertexByAnnotation(idx);
+            return `annotation delete-vertex-at-index index=${idx}`;
           } else if (subtype === "delete-edge") {
             if (points.length < 2) return "error: delete-edge requires midpoint and edge_dir";
             lot.annotations.push({

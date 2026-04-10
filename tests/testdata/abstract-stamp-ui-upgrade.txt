@@ -1,0 +1,59 @@
+# Exercises the UI auto-upgrade path: under the stamp flag, the
+# interactive "delete this selected vertex" entry point should
+# produce an AbstractDeleteVertex, not a world-space DeleteVertex.
+#
+# The testdata runner calls
+# `app.deleteAisleVertexByAnnotation(idx)` via the new
+# `annotation delete-vertex-at-index` command. That function is what
+# the UI wires to "click a vertex and press delete." With the stamp
+# flag on, it should prefer an abstract handle when the clicked
+# vertex lands on an integer grid point.
+#
+# We verify the upgrade worked by stretching stall_depth enough that
+# a world-space DeleteVertex (proximity radius 5) would no longer
+# match. If the deletion is still in effect after the stretch, the
+# annotation must be an abstract one.
+
+polygon outer
+0,0
+400,0
+400,300
+0,300
+----
+polygon outer: 4 vertices
+
+set stalls_per_face=4
+----
+set stalls_per_face=4
+
+debug use_abstract_stamp=true
+----
+debug use_abstract_stamp=true
+
+generate
+----
+total_stalls: 162
+
+# Pick vertex index 14 — any interior grid vertex in the stamped
+# graph will do. The stall count delta is captured at rebaseline.
+annotation delete-vertex-at-index index=14
+----
+annotation delete-vertex-at-index index=14
+
+generate
+----
+total_stalls: 155
+
+# Stretch far enough that a world-space DeleteVertex with its
+# 5-unit proximity threshold would miss. Abstract handles are
+# immune: (region, xi, yi) is unchanged.
+set stall_depth=28
+----
+set stall_depth=28
+
+generate
+----
+total_stalls: 153
+
+screenshot
+----
