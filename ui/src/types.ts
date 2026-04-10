@@ -559,6 +559,19 @@ export interface ParkingLot {
   annotations: Annotation[];
   aisleVector: { start: Vec2; end: Vec2 };
   /**
+   * Perpendicular projection of the aisle vector's midpoint at the
+   * time the lot was created (or the last time the vector was
+   * reoriented from scratch). Used to decouple the vector's visual
+   * world position from `params.aisle_offset`:
+   *
+   *   aisle_offset = midpoint.perpProj - aisleOffsetBaseline
+   *
+   * Without this, the first drag of the vector would jump the grid
+   * by (midpoint.perpProj - 0) because the vector's initial world
+   * position has a non-zero perpendicular projection.
+   */
+  aisleOffsetBaseline: number;
+  /**
    * Region overrides keyed by RegionId (u64 encoded as a JS number —
    * RegionIds are constrained to 53-bit safe integers on the engine
    * side specifically so JS can hold them losslessly). The string key

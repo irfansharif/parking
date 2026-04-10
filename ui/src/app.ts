@@ -189,6 +189,10 @@ export class App {
       aisleGraph: null,
       annotations: [],
       aisleVector: aisleVectorFromAngle(90, 0, { x: -80, y: 250 }),
+      aisleOffsetBaseline: midpointPerpProj(
+        aisleVectorFromAngle(90, 0, { x: -80, y: 250 }),
+        90,
+      ),
       driveLines: [
         { start: { x: 824.53, y: 531.97 }, end: { x: 224.60, y: 654.85 } },
         { start: { x: 611.14, y: 251.80 }, end: { x: 762.23, y: 244.23 }, holePin: { holeIndex: 0, vertexIndex: 1 } },
@@ -293,13 +297,15 @@ export class App {
     // Compute centroid for aisle vector placement.
     const cx = boundary.outer.reduce((s, v) => s + v.x, 0) / boundary.outer.length;
     const cy = boundary.outer.reduce((s, v) => s + v.y, 0) / boundary.outer.length;
+    const initialVector = aisleVectorFromAngle(90, 0, { x: cx, y: cy });
     const lot: ParkingLot = {
       id,
       boundary,
       aisleGraph: null,
       driveLines: [],
       annotations: [],
-      aisleVector: aisleVectorFromAngle(90, 0, { x: cx, y: cy }),
+      aisleVector: initialVector,
+      aisleOffsetBaseline: midpointPerpProj(initialVector, 90),
       regionOverrides: {},
       layout: null,
     };
@@ -360,16 +366,31 @@ export class App {
   }
 
   private syncAisleVector(lot: ParkingLot): void {
+    // Rebuild the vector at its current midpoint with the new angle,
+    // then reposition it perpendicular to the aisle so its midpoint
+    // projection equals `baseline + aisle_offset`. Preserving the
+    // along-aisle component keeps the vector visually anchored
+    // alongside the same rough region of the lot even as it slides
+    // perpendicular with aisle_offset changes.
     const vec = lot.aisleVector;
     const center = {
       x: (vec.start.x + vec.end.x) / 2,
       y: (vec.start.y + vec.end.y) / 2,
     };
-    lot.aisleVector = aisleVectorFromAngle(
-      this.state.params.aisle_angle_deg,
-      this.state.params.aisle_offset,
-      center,
-    );
+    const angleDeg = this.state.params.aisle_angle_deg;
+    const angleRad = angleDeg * (Math.PI / 180);
+    const dirX = Math.cos(angleRad);
+    const dirY = Math.sin(angleRad);
+    const perpX = -Math.sin(angleRad);
+    const perpY = Math.cos(angleRad);
+    const alongProj = center.x * dirX + center.y * dirY;
+    const targetPerpProj =
+      lot.aisleOffsetBaseline + this.state.params.aisle_offset;
+    const newCenter: Vec2 = {
+      x: alongProj * dirX + targetPerpProj * perpX,
+      y: alongProj * dirY + targetPerpProj * perpY,
+    };
+    lot.aisleVector = aisleVectorFromAngle(angleDeg, 0, newCenter);
   }
 
   // Returns the effective aisle graph for a lot (default: active lot).
@@ -735,7 +756,6 @@ export class App {
       } else {
         vec.end = pos;
       }
-      const anchor = ref.endpoint === "start" ? vec.end : vec.start;
       const dx = vec.end.x - vec.start.x;
       const dy = vec.end.y - vec.start.y;
       const len = Math.sqrt(dx * dx + dy * dy);
@@ -744,10 +764,15 @@ export class App {
         angleDeg = ((angleDeg % 180) + 180) % 180;
         this.state.params.aisle_angle_deg = Math.round(angleDeg);
       }
-      const angleRad = this.state.params.aisle_angle_deg * (Math.PI / 180);
-      const perpX = -Math.sin(angleRad);
-      const perpY = Math.cos(angleRad);
-      this.state.params.aisle_offset = anchor.x * perpX + anchor.y * perpY;
+      // aisle_offset = midpoint perpendicular projection minus the
+      // baseline projection captured at lot creation. Using the
+      // midpoint instead of a single endpoint means rotating around
+      // the midpoint (dragging one end) doesn't change the offset.
+      // Subtracting the baseline means the first drag doesn't jump
+      // the grid — initial offset stays 0 even though the vector is
+      // placed at an arbitrary world position.
+      const curProj = midpointPerpProj(vec, this.state.params.aisle_angle_deg);
+      this.state.params.aisle_offset = curProj - lot.aisleOffsetBaseline;
       lot.aisleGraph = null;
     }
     this.generate();
@@ -1263,6 +1288,24 @@ function aisleVectorFromAngle(angleDeg: number, _offset: number, center: Vec2): 
     start: { x: center.x - dirX * halfLen, y: center.y - dirY * halfLen },
     end: { x: center.x + dirX * halfLen, y: center.y + dirY * halfLen },
   };
+}
+
+/**
+ * Perpendicular projection of an aisle vector's midpoint onto the
+ * perp_dir implied by `aisleAngleDeg`. Used to maintain the
+ * aisleOffsetBaseline invariant when the lot is created and when the
+ * vector is dragged.
+ */
+function midpointPerpProj(
+  vec: { start: Vec2; end: Vec2 },
+  aisleAngleDeg: number,
+): number {
+  const angleRad = aisleAngleDeg * (Math.PI / 180);
+  const perpX = -Math.sin(angleRad);
+  const perpY = Math.cos(angleRad);
+  const mx = (vec.start.x + vec.end.x) / 2;
+  const my = (vec.start.y + vec.end.y) / 2;
+  return mx * perpX + my * perpY;
 }
 
 function pointToSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {

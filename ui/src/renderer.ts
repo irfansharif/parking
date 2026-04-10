@@ -1,5 +1,97 @@
 import { AppState, Camera, VertexRef } from "./app";
-import { Vec2, EdgeCurve, ParkingLot, StallQuad, DriveAisleGraph, SpineLine, Face, AisleDirection, isAbstractAnnotation } from "./types";
+import {
+  Vec2,
+  EdgeCurve,
+  ParkingLot,
+  StallQuad,
+  DriveAisleGraph,
+  SpineLine,
+  Face,
+  AisleDirection,
+  ParkingParams,
+  Annotation,
+  isAbstractAnnotation,
+  computeRegionFrame,
+  frameForward,
+} from "./types";
+
+/**
+ * Compute the current world position of an abstract annotation by
+ * looking up its host region in the layout's region_debug and
+ * forward-transforming the integer (xi, yi) — or the midpoint of
+ * (xa, ya) and (xb, yb) for edge variants — through that region's
+ * AbstractFrame. Returns null if the region isn't in the current
+ * layout (dormant annotation).
+ */
+function abstractAnnotationWorldPos(
+  ann: Annotation,
+  lot: ParkingLot,
+  params: ParkingParams,
+): Vec2 | null {
+  if (!isAbstractAnnotation(ann)) return null;
+  const rd = lot.layout?.region_debug;
+  if (!rd) return null;
+  const region = rd.regions.find((r) => r.id === ann.region);
+  if (!region) return null;
+  const frame = computeRegionFrame(
+    params,
+    region.aisle_angle_deg,
+    region.aisle_offset,
+  );
+  if (ann.kind === "AbstractDeleteVertex") {
+    return frameForward(frame, { x: ann.xi, y: ann.yi });
+  }
+  // Edge variants: show the marker at the midpoint of the two
+  // endpoints.
+  const a = frameForward(frame, { x: ann.xa, y: ann.ya });
+  const b = frameForward(frame, { x: ann.xb, y: ann.yb });
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+/**
+ * Find an AbstractOneWay / AbstractTwoWayOriented annotation whose
+ * resolved world-space midpoint is near `mid`, and return the unit
+ * travel direction implied by its (xa, ya) → (xb, yb) ordering. Used
+ * by the edge arrow renderer so abstract direction annotations get
+ * arrows just like legacy OneWay / TwoWayOriented do.
+ */
+function findAbstractDirectionAnnotation(
+  lot: ParkingLot | null,
+  params: ParkingParams,
+  mid: Vec2,
+): { tx: number; ty: number } | null {
+  if (!lot) return null;
+  const rd = lot.layout?.region_debug;
+  if (!rd) return null;
+  const tol = 5.0;
+  for (const ann of lot.annotations) {
+    if (
+      ann.kind !== "AbstractOneWay" &&
+      ann.kind !== "AbstractTwoWayOriented"
+    ) {
+      continue;
+    }
+    if (ann._active === false) continue;
+    const region = rd.regions.find((r) => r.id === ann.region);
+    if (!region) continue;
+    const frame = computeRegionFrame(
+      params,
+      region.aisle_angle_deg,
+      region.aisle_offset,
+    );
+    const a = frameForward(frame, { x: ann.xa, y: ann.ya });
+    const b = frameForward(frame, { x: ann.xb, y: ann.yb });
+    const worldMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const d = Math.sqrt((worldMid.x - mid.x) ** 2 + (worldMid.y - mid.y) ** 2);
+    if (d > tol) continue;
+    const tx = b.x - a.x;
+    const ty = b.y - a.y;
+    const len = Math.sqrt(tx * tx + ty * ty);
+    if (len < 1e-9) continue;
+    return { tx: tx / len, ty: ty / len };
+  }
+  return null;
+}
 import { SnapGuide } from "./snap";
 
 export class Renderer {
@@ -731,14 +823,33 @@ export class Renderer {
         ctx.lineTo(end.x, end.y);
         ctx.stroke();
 
-        // Draw arrows on directed edges, using the annotation's travel_dir.
-        if (isDirected && matchedAnn && (matchedAnn.kind === "OneWay" || matchedAnn.kind === "TwoWayOriented")) {
-          const td = matchedAnn.travel_dir;
-          const tdLen = Math.sqrt(td.x * td.x + td.y * td.y);
-          if (tdLen < 1e-9) continue;
-          // travel_dir unit vector
-          const tnx = td.x / tdLen;
-          const tny = td.y / tdLen;
+        // Draw arrows on directed edges. Travel direction comes from
+        // the matched legacy annotation's travel_dir, or — for
+        // abstract annotations — from the abstract edge endpoints
+        // forward-transformed through the region frame. If neither
+        // matches (e.g., a chain-extended legacy annotation
+        // whose proximity-matched midpoint is on a different edge),
+        // skip arrows to preserve existing legacy screenshots.
+        if (isDirected) {
+          let tnx: number;
+          let tny: number;
+          const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+          if (matchedAnn && (matchedAnn.kind === "OneWay" || matchedAnn.kind === "TwoWayOriented")) {
+            const td = matchedAnn.travel_dir;
+            const tdLen = Math.sqrt(td.x * td.x + td.y * td.y);
+            if (tdLen < 1e-9) continue;
+            tnx = td.x / tdLen;
+            tny = td.y / tdLen;
+          } else {
+            const abstractMatch = findAbstractDirectionAnnotation(
+              activeLot ?? null,
+              state.params,
+              mid,
+            );
+            if (!abstractMatch) continue;
+            tnx = abstractMatch.tx;
+            tny = abstractMatch.ty;
+          }
           // Edge vector for positioning along the edge
           const dx = end.x - start.x;
           const dy = end.y - start.y;
@@ -858,13 +969,26 @@ export class Renderer {
     const annotationVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
     for (const lot of state.lots) {
       lot.annotations.forEach((ann, i) => {
-        // Abstract annotations don't have a persistent world-space
-        // anchor point — they're integer grid handles. Nothing to
-        // render here; they're visualized by the engine output.
-        if (isAbstractAnnotation(ann)) return;
-        const pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
-        const isDelete = ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
-        const isTwoWayOri = ann.kind === "TwoWayOriented";
+        let pos: Vec2 | null;
+        let isDelete: boolean;
+        let isTwoWayOri: boolean;
+
+        if (isAbstractAnnotation(ann)) {
+          // Abstract annotations are keyed by integer grid indices.
+          // Compute their current world position through the hosting
+          // region's AbstractFrame so the marker follows the grid as
+          // parameters change.
+          pos = abstractAnnotationWorldPos(ann, lot, state.params);
+          if (!pos) return;
+          isDelete =
+            ann.kind === "AbstractDeleteVertex" ||
+            ann.kind === "AbstractDeleteEdge";
+          isTwoWayOri = ann.kind === "AbstractTwoWayOriented";
+        } else {
+          pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
+          isDelete = ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
+          isTwoWayOri = ann.kind === "TwoWayOriented";
+        }
         const activeColor = isDelete ? "rgba(255, 80, 80, 0.95)" : isTwoWayOri ? "rgba(100, 200, 255, 0.95)" : "rgba(255, 180, 50, 0.95)";
         const inactiveColor = isDelete ? "rgba(255, 80, 80, 0.3)" : isTwoWayOri ? "rgba(100, 200, 255, 0.3)" : "rgba(255, 180, 50, 0.3)";
         annotationVerts.push({
