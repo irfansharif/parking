@@ -1,6 +1,6 @@
 import { App, VertexRef, EdgeRef } from "./app";
 import { Renderer } from "./renderer";
-import { Vec2, EdgeCurve, DriveAisleGraph } from "./types";
+import { Vec2, EdgeCurve, DriveAisleGraph, isAbstractAnnotation } from "./types";
 import { computeSnap, emptySnapState } from "./snap";
 
 export function setupInteraction(
@@ -101,12 +101,7 @@ export function setupInteraction(
       if (closest.ref.type === "annotation") {
         const lot = app.lotForRef(closest.ref);
         const ann = lot.annotations[closest.ref.index];
-        if (
-          ann &&
-          ann.kind !== "DeleteVertex" &&
-          ann.kind !== "AbstractDeleteVertex" &&
-          ann.kind !== "AbstractDeleteEdge"
-        ) {
+        if (ann && ann.kind !== "DeleteVertex" && !isAbstractAnnotation(ann)) {
           const pt = ann.midpoint;
           const graph = app.getEffectiveAisleGraph(lot);
           if (graph) {

@@ -12,6 +12,7 @@ import {
   Annotation,
   computeBoundaryPin,
   evalBoundaryEdge,
+  isAbstractAnnotation,
 } from "./types";
 import { SnapGuide, SnapState, emptySnapState } from "./snap";
 import { findCollinearChain } from "./interaction";
@@ -420,12 +421,7 @@ export class App {
       // world-space anchor (they're integer grid handles), so they're
       // skipped here and rendered/resolved by the engine directly.
       lot.annotations.forEach((ann, i) => {
-        if (
-          ann.kind === "AbstractDeleteVertex" ||
-          ann.kind === "AbstractDeleteEdge"
-        ) {
-          return;
-        }
+        if (isAbstractAnnotation(ann)) return;
         const pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
         result.push({ ref: { type: "annotation", index: i, lotId: lid }, pos });
       });
@@ -1000,12 +996,7 @@ export class App {
 
   private syncEdgeSelectionFromAnnotation(ann: Annotation, lot?: ParkingLot): void {
     if (ann.kind === "DeleteVertex") return;
-    if (
-      ann.kind === "AbstractDeleteVertex" ||
-      ann.kind === "AbstractDeleteEdge"
-    ) {
-      return;
-    }
+    if (isAbstractAnnotation(ann)) return;
     const pt = ann.midpoint;
     const l = lot ?? this.activeLot();
     const graph = l.layout?.resolved_graph;

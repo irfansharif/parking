@@ -1,5 +1,5 @@
 import { AppState, Camera, VertexRef } from "./app";
-import { Vec2, EdgeCurve, ParkingLot, StallQuad, DriveAisleGraph, SpineLine, Face, AisleDirection } from "./types";
+import { Vec2, EdgeCurve, ParkingLot, StallQuad, DriveAisleGraph, SpineLine, Face, AisleDirection, isAbstractAnnotation } from "./types";
 import { SnapGuide } from "./snap";
 
 export class Renderer {
@@ -861,12 +861,7 @@ export class Renderer {
         // Abstract annotations don't have a persistent world-space
         // anchor point — they're integer grid handles. Nothing to
         // render here; they're visualized by the engine output.
-        if (
-          ann.kind === "AbstractDeleteVertex" ||
-          ann.kind === "AbstractDeleteEdge"
-        ) {
-          return;
-        }
+        if (isAbstractAnnotation(ann)) return;
         const pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
         const isDelete = ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
         const isTwoWayOri = ann.kind === "TwoWayOriented";

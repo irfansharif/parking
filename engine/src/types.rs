@@ -816,6 +816,28 @@ pub enum Annotation {
         xb: i32,
         yb: i32,
     },
+    /// Mark a grid-aligned edge as one-way, with travel direction from
+    /// (xa, ya) to (xb, yb). Same stability story as AbstractDeleteEdge —
+    /// the endpoint pair is an integer 4-tuple in the region's frame, so
+    /// the annotation re-resolves to the same grid edge under any
+    /// parameter change.
+    AbstractOneWay {
+        region: RegionId,
+        xa: i32,
+        ya: i32,
+        xb: i32,
+        yb: i32,
+    },
+    /// Mark a grid-aligned edge as two-way with oriented lanes. The
+    /// from→to ordering determines which side gets which lane direction,
+    /// identical to the (world-space) TwoWayOriented variant.
+    AbstractTwoWayOriented {
+        region: RegionId,
+        xa: i32,
+        ya: i32,
+        xb: i32,
+        yb: i32,
+    },
 }
 
 // ---------------------------------------------------------------------------

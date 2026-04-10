@@ -1,5 +1,5 @@
 import { App } from "./app";
-import { Vec2, computeBoundaryPin } from "./types";
+import { Annotation, Vec2, computeBoundaryPin } from "./types";
 
 export interface CommandAPI {
   execute(command: string, body?: string): string;
@@ -219,7 +219,9 @@ export function createCommandAPI(app: App): CommandAPI {
           const subtype = parts[1]; // "one-way", "delete-vertex", "delete-edge"
           const isAbstract =
             subtype === "abstract-delete-vertex" ||
-            subtype === "abstract-delete-edge";
+            subtype === "abstract-delete-edge" ||
+            subtype === "abstract-one-way" ||
+            subtype === "abstract-two-way-oriented";
           // Abstract variants carry their payload in the command line,
           // not in the body, so they don't need a body.
           if (!isAbstract && !body) return "error: annotation requires body";
@@ -262,11 +264,15 @@ export function createCommandAPI(app: App): CommandAPI {
             return `annotation delete-edge at ${points[0].x},${points[0].y}`;
           } else if (
             subtype === "abstract-delete-vertex" ||
-            subtype === "abstract-delete-edge"
+            subtype === "abstract-delete-edge" ||
+            subtype === "abstract-one-way" ||
+            subtype === "abstract-two-way-oriented"
           ) {
             // Usage:
-            //   annotation abstract-delete-vertex region=<id> x=<xi> y=<yi>
-            //   annotation abstract-delete-edge   region=<id> from=<xa>,<ya> to=<xb>,<yb>
+            //   annotation abstract-delete-vertex    region=<id> x=<xi> y=<yi>
+            //   annotation abstract-delete-edge      region=<id> from=<xa>,<ya> to=<xb>,<yb>
+            //   annotation abstract-one-way          region=<id> from=<xa>,<ya> to=<xb>,<yb>
+            //   annotation abstract-two-way-oriented region=<id> from=<xa>,<ya> to=<xb>,<yb>
             //
             // <id> is a RegionId, accepted as decimal u64 or "0x..." hex.
             let regionId: number | undefined;
@@ -315,17 +321,24 @@ export function createCommandAPI(app: App): CommandAPI {
                 xb === undefined ||
                 yb === undefined
               ) {
-                return "error: abstract-delete-edge requires from=<xa>,<ya> to=<xb>,<yb>";
+                return `error: ${subtype} requires from=<xa>,<ya> to=<xb>,<yb>`;
               }
+              const kind = (
+                subtype === "abstract-delete-edge"
+                  ? "AbstractDeleteEdge"
+                  : subtype === "abstract-one-way"
+                    ? "AbstractOneWay"
+                    : "AbstractTwoWayOriented"
+              ) as Annotation["kind"];
               lot.annotations.push({
-                kind: "AbstractDeleteEdge",
+                kind,
                 region: regionId,
                 xa,
                 ya,
                 xb,
                 yb,
               } as any);
-              return `annotation abstract-delete-edge region=0x${regionId.toString(16).padStart(16, "0")} from=${xa},${ya} to=${xb},${yb}`;
+              return `annotation ${subtype} region=0x${regionId.toString(16).padStart(16, "0")} from=${xa},${ya} to=${xb},${yb}`;
             }
           }
           return `error: unknown annotation type '${subtype}'`;

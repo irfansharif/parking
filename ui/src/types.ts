@@ -348,7 +348,33 @@ export type Annotation =
   | DeleteVertexAnnotation
   | DeleteEdgeAnnotation
   | AbstractDeleteVertexAnnotation
-  | AbstractDeleteEdgeAnnotation;
+  | AbstractDeleteEdgeAnnotation
+  | AbstractOneWayAnnotation
+  | AbstractTwoWayOrientedAnnotation;
+
+/**
+ * True if the annotation is keyed by abstract grid coordinates, not
+ * world coordinates. Abstract annotations have no world-space anchor —
+ * the UI can't drag them directly and their position is computed by
+ * the engine on each generate.
+ *
+ * Written as a type predicate so TypeScript narrows `ann` to a
+ * world-space variant in the `else` branch.
+ */
+export function isAbstractAnnotation(
+  ann: Annotation,
+): ann is
+  | AbstractDeleteVertexAnnotation
+  | AbstractDeleteEdgeAnnotation
+  | AbstractOneWayAnnotation
+  | AbstractTwoWayOrientedAnnotation {
+  return (
+    ann.kind === "AbstractDeleteVertex" ||
+    ann.kind === "AbstractDeleteEdge" ||
+    ann.kind === "AbstractOneWay" ||
+    ann.kind === "AbstractTwoWayOriented"
+  );
+}
 
 export interface OneWayAnnotation {
   kind: "OneWay";
@@ -404,6 +430,35 @@ export interface AbstractDeleteVertexAnnotation {
  */
 export interface AbstractDeleteEdgeAnnotation {
   kind: "AbstractDeleteEdge";
+  region: RegionId;
+  xa: number;
+  ya: number;
+  xb: number;
+  yb: number;
+  _active?: boolean;
+}
+
+/**
+ * Mark a grid-aligned edge as one-way, with travel direction from
+ * (xa, ya) to (xb, yb) in the region's abstract frame.
+ */
+export interface AbstractOneWayAnnotation {
+  kind: "AbstractOneWay";
+  region: RegionId;
+  xa: number;
+  ya: number;
+  xb: number;
+  yb: number;
+  _active?: boolean;
+}
+
+/**
+ * Mark a grid-aligned edge as two-way with oriented lanes; the
+ * (xa, ya) → (xb, yb) direction determines which side gets which
+ * lane direction.
+ */
+export interface AbstractTwoWayOrientedAnnotation {
+  kind: "AbstractTwoWayOriented";
   region: RegionId;
   xa: number;
   ya: number;

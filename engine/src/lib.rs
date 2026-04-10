@@ -175,6 +175,18 @@ fn format_fixture(input: &GenerateInput) -> String {
                     region.0, xa, ya, xb, yb, region.0, xa, ya, xb, yb,
                 ));
             }
+            Annotation::AbstractOneWay { region, xa, ya, xb, yb } => {
+                out.push_str(&format!(
+                    "\nannotation abstract-one-way region=0x{:016x} from={},{} to={},{}\n----\nannotation abstract-one-way region=0x{:016x} from={},{} to={},{}\n",
+                    region.0, xa, ya, xb, yb, region.0, xa, ya, xb, yb,
+                ));
+            }
+            Annotation::AbstractTwoWayOriented { region, xa, ya, xb, yb } => {
+                out.push_str(&format!(
+                    "\nannotation abstract-two-way-oriented region=0x{:016x} from={},{} to={},{}\n----\nannotation abstract-two-way-oriented region=0x{:016x} from={},{} to={},{}\n",
+                    region.0, xa, ya, xb, yb, region.0, xa, ya, xb, yb,
+                ));
+            }
         }
     }
 

@@ -548,6 +548,35 @@ fn build_abstract_vertex_lookup(
     lookup
 }
 
+/// Apply an AbstractOneWay / AbstractTwoWayOriented direction to every
+/// graph edge connecting the two abstract grid points. Flips
+/// `start`/`end` so the stored ordering points from `a` to `b`,
+/// matching the user's declared travel direction.
+fn apply_abstract_direction(
+    graph: &mut DriveAisleGraph,
+    abstract_lookup: &std::collections::HashMap<(RegionId, i32, i32), usize>,
+    region: RegionId,
+    a: (i32, i32),
+    b: (i32, i32),
+    direction: AisleDirection,
+) {
+    let Some(&via) = abstract_lookup.get(&(region, a.0, a.1)) else { return };
+    let Some(&vib) = abstract_lookup.get(&(region, b.0, b.1)) else { return };
+    for i in 0..graph.edges.len() {
+        let ei = &graph.edges[i];
+        let is_forward = ei.start == via && ei.end == vib;
+        let is_reverse = ei.start == vib && ei.end == via;
+        if !is_forward && !is_reverse {
+            continue;
+        }
+        graph.edges[i].direction = direction.clone();
+        if is_reverse {
+            graph.edges[i].start = via;
+            graph.edges[i].end = vib;
+        }
+    }
+}
+
 /// Apply spatial annotations to a resolved graph. Each annotation is matched
 /// to the edge that passes closest to the annotation point (point-to-segment
 /// distance), with a tight threshold so annotations only bind to edges that
@@ -568,6 +597,8 @@ fn apply_annotations(
             a,
             Annotation::AbstractDeleteVertex { .. }
                 | Annotation::AbstractDeleteEdge { .. }
+                | Annotation::AbstractOneWay { .. }
+                | Annotation::AbstractTwoWayOriented { .. }
         )
     });
     let abstract_lookup = if has_abstract {
@@ -706,7 +737,27 @@ fn apply_annotations(
                     }
                 }
             }
-            _ => {} // DeleteVertex/DeleteEdge handled in second pass
+            Annotation::AbstractOneWay { region, xa, ya, xb, yb } => {
+                apply_abstract_direction(
+                    graph,
+                    &abstract_lookup,
+                    *region,
+                    (*xa, *ya),
+                    (*xb, *yb),
+                    AisleDirection::OneWay,
+                );
+            }
+            Annotation::AbstractTwoWayOriented { region, xa, ya, xb, yb } => {
+                apply_abstract_direction(
+                    graph,
+                    &abstract_lookup,
+                    *region,
+                    (*xa, *ya),
+                    (*xb, *yb),
+                    AisleDirection::TwoWayOriented,
+                );
+            }
+            _ => {} // DeleteVertex/DeleteEdge/AbstractDelete* handled in second pass
         }
     }
 
