@@ -13,13 +13,13 @@ polygon hole
 ----
 polygon hole: 3 vertices
 
-set cross_aisle_spacing=179
+set stalls_per_face=179
 ----
-set cross_aisle_spacing=179
+set stalls_per_face=179
 
 generate
 ----
-total_stalls: 883
+total_stalls: 1464
 
 screenshot
 ----

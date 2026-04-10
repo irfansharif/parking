@@ -266,8 +266,13 @@ pub struct ParkingParams {
     pub aisle_angle_deg: f64,
     pub aisle_offset: f64,
     pub site_offset: f64,
-    #[serde(default, alias = "cross_aisle_spacing")]
-    pub cross_aisle_max_run: f64,
+    /// Number of stalls along the aisle direction in one face — i.e.,
+    /// between adjacent cross driving aisles. Drives the canvas-space
+    /// length of a face along the aisle: dy = stalls_per_face *
+    /// stall_pitch. Was `cross_aisle_max_run` (a float in stall-pitch
+    /// units); now an integer count.
+    #[serde(default, alias = "cross_aisle_max_run", alias = "cross_aisle_spacing")]
+    pub stalls_per_face: u32,
     #[serde(default)]
     pub use_regions: bool,
     #[serde(default)]
@@ -348,11 +353,7 @@ impl AbstractFrame {
         let x_dir = Vec2::new(-rad.sin(), rad.cos());
 
         let dx = 2.0 * params.effective_depth() + 2.0 * params.aisle_width;
-        // stalls_per_face comes from the current cross_aisle_max_run
-        // parameter until P3 renames it. Rounded to an integer stall
-        // count because the abstract grid indexes cross aisles at
-        // integer positions.
-        let stalls_per_face = params.cross_aisle_max_run.round().max(1.0) as u32;
+        let stalls_per_face = params.stalls_per_face.max(1);
         let dy = (stalls_per_face as f64) * params.stall_pitch();
 
         Self {
@@ -538,7 +539,7 @@ impl Default for ParkingParams {
             aisle_angle_deg: 90.0,
             aisle_offset: 0.0,
             site_offset: 0.0,
-            cross_aisle_max_run: 15.0,
+            stalls_per_face: 15,
             use_regions: false,
             island_stall_interval: 8,
         }

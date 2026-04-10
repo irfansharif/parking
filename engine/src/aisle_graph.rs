@@ -367,7 +367,7 @@ fn generate_region_aisles(
     // Cross-aisles (perpendicular to main aisles).
     let mut cross_pairs: Vec<(usize, usize)> = Vec::new();
     let stall_pitch = params.stall_width / params.stall_angle_deg.to_radians().sin();
-    let col_spacing = params.cross_aisle_max_run * stall_pitch;
+    let col_spacing = (params.stalls_per_face as f64) * stall_pitch;
     if col_spacing >= row_spacing {
         // Project perimeter onto aisle_dir to find extent.
         let min_along = outer_loop

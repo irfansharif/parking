@@ -96,8 +96,8 @@ fn format_fixture(input: &GenerateInput) -> String {
     if (p.site_offset - defaults.site_offset).abs() > 1e-6 {
         param_lines.push(format!("set site_offset={}", fmt_coord(p.site_offset)));
     }
-    if (p.cross_aisle_max_run - defaults.cross_aisle_max_run).abs() > 1e-6 {
-        param_lines.push(format!("set cross_aisle_max_run={}", fmt_coord(p.cross_aisle_max_run)));
+    if p.stalls_per_face != defaults.stalls_per_face {
+        param_lines.push(format!("set stalls_per_face={}", p.stalls_per_face));
     }
     if p.use_regions != defaults.use_regions {
         param_lines.push(format!("set use_regions={}", p.use_regions));

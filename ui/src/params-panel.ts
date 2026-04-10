@@ -58,8 +58,8 @@ const PARAM_DEFS: ParamDef[] = [
     type: "range",
   },
   {
-    key: "cross_aisle_max_run",
-    label: "Cross Aisle Spacing",
+    key: "stalls_per_face",
+    label: "Stalls Per Face",
     min: 3,
     max: 50,
     step: 1,

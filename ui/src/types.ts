@@ -97,7 +97,12 @@ export interface ParkingParams {
   aisle_angle_deg: number;
   aisle_offset: number;
   site_offset: number;
-  cross_aisle_max_run: number;
+  /**
+   * Number of stalls along the aisle direction in one face (between
+   * adjacent cross driving aisles). Integer. Replaces the old
+   * `cross_aisle_max_run` float.
+   */
+  stalls_per_face: number;
   use_regions?: boolean;
   island_stall_interval?: number;
 }
@@ -161,7 +166,7 @@ function computeFrameForAngle(
   const y_dir: Vec2 = { x: Math.cos(rad), y: Math.sin(rad) };
   const x_dir: Vec2 = { x: -Math.sin(rad), y: Math.cos(rad) };
   const dx = 2 * effectiveDepth(params) + 2 * params.aisle_width;
-  const stalls_per_face = Math.max(1, Math.round(params.cross_aisle_max_run));
+  const stalls_per_face = Math.max(1, Math.round(params.stalls_per_face));
   const dy = stalls_per_face * stallPitch(params);
   return {
     origin_world: { x: 0, y: 0 },

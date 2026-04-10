@@ -207,7 +207,7 @@ export class App {
         aisle_angle_deg: 90,
         aisle_offset: 0,
         site_offset: 0,
-        cross_aisle_max_run: 15,
+        stalls_per_face: 15,
         use_regions: true,
         island_stall_interval: 8,
       },
