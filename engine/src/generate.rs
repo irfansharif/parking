@@ -507,7 +507,7 @@ fn resolve_regions_for_frames(
     region_list
         .into_iter()
         .map(|r| {
-            let frame = AbstractFrame::region(&input.params, r.aisle_angle_deg);
+            let frame = AbstractFrame::region(&input.params, r.aisle_angle_deg, r.aisle_offset);
             ResolvedRegion {
                 id: r.id,
                 clip_poly: r.clip_poly,

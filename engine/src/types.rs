@@ -346,16 +346,17 @@ impl AbstractFrame {
     /// Compute the root frame for a lot — used for the lot-wide base
     /// orientation (no region override applied).
     pub fn root(params: &ParkingParams) -> Self {
-        Self::from_params(params, params.aisle_angle_deg)
+        Self::from_params(params, params.aisle_angle_deg, params.aisle_offset)
     }
 
-    /// Compute a frame for a region with an effective aisle angle that
-    /// may differ from the lot-wide base (e.g., via a `RegionOverride`).
-    pub fn region(params: &ParkingParams, aisle_angle_deg: f64) -> Self {
-        Self::from_params(params, aisle_angle_deg)
+    /// Compute a frame for a region with an effective aisle angle and
+    /// offset that may differ from the lot-wide base (e.g., via a
+    /// `RegionOverride`).
+    pub fn region(params: &ParkingParams, aisle_angle_deg: f64, aisle_offset: f64) -> Self {
+        Self::from_params(params, aisle_angle_deg, aisle_offset)
     }
 
-    fn from_params(params: &ParkingParams, aisle_angle_deg: f64) -> Self {
+    fn from_params(params: &ParkingParams, aisle_angle_deg: f64, aisle_offset: f64) -> Self {
         // `aisle_angle_deg` is the world-space direction the parallel
         // driving aisles run in. `y_dir` is a unit vector along that
         // direction; `x_dir` is perpendicular (rotated +90°).
@@ -367,8 +368,16 @@ impl AbstractFrame {
         let stalls_per_face = params.stalls_per_face.max(1);
         let dy = (stalls_per_face as f64) * params.stall_pitch();
 
+        // Shift the canvas-anchored origin along the perpendicular
+        // axis by aisle_offset. When the user drags the aisle vector
+        // in the UI, aisle_offset changes and the grid slides
+        // accordingly — abstract annotations keyed by integer
+        // (xi, yi) follow the shift because their world position is
+        // computed as `origin_world + xi * dx * x_dir + yi * dy * y_dir`.
+        let origin_world = x_dir * aisle_offset;
+
         Self {
-            origin_world: Vec2::new(0.0, 0.0),
+            origin_world,
             x_dir,
             y_dir,
             dx,
@@ -520,11 +529,32 @@ mod frame_tests {
     fn region_override_rotates_frame() {
         let params = ParkingParams::default(); // aisle_angle_deg = 90
         let base = AbstractFrame::root(&params);
-        let rotated = AbstractFrame::region(&params, 45.0);
+        let rotated = AbstractFrame::region(&params, 45.0, params.aisle_offset);
         // Same scales, different axes.
         assert!((base.dx - rotated.dx).abs() < 1e-9);
         assert!((base.dy - rotated.dy).abs() < 1e-9);
         assert!((base.y_dir.dot(rotated.y_dir) - (45.0_f64).to_radians().cos()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn aisle_offset_shifts_origin() {
+        // Dragging the aisle vector to set aisle_offset should shift
+        // the grid origin along the perpendicular direction. An
+        // annotation keyed by (xi=0, yi=0) should follow the shift.
+        let mut params = ParkingParams::default();
+        params.aisle_offset = 25.0;
+        let frame = AbstractFrame::root(&params);
+        let origin = frame.forward(p(0.0, 0.0));
+        // origin_world = x_dir * aisle_offset. At aisle_angle_deg=90,
+        // x_dir = (-sin(90), cos(90)) = (-1, 0), so origin = (-25, 0).
+        assert!((origin.x - (-25.0)).abs() < 1e-9);
+        assert!((origin.y - 0.0).abs() < 1e-9);
+
+        // Roundtrip still holds under the shifted origin.
+        let pt = p(3.0, 5.0);
+        let back = frame.inverse(frame.forward(pt));
+        assert!((back.x - pt.x).abs() < 1e-9);
+        assert!((back.y - pt.y).abs() < 1e-9);
     }
 
     #[test]

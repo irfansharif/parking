@@ -273,8 +273,10 @@ fn generate_region_aisles(
     // Align the aisle grid. In the legacy path this uses aisle_offset to
     // place one line at the drag anchor's perpendicular projection; the
     // abstract-stamp path instead locks parallel driving aisles to
-    // integer positions of the canonical abstract frame (origin at
-    // world (0,0), period row_spacing).
+    // integer positions of the canonical abstract frame. The frame's
+    // origin is shifted along the perpendicular axis by aisle_offset,
+    // so dragging the aisle vector slides the entire grid (and
+    // annotations keyed by integer (xi, yi) follow the shift).
     //
     // Under the abstract stamp, we also apply a sliver suppression rule
     // inline: an aisle whose face would be narrower than half a
@@ -285,10 +287,13 @@ fn generate_region_aisles(
     // suppression pass over a tagged graph; the effect is the same.
     let (first, grid_end) = if use_abstract_stamp {
         let sliver_threshold = row_spacing / 2.0;
-        let k_min = ((min_proj + sliver_threshold) / row_spacing).ceil() as i64;
+        let k_min = ((min_proj + sliver_threshold - aisle_offset) / row_spacing).ceil() as i64;
         let k_max =
-            ((max_proj - sliver_threshold) / row_spacing).floor() as i64;
-        (k_min as f64 * row_spacing, k_max as f64 * row_spacing)
+            ((max_proj - sliver_threshold - aisle_offset) / row_spacing).floor() as i64;
+        (
+            aisle_offset + k_min as f64 * row_spacing,
+            aisle_offset + k_max as f64 * row_spacing,
+        )
     } else {
         let grid_start = min_proj + row_spacing;
         let grid_end_legacy = max_proj - row_spacing;

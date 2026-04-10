@@ -152,23 +152,26 @@ function effectiveDepth(p: ParkingParams): number {
 
 /** Compute the root (lot-wide) abstract frame from params. */
 export function computeRootFrame(params: ParkingParams): AbstractFrame {
-  return computeFrameForAngle(params, params.aisle_angle_deg);
+  return computeFrameForAngle(params, params.aisle_angle_deg, params.aisle_offset);
 }
 
 /**
- * Compute a region frame with a possibly-overridden aisle angle. Used
- * for regions whose `aisle_angle_deg` differs from the lot-wide base.
+ * Compute a region frame with a possibly-overridden aisle angle and
+ * offset. Used for regions whose aisle angle or offset differs from
+ * the lot-wide base.
  */
 export function computeRegionFrame(
   params: ParkingParams,
   aisleAngleDeg: number,
+  aisleOffset: number = params.aisle_offset,
 ): AbstractFrame {
-  return computeFrameForAngle(params, aisleAngleDeg);
+  return computeFrameForAngle(params, aisleAngleDeg, aisleOffset);
 }
 
 function computeFrameForAngle(
   params: ParkingParams,
   aisleAngleDeg: number,
+  aisleOffset: number,
 ): AbstractFrame {
   const rad = (aisleAngleDeg * Math.PI) / 180;
   const y_dir: Vec2 = { x: Math.cos(rad), y: Math.sin(rad) };
@@ -176,8 +179,15 @@ function computeFrameForAngle(
   const dx = 2 * effectiveDepth(params) + 2 * params.aisle_width;
   const stalls_per_face = Math.max(1, Math.round(params.stalls_per_face));
   const dy = stalls_per_face * stallPitch(params);
+  // Shift canvas-anchored origin along the perpendicular axis by
+  // aisle_offset. Dragging the aisle vector in the UI slides the
+  // entire grid (and abstract annotations with it).
+  const origin_world: Vec2 = {
+    x: x_dir.x * aisleOffset,
+    y: x_dir.y * aisleOffset,
+  };
   return {
-    origin_world: { x: 0, y: 0 },
+    origin_world,
     x_dir,
     y_dir,
     dx,
@@ -220,13 +230,17 @@ export function pointInPolygon(p: Vec2, poly: Vec2[]): boolean {
 export function worldToAbstractVertex(
   world: Vec2,
   params: ParkingParams,
-  regionDebug: { regions: { id: RegionId; clip_poly: Vec2[]; aisle_angle_deg: number }[] } | undefined,
+  regionDebug: RegionDebug | undefined,
   snapTolWorld: number = 0.5,
 ): { region: RegionId; xi: number; yi: number } | null {
   if (!regionDebug) return null;
   for (const region of regionDebug.regions) {
     if (!pointInPolygon(world, region.clip_poly)) continue;
-    const frame = computeRegionFrame(params, region.aisle_angle_deg);
+    const frame = computeRegionFrame(
+      params,
+      region.aisle_angle_deg,
+      region.aisle_offset,
+    );
     const abs = frameInverse(frame, world);
     const xi = Math.round(abs.x);
     const yi = Math.round(abs.y);
