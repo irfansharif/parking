@@ -167,6 +167,18 @@ export function createCommandAPI(app: App): CommandAPI {
           return JSON.stringify(app.activeLot().layout);
         }
 
+        case "dormant": {
+          // Report the dormant annotation indices from the most recent
+          // generate. Each entry is an index into lot.annotations.
+          const layout = app.activeLot().layout;
+          if (!layout) return "error: no layout";
+          const dormant = (layout as any).dormant_annotations ?? [];
+          if (dormant.length === 0) {
+            return "dormant_annotations: 0";
+          }
+          return `dormant_annotations: ${dormant.length} (${dormant.join(",")})`;
+        }
+
         case "screenshot": {
           return "screenshot captured";
         }

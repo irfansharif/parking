@@ -46,6 +46,14 @@ export interface ParkingLayout {
   derived_outer?: Vec2[];
   derived_holes?: Vec2[][];
   region_debug?: RegionDebug;
+  /**
+   * Indices into the input's annotation list for annotations that
+   * didn't resolve to any graph feature this generate. For abstract
+   * annotations: the (region, xi, yi) lookup missed. For legacy
+   * proximity annotations: currently always empty (legacy silently
+   * no-ops on a miss).
+   */
+  dormant_annotations?: number[];
 }
 
 export interface RegionDebug {
