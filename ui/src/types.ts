@@ -178,6 +178,58 @@ function computeFrameForAngle(
   };
 }
 
+/**
+ * Point-in-polygon test. Even-odd rule. Used by the abstract-handle
+ * converter below to figure out which region a world point sits in.
+ */
+export function pointInPolygon(p: Vec2, poly: Vec2[]): boolean {
+  let inside = false;
+  const n = poly.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if (
+      a.y > p.y !== b.y > p.y &&
+      p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y + 1e-12) + a.x
+    ) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/**
+ * Try to convert a world position into a `(region, xi, yi)` triple
+ * that names a grid intersection in a region's abstract frame. Used by
+ * the UI when placing annotations under the abstract-stamp path — a
+ * click on a grid vertex becomes an abstract annotation that survives
+ * future parameter changes.
+ *
+ * Returns null if no region contains the point, or if the nearest
+ * abstract (xi, yi) is farther than `snap_tol_world` from the point
+ * (i.e., the click didn't land on the grid).
+ */
+export function worldToAbstractVertex(
+  world: Vec2,
+  params: ParkingParams,
+  regionDebug: { regions: { id: RegionId; clip_poly: Vec2[]; aisle_angle_deg: number }[] } | undefined,
+  snapTolWorld: number = 0.5,
+): { region: RegionId; xi: number; yi: number } | null {
+  if (!regionDebug) return null;
+  for (const region of regionDebug.regions) {
+    if (!pointInPolygon(world, region.clip_poly)) continue;
+    const frame = computeRegionFrame(params, region.aisle_angle_deg);
+    const abs = frameInverse(frame, world);
+    const xi = Math.round(abs.x);
+    const yi = Math.round(abs.y);
+    const dx = Math.abs(abs.x - xi) * frame.dx;
+    const dy = Math.abs(abs.y - yi) * frame.dy;
+    if (dx > snapTolWorld || dy > snapTolWorld) continue;
+    return { region: region.id, xi, yi };
+  }
+  return null;
+}
+
 /** Forward transform: abstract → world. */
 export function frameForward(frame: AbstractFrame, p: AbstractPoint2): Vec2 {
   return {

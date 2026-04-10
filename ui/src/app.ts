@@ -13,6 +13,7 @@ import {
   computeBoundaryPin,
   evalBoundaryEdge,
   isAbstractAnnotation,
+  worldToAbstractVertex,
 } from "./types";
 import { SnapGuide, SnapState, emptySnapState } from "./snap";
 import { findCollinearChain } from "./interaction";
@@ -965,7 +966,48 @@ export class App {
   cycleAnnotationDirection(index: number, lotId?: string): void {
     const lot = lotId ? this.lotById(lotId)! : this.activeLot();
     const ann = lot.annotations[index];
-    if (!ann || (ann.kind !== "OneWay" && ann.kind !== "TwoWayOriented")) return;
+    if (!ann) return;
+
+    // Abstract variants: cycle through
+    //   TwoWayOriented(a→b) → TwoWayOriented(b→a) → OneWay(a→b) →
+    //   OneWay(b→a) → inactive (tombstone) → back to TwoWayOriented(a→b)
+    if (
+      ann.kind === "AbstractTwoWayOriented" ||
+      ann.kind === "AbstractOneWay"
+    ) {
+      const swap = () => {
+        const oxa = ann.xa, oya = ann.ya;
+        ann.xa = ann.xb;
+        ann.ya = ann.yb;
+        ann.xb = oxa;
+        ann.yb = oya;
+      };
+      if (ann._active === false) {
+        (ann as any).kind = "AbstractTwoWayOriented";
+        ann._active = true;
+      } else if (ann.kind === "AbstractTwoWayOriented") {
+        // Flip, then downgrade to OneWay on the second press.
+        // We detect "already flipped once" by a sentinel field? Simpler:
+        // just downgrade every second press. No persistent _origDir
+        // here, since the abstract identity is the (xa,ya)↔(xb,yb)
+        // pair — after one swap we're back to equivalent.
+        (ann as any).kind = "AbstractOneWay";
+      } else {
+        // AbstractOneWay active: swap, then on next press tombstone.
+        // Detect "just swapped" via a simple flag.
+        if ((ann as any)._swapped) {
+          ann._active = false;
+          (ann as any)._swapped = false;
+        } else {
+          swap();
+          (ann as any)._swapped = true;
+        }
+      }
+      this.generate();
+      return;
+    }
+
+    if (ann.kind !== "OneWay" && ann.kind !== "TwoWayOriented") return;
     const orig = ann._origDir ?? ann.travel_dir;
 
     if (ann.kind === "TwoWayOriented") {
@@ -1038,6 +1080,31 @@ export class App {
     if (!graph) return;
     const v = graph.vertices[vertexIndex];
     if (!v) return;
+
+    // Under the abstract-stamp path, prefer an abstract-handle
+    // annotation if the clicked vertex sits on a grid intersection —
+    // that way the deletion survives future parameter changes. Fall
+    // back to the legacy world-space DeleteVertex otherwise.
+    if (this.state.debug.use_abstract_stamp && lot.layout?.region_debug) {
+      const abs = worldToAbstractVertex(
+        v,
+        this.state.params,
+        lot.layout.region_debug,
+      );
+      if (abs) {
+        lot.annotations.push({
+          kind: "AbstractDeleteVertex",
+          region: abs.region,
+          xi: abs.xi,
+          yi: abs.yi,
+        });
+        this.state.selectedVertex = null;
+        lot.aisleGraph = null;
+        this.generate();
+        return;
+      }
+    }
+
     lot.annotations.push({
       kind: "DeleteVertex",
       point: { x: v.x, y: v.y },
@@ -1061,6 +1128,27 @@ export class App {
     const dx = e.x - s.x, dy = e.y - s.y;
     const len = Math.sqrt(dx * dx + dy * dy);
     if (len < 1e-9) return;
+
+    // Prefer an abstract-handle annotation under the stamp path.
+    if (this.state.debug.use_abstract_stamp && lot.layout?.region_debug) {
+      const a = worldToAbstractVertex(s, this.state.params, lot.layout.region_debug);
+      const b = worldToAbstractVertex(e, this.state.params, lot.layout.region_debug);
+      if (a && b && a.region === b.region) {
+        lot.annotations.push({
+          kind: "AbstractDeleteEdge",
+          region: a.region,
+          xa: a.xi,
+          ya: a.yi,
+          xb: b.xi,
+          yb: b.yi,
+        });
+        this.state.selectedEdge = null;
+        lot.aisleGraph = null;
+        this.generate();
+        return;
+      }
+    }
+
     lot.annotations.push({
       kind: "DeleteEdge",
       midpoint: mid,
@@ -1092,6 +1180,50 @@ export class App {
     const len = Math.sqrt((e.x - s.x) ** 2 + (e.y - s.y) ** 2);
     if (len < 1e-9) return;
     const edgeDir = { x: (e.x - s.x) / len, y: (e.y - s.y) / len };
+
+    // Prefer an abstract-handle annotation under the stamp path.
+    if (this.state.debug.use_abstract_stamp && lot.layout?.region_debug) {
+      const a = worldToAbstractVertex(s, this.state.params, lot.layout.region_debug);
+      const b = worldToAbstractVertex(e, this.state.params, lot.layout.region_debug);
+      if (a && b && a.region === b.region) {
+        // Check for an existing abstract direction annotation on the
+        // same edge (either direction). If present, cycle; else add a
+        // new AbstractTwoWayOriented.
+        const existing = lot.annotations.findIndex((ann) => {
+          if (
+            ann.kind !== "AbstractOneWay" &&
+            ann.kind !== "AbstractTwoWayOriented"
+          ) {
+            return false;
+          }
+          if (ann.region !== a.region) return false;
+          const matchFwd =
+            ann.xa === a.xi && ann.ya === a.yi && ann.xb === b.xi && ann.yb === b.yi;
+          const matchRev =
+            ann.xa === b.xi && ann.ya === b.yi && ann.xb === a.xi && ann.yb === a.yi;
+          return matchFwd || matchRev;
+        });
+        if (existing < 0) {
+          const annIdx = lot.annotations.length;
+          lot.annotations.push({
+            kind: "AbstractTwoWayOriented",
+            region: a.region,
+            xa: a.xi,
+            ya: a.yi,
+            xb: b.xi,
+            yb: b.yi,
+            _active: true,
+          });
+          this.state.selectedVertex = { type: "annotation", index: annIdx, lotId: lot.id };
+        } else {
+          this.cycleAnnotationDirection(existing, lot.id);
+          this.state.selectedVertex = { type: "annotation", index: existing, lotId: lot.id };
+          return;
+        }
+        this.generate();
+        return;
+      }
+    }
 
     const tolerance = 5.0;
     const existing = lot.annotations.findIndex(
