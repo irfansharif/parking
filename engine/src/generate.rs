@@ -46,13 +46,6 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         ),
     };
 
-    // Then append drive line edges on top — they're additive and should not
-    // cause auto edges to be filtered out.
-    let drive_graph = clip_drive_lines(&input.drive_lines, &input.boundary, &input.params, &graph);
-    if !drive_graph.vertices.is_empty() {
-        graph = append_graph(graph, drive_graph);
-    }
-
     // Build the per-region frame list once, for both abstract annotation
     // lookup and the debug info returned to the UI below. Decomposition is
     // cheap enough to compute here again (auto_generate also runs it
@@ -60,10 +53,23 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     let resolved_regions: Vec<ResolvedRegion> =
         resolve_regions_for_frames(&input, &separator_lines);
 
-    // Apply spatial annotations to the resolved graph. Abstract annotations
-    // resolve by integer grid lookup into the region frames; the legacy
-    // variants fall through to proximity matching.
+    // Apply spatial annotations to the resolved graph BEFORE splicing
+    // in drive lines. Abstract annotations resolve by integer grid
+    // lookup into the region frames; the legacy variants fall through
+    // to proximity matching. Running annotations first means the
+    // drive-line splice pass sees the post-annotation graph and can
+    // extend edges whose neighbours were just deleted.
     apply_annotations(&mut graph, &input.annotations, &resolved_regions);
+
+    // Then append drive line edges on top — they're additive and
+    // should not cause auto edges to be filtered out. Drive-line
+    // vertices are placed at arbitrary world coordinates (not on the
+    // integer grid), so they're naturally invisible to abstract
+    // annotation lookups that only match integer grid points.
+    let drive_graph = clip_drive_lines(&input.drive_lines, &input.boundary, &input.params, &graph);
+    if !drive_graph.vertices.is_empty() {
+        graph = append_graph(graph, drive_graph);
+    }
 
     let inset_d = compute_inset_d(&input.params);
     let derived_outer = derive_raw_outer(&input.boundary.outer, inset_d, input.params.site_offset);
