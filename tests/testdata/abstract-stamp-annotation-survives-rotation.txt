@@ -1,0 +1,52 @@
+# Regression test: annotation follows aisle_angle_deg rotation.
+#
+# The canvas-anchored AbstractFrame rotates when aisle_angle_deg
+# changes. A grid vertex at (xi, yi) in the frame moves in an arc as
+# the angle sweeps — but its abstract index is unchanged, so an
+# annotation keyed by index keeps pointing at the "same" grid
+# intersection in the rotated layout.
+
+polygon outer
+0,0
+400,0
+400,400
+0,400
+----
+polygon outer: 4 vertices
+
+set stalls_per_face=4
+----
+set stalls_per_face=4
+
+debug use_abstract_stamp=true
+----
+debug use_abstract_stamp=true
+
+# Baseline.
+generate
+----
+total_stalls: 184
+
+# Delete an interior grid vertex.
+annotation abstract-delete-vertex region=0x1000000000000 x=-3 y=3
+----
+annotation abstract-delete-vertex region=0x0001000000000000 x=-3 y=3
+
+generate
+----
+total_stalls: 192
+
+# Rotate the aisle angle. Every aisle rotates around origin (0,0),
+# including the targeted vertex. The annotation still resolves
+# because (region, -3, 3) names the same grid cell in the rotated
+# frame.
+set aisle_angle_deg=75
+----
+set aisle_angle_deg=75
+
+generate
+----
+total_stalls: 192
+
+screenshot
+----
