@@ -238,7 +238,7 @@ export class App {
         conflict_removal: true,
         short_segment_filter: true,
         skeleton_debug: false,
-        use_abstract_stamp: false,
+        use_abstract_stamp: true,
       },
       selectedVertex: null,
       hoveredVertex: null,

@@ -774,7 +774,7 @@ impl Default for DebugToggles {
             short_segment_filter: false,
             edge_provenance: true,
             skeleton_debug: false,
-            use_abstract_stamp: false,
+            use_abstract_stamp: true,
         }
     }
 }
