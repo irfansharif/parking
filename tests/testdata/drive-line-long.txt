@@ -12,7 +12,7 @@ polygon outer: 4 vertices
 
 generate
 ----
-total_stalls: 228
+total_stalls: 218
 
 # Long drive line: endpoint PAST the vertical edge at x≈180.
 # The crossing at x≈180.3 is now interior to the control segment.

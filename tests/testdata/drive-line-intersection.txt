@@ -11,7 +11,7 @@ polygon outer: 4 vertices
 
 generate
 ----
-total_stalls: 228
+total_stalls: 218
 
 # Dump the auto graph to identify the vertical edge we'll cross.
 # At 90° default angle, interior aisles run vertically.
