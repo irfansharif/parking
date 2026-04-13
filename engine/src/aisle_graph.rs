@@ -274,16 +274,9 @@ fn generate_region_aisles(
     // perpendicular axis by aisle_offset, so dragging the aisle vector
     // slides the entire grid (and annotations keyed by integer
     // (xi, yi) follow the shift).
-    //
-    // Sliver suppression is applied inline: an aisle whose face would
-    // be narrower than half a row_spacing against the lot boundary is
-    // dropped. That matches the "suppress rows near the edges" mental
-    // model from the design discussion.
     let (first, grid_end) = {
-        let sliver_threshold = row_spacing / 2.0;
-        let k_min = ((min_proj + sliver_threshold - aisle_offset) / row_spacing).ceil() as i64;
-        let k_max =
-            ((max_proj - sliver_threshold - aisle_offset) / row_spacing).floor() as i64;
+        let k_min = ((min_proj - aisle_offset) / row_spacing).ceil() as i64;
+        let k_max = ((max_proj - aisle_offset) / row_spacing).floor() as i64;
         (
             aisle_offset + k_min as f64 * row_spacing,
             aisle_offset + k_max as f64 * row_spacing,
@@ -387,14 +380,8 @@ fn generate_region_aisles(
             .map(|v| v.dot(aisle_dir))
             .fold(f64::NEG_INFINITY, f64::max);
 
-        // Same sliver suppression rule as parallel aisles: drop a
-        // cross aisle whose face would be narrower than half a
-        // col_spacing against the lot boundary.
-        let sliver_threshold = col_spacing / 2.0;
-        let k_min =
-            ((min_along + sliver_threshold) / col_spacing).ceil() as i64;
-        let k_max =
-            ((max_along - sliver_threshold) / col_spacing).floor() as i64;
+        let k_min = (min_along / col_spacing).ceil() as i64;
+        let k_max = (max_along / col_spacing).floor() as i64;
         let (col_start, col_end) =
             (k_min as f64 * col_spacing, k_max as f64 * col_spacing);
 

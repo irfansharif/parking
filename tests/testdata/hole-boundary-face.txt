@@ -19,7 +19,7 @@ set stalls_per_face=179
 
 generate
 ----
-total_stalls: 1466
+total_stalls: 1465
 
 screenshot
 ----

@@ -27,7 +27,7 @@ debug use_abstract_stamp=true
 
 generate
 ----
-total_stalls: 230
+total_stalls: 206
 
 # Delete an interior grid vertex.
 annotation abstract-delete-vertex region=0x1000000000000 x=-4 y=3
@@ -51,7 +51,7 @@ annotation abstract-two-way-oriented region=0x0001000000000000 from=-2,2 to=-2,3
 
 generate
 ----
-total_stalls: 236
+total_stalls: 212
 
 # Stretch parameters. All four annotations should re-apply to the
 # new layout via the abstract-index lookup; none of them should

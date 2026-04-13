@@ -17,7 +17,7 @@ debug use_abstract_stamp=true
 
 generate
 ----
-total_stalls: 1285
+total_stalls: 1040
 
 screenshot
 ----

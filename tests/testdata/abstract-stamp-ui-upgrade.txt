@@ -42,7 +42,7 @@ annotation delete-vertex-at-index index=14
 
 generate
 ----
-total_stalls: 155
+total_stalls: 162
 
 # Stretch far enough that a world-space DeleteVertex with its
 # 5-unit proximity threshold would miss. Abstract handles are
@@ -53,7 +53,7 @@ set stall_depth=28
 
 generate
 ----
-total_stalls: 153
+total_stalls: 158
 
 screenshot
 ----
