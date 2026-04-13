@@ -214,13 +214,14 @@ export function createCommandAPI(app: App): CommandAPI {
             const vertexIndex = parseInt(pinMatch[2]);
             const bpin = computeBoundaryPin(points[1], lot.boundary.outer);
             lot.driveLines.push({
+              id: app.newDriveLineId(),
               start: points[0],
               end: bpin.pos,
               holePin: { holeIndex, vertexIndex },
               boundaryPin: { edgeIndex: bpin.edgeIndex, t: bpin.t },
             });
           } else {
-            lot.driveLines.push({ start: points[0], end: points[1] });
+            lot.driveLines.push({ id: app.newDriveLineId(), start: points[0], end: points[1] });
           }
           app.generate();
           const pinSuffix = pinMatch ? ` hole-pin=${pinMatch[1]},${pinMatch[2]}` : "";
@@ -243,32 +244,7 @@ export function createCommandAPI(app: App): CommandAPI {
           const points = body ? parsePoints(body) : [];
           const noChain = parts.includes("no-chain");
           const lot = app.activeLot();
-          if (subtype === "one-way") {
-            if (points.length < 2) return "error: one-way requires midpoint and travel_dir";
-            lot.annotations.push({
-              kind: "OneWay",
-              midpoint: points[0],
-              travel_dir: points[1],
-              chain: !noChain,
-            });
-            return `annotation one-way at ${points[0].x},${points[0].y}`;
-          } else if (subtype === "two-way-oriented") {
-            if (points.length < 2) return "error: two-way-oriented requires midpoint and travel_dir";
-            lot.annotations.push({
-              kind: "TwoWayOriented",
-              midpoint: points[0],
-              travel_dir: points[1],
-              chain: !noChain,
-            });
-            return `annotation two-way-oriented at ${points[0].x},${points[0].y}`;
-          } else if (subtype === "delete-vertex") {
-            if (points.length < 1) return "error: delete-vertex requires point";
-            lot.annotations.push({
-              kind: "DeleteVertex",
-              point: points[0],
-            });
-            return `annotation delete-vertex at ${points[0].x},${points[0].y}`;
-          } else if (subtype === "delete-vertex-at-index") {
+          if (subtype === "delete-vertex-at-index") {
             // Usage: annotation delete-vertex-at-index index=<i>
             // Routes through deleteAisleVertexByAnnotation so it
             // exercises the UI auto-upgrade path — under the
@@ -285,15 +261,6 @@ export function createCommandAPI(app: App): CommandAPI {
             }
             app.deleteAisleVertexByAnnotation(idx);
             return `annotation delete-vertex-at-index index=${idx}`;
-          } else if (subtype === "delete-edge") {
-            if (points.length < 2) return "error: delete-edge requires midpoint and edge_dir";
-            lot.annotations.push({
-              kind: "DeleteEdge",
-              midpoint: points[0],
-              edge_dir: points[1],
-              chain: !noChain,
-            });
-            return `annotation delete-edge at ${points[0].x},${points[0].y}`;
           } else if (
             subtype === "abstract-delete-vertex" ||
             subtype === "abstract-delete-edge" ||

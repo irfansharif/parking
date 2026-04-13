@@ -792,15 +792,7 @@ export class Renderer {
         const isSelected = state.selectedEdge?.chain.includes(ei) ?? false;
         const isSegmentSelected = isSelected && state.selectedEdge?.mode === "segment" && state.selectedEdge?.index === ei;
         const isChainSelected = isSelected && !isSegmentSelected;
-        // Find the annotation (if any) that applies to this edge.
-        const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
-        const matchedAnn = (activeLot?.annotations ?? []).find((a: any) => {
-          if (a.kind !== "OneWay" && a.kind !== "TwoWayOriented") return false;
-          if (a._active === false) return false;
-          const d = Math.sqrt((a.midpoint.x - mid.x) ** 2 + (a.midpoint.y - mid.y) ** 2);
-          return d < 5.0;
-        });
-        const direction = (matchedAnn?.kind ?? edge.direction ?? "TwoWay") as AisleDirection;
+        const direction = (edge.direction ?? "TwoWay") as AisleDirection;
         const isOneWay = direction === "OneWay";
         const isTwoWayOriented = direction === "TwoWayOriented";
         const isDirected = isOneWay || isTwoWayOriented;
@@ -823,33 +815,17 @@ export class Renderer {
         ctx.lineTo(end.x, end.y);
         ctx.stroke();
 
-        // Draw arrows on directed edges. Travel direction comes from
-        // the matched legacy annotation's travel_dir, or — for
-        // abstract annotations — from the abstract edge endpoints
-        // forward-transformed through the region frame. If neither
-        // matches (e.g., a chain-extended legacy annotation
-        // whose proximity-matched midpoint is on a different edge),
-        // skip arrows to preserve existing legacy screenshots.
+        // Draw arrows on directed edges. Travel direction is derived
+        // directly from the edge's stored start→end orientation
+        // (apply_annotations flips edges so this matches the user's
+        // declared travel direction).
         if (isDirected) {
-          let tnx: number;
-          let tny: number;
-          const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
-          if (matchedAnn && (matchedAnn.kind === "OneWay" || matchedAnn.kind === "TwoWayOriented")) {
-            const td = matchedAnn.travel_dir;
-            const tdLen = Math.sqrt(td.x * td.x + td.y * td.y);
-            if (tdLen < 1e-9) continue;
-            tnx = td.x / tdLen;
-            tny = td.y / tdLen;
-          } else {
-            const abstractMatch = findAbstractDirectionAnnotation(
-              activeLot ?? null,
-              state.params,
-              mid,
-            );
-            if (!abstractMatch) continue;
-            tnx = abstractMatch.tx;
-            tny = abstractMatch.ty;
-          }
+          const dxArrow = end.x - start.x;
+          const dyArrow = end.y - start.y;
+          const lenArrow = Math.sqrt(dxArrow * dxArrow + dyArrow * dyArrow);
+          if (lenArrow < 1e-9) continue;
+          const tnx = dxArrow / lenArrow;
+          const tny = dyArrow / lenArrow;
           // Edge vector for positioning along the edge
           const dx = end.x - start.x;
           const dy = end.y - start.y;
@@ -985,9 +961,22 @@ export class Renderer {
             ann.kind === "AbstractDeleteEdge";
           isTwoWayOri = ann.kind === "AbstractTwoWayOriented";
         } else {
-          pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
-          isDelete = ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
-          isTwoWayOri = ann.kind === "TwoWayOriented";
+          // Splice annotation: anchored to (drive_line_id, t).
+          // Position = midpoint of (ta, tb), or just `t` for the
+          // vertex variant. If the drive line is gone, skip.
+          const dl = lot.driveLines.find((d) => d.id === ann.drive_line_id);
+          if (!dl) return;
+          const t = ann.kind === "SpliceDeleteVertex"
+            ? ann.t
+            : (ann.ta + ann.tb) / 2;
+          pos = {
+            x: dl.start.x + (dl.end.x - dl.start.x) * t,
+            y: dl.start.y + (dl.end.y - dl.start.y) * t,
+          };
+          isDelete =
+            ann.kind === "SpliceDeleteVertex" ||
+            ann.kind === "SpliceDeleteEdge";
+          isTwoWayOri = ann.kind === "SpliceTwoWayOriented";
         }
         const activeColor = isDelete ? "rgba(255, 80, 80, 0.95)" : isTwoWayOri ? "rgba(100, 200, 255, 0.95)" : "rgba(255, 180, 50, 0.95)";
         const inactiveColor = isDelete ? "rgba(255, 80, 80, 0.3)" : isTwoWayOri ? "rgba(100, 200, 255, 0.3)" : "rgba(255, 180, 50, 0.3)";

@@ -5,7 +5,9 @@ pub mod bezier;
 pub mod segment;
 pub mod clip;
 pub mod skeleton;
+pub mod aisle_polygon;
 pub mod face;
+pub mod island;
 pub mod generate;
 
 use wasm_bindgen::prelude::*;
@@ -129,40 +131,6 @@ fn format_fixture(input: &GenerateInput) -> String {
     // Annotations.
     for ann in &input.annotations {
         match ann {
-            Annotation::OneWay { midpoint, travel_dir, chain } => {
-                out.push_str(&format!(
-                    "\nannotation one-way{}\n{},{}\n{},{}\n----\nannotation one-way at {},{}\n",
-                    if *chain { "" } else { " no-chain" },
-                    fmt_coord(midpoint.x), fmt_coord(midpoint.y),
-                    fmt_coord(travel_dir.x), fmt_coord(travel_dir.y),
-                    fmt_coord(midpoint.x), fmt_coord(midpoint.y),
-                ));
-            }
-            Annotation::TwoWayOriented { midpoint, travel_dir, chain } => {
-                out.push_str(&format!(
-                    "\nannotation two-way-oriented{}\n{},{}\n{},{}\n----\nannotation two-way-oriented at {},{}\n",
-                    if *chain { "" } else { " no-chain" },
-                    fmt_coord(midpoint.x), fmt_coord(midpoint.y),
-                    fmt_coord(travel_dir.x), fmt_coord(travel_dir.y),
-                    fmt_coord(midpoint.x), fmt_coord(midpoint.y),
-                ));
-            }
-            Annotation::DeleteVertex { point } => {
-                out.push_str(&format!(
-                    "\nannotation delete-vertex\n{},{}\n----\nannotation delete-vertex at {},{}\n",
-                    fmt_coord(point.x), fmt_coord(point.y),
-                    fmt_coord(point.x), fmt_coord(point.y),
-                ));
-            }
-            Annotation::DeleteEdge { midpoint, edge_dir, chain } => {
-                out.push_str(&format!(
-                    "\nannotation delete-edge{}\n{},{}\n{},{}\n----\nannotation delete-edge at {},{}\n",
-                    if *chain { "" } else { " no-chain" },
-                    fmt_coord(midpoint.x), fmt_coord(midpoint.y),
-                    fmt_coord(edge_dir.x), fmt_coord(edge_dir.y),
-                    fmt_coord(midpoint.x), fmt_coord(midpoint.y),
-                ));
-            }
             Annotation::AbstractDeleteVertex { region, xi, yi } => {
                 out.push_str(&format!(
                     "\nannotation abstract-delete-vertex region=0x{:016x} x={} y={}\n----\nannotation abstract-delete-vertex region=0x{:016x} x={} y={}\n",
@@ -185,6 +153,33 @@ fn format_fixture(input: &GenerateInput) -> String {
                 out.push_str(&format!(
                     "\nannotation abstract-two-way-oriented region=0x{:016x} from={},{} to={},{}\n----\nannotation abstract-two-way-oriented region=0x{:016x} from={},{} to={},{}\n",
                     region.0, xa, ya, xb, yb, region.0, xa, ya, xb, yb,
+                ));
+            }
+            Annotation::SpliceDeleteVertex { drive_line_id, t } => {
+                out.push_str(&format!(
+                    "\nannotation splice-delete-vertex line={} t={}\n----\nannotation splice-delete-vertex line={} t={}\n",
+                    drive_line_id, fmt_coord(*t), drive_line_id, fmt_coord(*t),
+                ));
+            }
+            Annotation::SpliceDeleteEdge { drive_line_id, ta, tb } => {
+                out.push_str(&format!(
+                    "\nannotation splice-delete-edge line={} from={} to={}\n----\nannotation splice-delete-edge line={} from={} to={}\n",
+                    drive_line_id, fmt_coord(*ta), fmt_coord(*tb),
+                    drive_line_id, fmt_coord(*ta), fmt_coord(*tb),
+                ));
+            }
+            Annotation::SpliceOneWay { drive_line_id, ta, tb } => {
+                out.push_str(&format!(
+                    "\nannotation splice-one-way line={} from={} to={}\n----\nannotation splice-one-way line={} from={} to={}\n",
+                    drive_line_id, fmt_coord(*ta), fmt_coord(*tb),
+                    drive_line_id, fmt_coord(*ta), fmt_coord(*tb),
+                ));
+            }
+            Annotation::SpliceTwoWayOriented { drive_line_id, ta, tb } => {
+                out.push_str(&format!(
+                    "\nannotation splice-two-way-oriented line={} from={} to={}\n----\nannotation splice-two-way-oriented line={} from={} to={}\n",
+                    drive_line_id, fmt_coord(*ta), fmt_coord(*tb),
+                    drive_line_id, fmt_coord(*ta), fmt_coord(*tb),
                 ));
             }
         }

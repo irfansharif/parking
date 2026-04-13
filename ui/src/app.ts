@@ -14,6 +14,7 @@ import {
   evalBoundaryEdge,
   isAbstractAnnotation,
   worldToAbstractVertex,
+  worldToSpliceVertex,
 } from "./types";
 import { SnapGuide, SnapState, emptySnapState } from "./snap";
 import { findCollinearChain } from "./interaction";
@@ -163,6 +164,12 @@ export class App {
   private generateFn: GenerateFn;
   private onUpdate: () => void;
   private nextLotId = 1;
+  private nextDriveLineId = 1;
+
+  /** Mint a fresh drive-line id. Splice annotations key off this. */
+  newDriveLineId(): number {
+    return this.nextDriveLineId++;
+  }
 
   constructor(generateFn: GenerateFn, onUpdate: () => void) {
     this.generateFn = generateFn;
@@ -194,9 +201,9 @@ export class App {
         90,
       ),
       driveLines: [
-        { start: { x: 824.53, y: 531.97 }, end: { x: 224.60, y: 654.85 } },
-        { start: { x: 611.14, y: 251.80 }, end: { x: 762.23, y: 244.23 }, holePin: { holeIndex: 0, vertexIndex: 1 } },
-        { start: { x: 394.53, y: 251.80 }, end: { x: 250.39, y: 0 }, holePin: { holeIndex: 0, vertexIndex: 0 } },
+        { id: 1, start: { x: 824.53, y: 531.97 }, end: { x: 224.60, y: 654.85 } },
+        { id: 2, start: { x: 611.14, y: 251.80 }, end: { x: 762.23, y: 244.23 }, holePin: { holeIndex: 0, vertexIndex: 1 } },
+        { id: 3, start: { x: 394.53, y: 251.80 }, end: { x: 250.39, y: 0 }, holePin: { holeIndex: 0, vertexIndex: 0 } },
       ],
       regionOverrides: {},
       layout: null,
@@ -223,7 +230,6 @@ export class App {
         spike_removal: true,
         contour_simplification: true,
         hole_filtering: false,
-        face_extraction: true,
         edge_provenance: true,
         face_simplification: false,
         edge_classification: true,
@@ -438,12 +444,23 @@ export class App {
           });
         }
       }
-      // Annotation anchors. Abstract annotations don't have a stable
-      // world-space anchor (they're integer grid handles), so they're
-      // skipped here and rendered/resolved by the engine directly.
+      // Annotation anchors. Abstract annotations are integer grid
+      // handles with no world-space anchor; the renderer resolves them
+      // via the engine. Splice annotations live on a drive line, so we
+      // compute their world position from (drive_line_id, t) here.
       lot.annotations.forEach((ann, i) => {
         if (isAbstractAnnotation(ann)) return;
-        const pos = ann.kind === "DeleteVertex" ? ann.point : ann.midpoint;
+        // Splice annotation: world pos = midpoint of (ta, tb) along the
+        // line, or just `t` for the vertex variant.
+        const dl = lot.driveLines.find((d) => d.id === ann.drive_line_id);
+        if (!dl) return;
+        const t = ann.kind === "SpliceDeleteVertex"
+          ? ann.t
+          : (ann.ta + ann.tb) / 2;
+        const pos = {
+          x: dl.start.x + (dl.end.x - dl.start.x) * t,
+          y: dl.start.y + (dl.end.y - dl.start.y) * t,
+        };
         result.push({ ref: { type: "annotation", index: i, lotId: lid }, pos });
       });
       // Drive-line vertices.
@@ -631,75 +648,10 @@ export class App {
       }
       lot.aisleGraph = null;
     } else if (ref.type === "annotation") {
-      const ann = lot.annotations[ref.index];
-      if (!ann) return;
-      const isDelete = ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
-      const graph = this.getEffectiveAisleGraph(lot);
-
-      if (isDelete && graph) {
-        let bestVtxDist = Infinity;
-        for (const v of graph.vertices) {
-          const d = Math.sqrt((v.x - pos.x) ** 2 + (v.y - pos.y) ** 2);
-          if (d < bestVtxDist) bestVtxDist = d;
-        }
-        let bestEdgeDist = Infinity;
-        let bestEdgeDir: Vec2 | null = null;
-        const seen = new Set<string>();
-        for (const edge of graph.edges) {
-          const key = Math.min(edge.start, edge.end) + "," + Math.max(edge.start, edge.end);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const s = graph.vertices[edge.start];
-          const e = graph.vertices[edge.end];
-          const d = pointToSegmentDist(pos, s, e);
-          if (d < bestEdgeDist) {
-            bestEdgeDist = d;
-            const dx = e.x - s.x, dy = e.y - s.y;
-            const len = Math.sqrt(dx * dx + dy * dy);
-            if (len > 1e-9) bestEdgeDir = { x: dx / len, y: dy / len };
-          }
-        }
-        if (bestVtxDist < 5 && bestVtxDist < bestEdgeDist) {
-          lot.annotations[ref.index] = {
-            kind: "DeleteVertex",
-            point: pos,
-            _active: ann._active,
-          };
-        } else if (bestEdgeDir) {
-          lot.annotations[ref.index] = {
-            kind: "DeleteEdge",
-            midpoint: pos,
-            edge_dir: bestEdgeDir,
-            chain: true,
-            _active: ann._active,
-          };
-        }
-      } else if (ann.kind === "OneWay" || ann.kind === "TwoWayOriented") {
-        ann.midpoint = pos;
-        if (graph) {
-          let bestDist = Infinity;
-          let bestDir: Vec2 | null = null;
-          const seen = new Set<string>();
-          for (const edge of graph.edges) {
-            const key = Math.min(edge.start, edge.end) + "," + Math.max(edge.start, edge.end);
-            if (seen.has(key)) continue;
-            seen.add(key);
-            const s = graph.vertices[edge.start];
-            const e = graph.vertices[edge.end];
-            const d = pointToSegmentDist(pos, s, e);
-            if (d < bestDist) {
-              bestDist = d;
-              const dx = e.x - s.x, dy = e.y - s.y;
-              const len = Math.sqrt(dx * dx + dy * dy);
-              if (len > 1e-9) bestDir = { x: dx / len, y: dy / len };
-            }
-          }
-          if (bestDir && bestDist < 10) {
-            ann.travel_dir = bestDir;
-            ann._origDir = bestDir;
-          }
-        }
-      }
+      // Annotations are anchored to stable identities (abstract grid
+      // coords or drive-line splice positions), not draggable in world
+      // space. Drag is a no-op.
+      return;
     } else if (ref.type === "drive-line" && ref.endpoint) {
       const dl = lot.driveLines[ref.index];
       if (dl.holePin && ref.endpoint === "start") {
@@ -914,7 +866,7 @@ export class App {
   }
 
   addDriveLine(start: Vec2, end: Vec2): void {
-    this.activeLot().driveLines.push({ start, end });
+    this.activeLot().driveLines.push({ id: this.newDriveLineId(), start, end });
     this.generate();
   }
 
@@ -938,6 +890,7 @@ export class App {
       const vertex = hole[vertexIndex];
       const proj = this.nearestBoundaryProjection(vertex, lot);
       lot.driveLines.push({
+        id: this.newDriveLineId(),
         start: vertex,
         end: proj.pos,
         holePin: { holeIndex, vertexIndex },
@@ -1011,61 +964,32 @@ export class App {
       return;
     }
 
-    if (ann.kind !== "OneWay" && ann.kind !== "TwoWayOriented") return;
-    const orig = ann._origDir ?? ann.travel_dir;
-
-    if (ann.kind === "TwoWayOriented") {
-      const dot = ann.travel_dir.x * orig.x + ann.travel_dir.y * orig.y;
-      if (dot > 0) {
-        ann.travel_dir = { x: -orig.x, y: -orig.y };
-      } else {
-        (ann as any).kind = "OneWay";
-        ann.travel_dir = { x: orig.x, y: orig.y };
-      }
-    } else {
+    // Splice variants: same cycle as abstract, swapping ta/tb.
+    if (ann.kind === "SpliceTwoWayOriented" || ann.kind === "SpliceOneWay") {
+      const swap = () => {
+        const ota = ann.ta;
+        ann.ta = ann.tb;
+        ann.tb = ota;
+      };
       if (ann._active === false) {
-        (ann as any).kind = "TwoWayOriented";
+        (ann as any).kind = "SpliceTwoWayOriented";
         ann._active = true;
-        ann.travel_dir = { x: orig.x, y: orig.y };
+      } else if (ann.kind === "SpliceTwoWayOriented") {
+        (ann as any).kind = "SpliceOneWay";
       } else {
-        const dot = ann.travel_dir.x * orig.x + ann.travel_dir.y * orig.y;
-        if (dot > 0) {
-          ann.travel_dir = { x: -orig.x, y: -orig.y };
-        } else {
+        if ((ann as any)._swapped) {
           ann._active = false;
+          (ann as any)._swapped = false;
+        } else {
+          swap();
+          (ann as any)._swapped = true;
         }
       }
+      this.generate();
+      return;
     }
-    this.generate();
-    this.syncEdgeSelectionFromAnnotation(ann, lot);
-  }
 
-  private syncEdgeSelectionFromAnnotation(ann: Annotation, lot?: ParkingLot): void {
-    if (ann.kind === "DeleteVertex") return;
-    if (isAbstractAnnotation(ann)) return;
-    const pt = ann.midpoint;
-    const l = lot ?? this.activeLot();
-    const graph = l.layout?.resolved_graph;
-    if (!graph) return;
-    const seen = new Set<string>();
-    let bestIdx = -1;
-    let bestDist = Infinity;
-    for (let i = 0; i < graph.edges.length; i++) {
-      const edge = graph.edges[i];
-      const key = Math.min(edge.start, edge.end) + "," + Math.max(edge.start, edge.end);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const s = graph.vertices[edge.start];
-      const e = graph.vertices[edge.end];
-      const dist = pointToSegmentDist(pt, s, e);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestIdx = i;
-      }
-    }
-    if (bestIdx >= 0 && bestDist < 5) {
-      this.state.selectedEdge = { index: bestIdx, chain: findCollinearChain(graph, bestIdx), mode: "chain" };
-    }
+    // Anything else (Abstract*Delete or unknown) — no cycle.
   }
 
   cleanupTombstones(): void {
@@ -1085,12 +1009,12 @@ export class App {
     const v = graph.vertices[vertexIndex];
     if (!v) return;
 
-    // Try to resolve the clicked vertex to an abstract grid
-    // intersection in its host region. If it lands on a grid point,
-    // store an AbstractDeleteVertex keyed by (region, xi, yi) so the
-    // deletion survives every parameter change. Off-grid clicks
-    // (e.g., drive-line splice vertices) fall back to the legacy
-    // world-space DeleteVertex.
+    // Try abstract grid first (regular grid intersections), then
+    // splice (drive-line crossings). Both addressing schemes survive
+    // parameter changes; the splice scheme survives drive-line edits
+    // too. If neither resolves (e.g., a boundary corner that's neither
+    // on the grid nor on a drive line), bail — those vertices have no
+    // stable identity yet.
     const abs = lot.layout?.region_debug
       ? worldToAbstractVertex(v, this.state.params, lot.layout.region_debug)
       : null;
@@ -1102,10 +1026,16 @@ export class App {
         yi: abs.yi,
       });
     } else {
-      lot.annotations.push({
-        kind: "DeleteVertex",
-        point: { x: v.x, y: v.y },
-      });
+      const sp = worldToSpliceVertex(v, lot.driveLines);
+      if (sp) {
+        lot.annotations.push({
+          kind: "SpliceDeleteVertex",
+          drive_line_id: sp.drive_line_id,
+          t: sp.t,
+        });
+      } else {
+        return; // no stable anchor for this vertex
+      }
     }
     this.state.selectedVertex = null;
     lot.aisleGraph = null;
@@ -1127,9 +1057,8 @@ export class App {
     const len = Math.sqrt(dx * dx + dy * dy);
     if (len < 1e-9) return;
 
-    // Try to resolve both endpoints to abstract grid points so the
-    // deletion survives parameter changes. If either endpoint is
-    // off-grid, fall back to the legacy world-space DeleteEdge.
+    // Try abstract grid first, then splice (both endpoints on the
+    // same drive line). Bail if neither addresses the edge.
     const a = lot.layout?.region_debug
       ? worldToAbstractVertex(s, this.state.params, lot.layout.region_debug)
       : null;
@@ -1146,12 +1075,18 @@ export class App {
         yb: b.yi,
       });
     } else {
-      lot.annotations.push({
-        kind: "DeleteEdge",
-        midpoint: mid,
-        edge_dir: { x: dx / len, y: dy / len },
-        chain: sel.mode === "chain",
-      });
+      const sa = worldToSpliceVertex(s, lot.driveLines);
+      const sb = worldToSpliceVertex(e, lot.driveLines);
+      if (sa && sb && sa.drive_line_id === sb.drive_line_id) {
+        lot.annotations.push({
+          kind: "SpliceDeleteEdge",
+          drive_line_id: sa.drive_line_id,
+          ta: sa.t,
+          tb: sb.t,
+        });
+      } else {
+        return;
+      }
     }
     this.state.selectedEdge = null;
     lot.aisleGraph = null;
@@ -1227,32 +1162,36 @@ export class App {
       return;
     }
 
-    const tolerance = 5.0;
-    const existing = lot.annotations.findIndex(
-      (a) => (a.kind === "OneWay" || a.kind === "TwoWayOriented") &&
-        Math.sqrt((a.midpoint.x - mid.x) ** 2 + (a.midpoint.y - mid.y) ** 2) < tolerance
-    );
-
-    const isChainMode = this.state.selectedEdge?.mode !== "segment";
-    let annIdx: number;
-    if (existing < 0) {
-      annIdx = lot.annotations.length;
-      lot.annotations.push({
-        kind: "TwoWayOriented",
-        midpoint: mid,
-        travel_dir: edgeDir,
-        chain: isChainMode,
-        _origDir: edgeDir,
-        _active: true,
-      });
-    } else {
-      annIdx = existing;
-      this.cycleAnnotationDirection(annIdx, lot.id);
-      this.state.selectedVertex = { type: "annotation", index: annIdx, lotId: lot.id };
+    // Splice path: both endpoints on the same drive line.
+    const sa = worldToSpliceVertex(s, lot.driveLines);
+    const sb = worldToSpliceVertex(e, lot.driveLines);
+    if (!(sa && sb && sa.drive_line_id === sb.drive_line_id)) {
+      // No stable anchor — skip silently.
       return;
     }
-    this.state.selectedVertex = { type: "annotation", index: annIdx, lotId: lot.id };
-    this.generate();
+    const sliceTol = 1e-3;
+    const existing = lot.annotations.findIndex((ann) => {
+      if (ann.kind !== "SpliceOneWay" && ann.kind !== "SpliceTwoWayOriented") return false;
+      if (ann.drive_line_id !== sa.drive_line_id) return false;
+      const fwd = Math.abs(ann.ta - sa.t) < sliceTol && Math.abs(ann.tb - sb.t) < sliceTol;
+      const rev = Math.abs(ann.ta - sb.t) < sliceTol && Math.abs(ann.tb - sa.t) < sliceTol;
+      return fwd || rev;
+    });
+    if (existing < 0) {
+      const annIdx = lot.annotations.length;
+      lot.annotations.push({
+        kind: "SpliceTwoWayOriented",
+        drive_line_id: sa.drive_line_id,
+        ta: sa.t,
+        tb: sb.t,
+        _active: true,
+      });
+      this.state.selectedVertex = { type: "annotation", index: annIdx, lotId: lot.id };
+      this.generate();
+    } else {
+      this.cycleAnnotationDirection(existing, lot.id);
+      this.state.selectedVertex = { type: "annotation", index: existing, lotId: lot.id };
+    }
   }
 }
 

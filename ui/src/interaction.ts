@@ -98,32 +98,9 @@ export function setupInteraction(
       app.state.selectedVertex = closest.ref;
       app.state.selectedEdge = null;
       app.state.isDragging = closest.ref.type !== "aisle";
-      if (closest.ref.type === "annotation") {
-        const lot = app.lotForRef(closest.ref);
-        const ann = lot.annotations[closest.ref.index];
-        if (ann && ann.kind !== "DeleteVertex" && !isAbstractAnnotation(ann)) {
-          const pt = ann.midpoint;
-          const graph = app.getEffectiveAisleGraph(lot);
-          if (graph) {
-            const seen = new Set<string>();
-            let bestIdx = -1;
-            let bestDist = Infinity;
-            for (let i = 0; i < graph.edges.length; i++) {
-              const e = graph.edges[i];
-              const key = Math.min(e.start, e.end) + "," + Math.max(e.start, e.end);
-              if (seen.has(key)) continue;
-              seen.add(key);
-              const s = graph.vertices[e.start];
-              const end = graph.vertices[e.end];
-              const dist = pointToSegmentDist(pt, s, end);
-              if (dist < bestDist) { bestDist = dist; bestIdx = i; }
-            }
-            if (bestIdx >= 0 && bestDist < 5) {
-              app.state.selectedEdge = { index: bestIdx, chain: findCollinearChain(graph, bestIdx), mode: "chain" };
-            }
-          }
-        }
-      }
+      // Annotations no longer carry world-space midpoints (they're
+      // anchored to abstract grid coords or drive-line splice
+      // positions); selecting one no longer infers a graph edge.
     } else {
       app.state.selectedVertex = null;
       // No vertex hit — try edge hit test.

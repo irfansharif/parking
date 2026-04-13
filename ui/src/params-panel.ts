@@ -214,7 +214,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     {
       label: "Face Extraction",
       toggles: [
-        { key: "face_extraction", label: "Face Extraction" },
         { key: "edge_provenance", label: "Edge Provenance" },
       ],
     },

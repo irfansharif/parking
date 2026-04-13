@@ -1,5 +1,5 @@
 use crate::clip::polygons_overlap;
-use crate::face::corridor_polygon;
+use crate::aisle_polygon::corridor_polygon;
 use crate::inset::{inset_polygon, raw_inset_polygon, signed_area};
 use crate::types::*;
 use i_overlay::core::fill_rule::FillRule;
@@ -572,81 +572,13 @@ pub fn auto_generate(
     // 3. Interior parallel aisles + cross-aisles via region-based generation.
     let mut perim_splits: Vec<Vec<(f64, usize)>> = vec![Vec::new(); perim_n];
 
-    let (interior_pairs, cross_pairs) = if params.use_regions && !separator_lines.is_empty() {
-        // Decompose around holes using separator drive line positions.
-        // The drive lines themselves become aisle edges via clip_drive_lines
-        // — we only need regions for aisle angle clipping here.
-        let mut regions = decompose_regions(&outer_loop, &hole_loops, separator_lines);
-
-        // Apply per-region overrides.
-        for ov in region_overrides {
-            if let Some(r) = regions.iter_mut().find(|r| r.id == ov.region_id) {
-                if let Some(a) = ov.aisle_angle_deg { r.aisle_angle_deg = a; }
-                if let Some(o) = ov.aisle_offset { r.aisle_offset = o; }
-            }
-        }
-
-        let mut all_interior: Vec<(usize, usize)> = Vec::new();
-        let mut all_cross: Vec<(usize, usize)> = Vec::new();
-
-        if regions.is_empty() {
-            // Only 1 separator per hole — no enclosed regions yet.
-            // Use global angle/offset with the single-region fallback
-            // override applied.
-            let mut angle = params.aisle_angle_deg;
-            let mut offset = params.aisle_offset;
-            for ov in region_overrides {
-                if ov.region_id == RegionId::single_region_fallback() {
-                    if let Some(a) = ov.aisle_angle_deg { angle = a; }
-                    if let Some(o) = ov.aisle_offset { offset = o; }
-                }
-            }
-            let result = generate_region_aisles(
-                None,
-                &outer_loop,
-                &hole_loops,
-                &hole_bases,
-                angle,
-                offset,
-                row_spacing,
-                params,
-                &mut vertices,
-                &mut perim_splits,
-                &mut hole_splits,
-                perim_n,
-            );
-            all_interior = result.interior_pairs;
-            all_cross = result.cross_pairs;
-        } else {
-            for region in &regions {
-                let result = generate_region_aisles(
-                    Some(&region.clip_poly),
-                    &outer_loop,
-                    &hole_loops,
-                    &hole_bases,
-                    region.aisle_angle_deg,
-                    region.aisle_offset,
-                    row_spacing,
-                    params,
-                    &mut vertices,
-                    &mut perim_splits,
-                    &mut hole_splits,
-                    perim_n,
-                );
-                all_interior.extend(result.interior_pairs);
-                all_cross.extend(result.cross_pairs);
-            }
-        }
-
-        // Resolve crossings between all interior aisles and cross-aisles.
-        if !all_cross.is_empty() && !all_interior.is_empty() {
-            split_at_crossings(&mut vertices, &mut all_interior, &mut all_cross, 0.1);
-        }
-
-        (all_interior, all_cross)
-    } else {
-        // Single-region path: use global angle/offset, applying the
-        // single-region-fallback override.
+    // Build the list of (clip_poly, angle, offset) runs to drive
+    // generate_region_aisles with. Region decomposition only fires when
+    // requested *and* the separator drive lines actually enclose
+    // sub-regions; otherwise a single fallback run covers the whole
+    // outer loop with global angle/offset (and the single-region
+    // override, if any).
+    let fallback_run = || {
         let mut angle = params.aisle_angle_deg;
         let mut offset = params.aisle_offset;
         for ov in region_overrides {
@@ -655,13 +587,41 @@ pub fn auto_generate(
                 if let Some(o) = ov.aisle_offset { offset = o; }
             }
         }
+        (None, angle, offset)
+    };
+
+    let regions = if params.use_regions && !separator_lines.is_empty() {
+        let mut regions = decompose_regions(&outer_loop, &hole_loops, separator_lines);
+        for ov in region_overrides {
+            if let Some(r) = regions.iter_mut().find(|r| r.id == ov.region_id) {
+                if let Some(a) = ov.aisle_angle_deg { r.aisle_angle_deg = a; }
+                if let Some(o) = ov.aisle_offset { r.aisle_offset = o; }
+            }
+        }
+        regions
+    } else {
+        Vec::new()
+    };
+
+    let runs: Vec<(Option<&[Vec2]>, f64, f64)> = if regions.is_empty() {
+        vec![fallback_run()]
+    } else {
+        regions
+            .iter()
+            .map(|r| (Some(r.clip_poly.as_slice()), r.aisle_angle_deg, r.aisle_offset))
+            .collect()
+    };
+
+    let mut all_interior: Vec<(usize, usize)> = Vec::new();
+    let mut all_cross: Vec<(usize, usize)> = Vec::new();
+    for (clip, angle, offset) in &runs {
         let result = generate_region_aisles(
-            None,
+            *clip,
             &outer_loop,
             &hole_loops,
             &hole_bases,
-            angle,
-            offset,
+            *angle,
+            *offset,
             row_spacing,
             params,
             &mut vertices,
@@ -669,8 +629,16 @@ pub fn auto_generate(
             &mut hole_splits,
             perim_n,
         );
-        (result.interior_pairs, result.cross_pairs)
-    };
+        all_interior.extend(result.interior_pairs);
+        all_cross.extend(result.cross_pairs);
+    }
+
+    // Resolve crossings between all interior aisles and cross-aisles.
+    if !all_cross.is_empty() && !all_interior.is_empty() {
+        split_at_crossings(&mut vertices, &mut all_interior, &mut all_cross, 0.1);
+    }
+
+    let (interior_pairs, cross_pairs) = (all_interior, all_cross);
 
     // 4. Build perimeter edges with splits spliced in.
     for i in 0..perim_n {

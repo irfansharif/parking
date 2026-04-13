@@ -4,7 +4,6 @@ use crate::inset::signed_area;
 use crate::segment::fill_strip;
 use crate::skeleton;
 use crate::types::*;
-use geo::{Coord, LineString, Simplify};
 use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::float::single::SingleFloatOverlay;
@@ -13,31 +12,18 @@ use i_overlay::float::single::SingleFloatOverlay;
 /// to survive the short-segment filter.
 const MIN_STALLS_PER_SPINE: usize = 3;
 
-// ---------------------------------------------------------------------------
-// Corridor polygons
-// ---------------------------------------------------------------------------
-
-/// Build corridor rectangle for a single aisle edge.
-pub(crate) fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2> {
-    let start = vertices[edge.start];
-    let end = vertices[edge.end];
-    let dir = (end - start).normalize();
-    let normal = Vec2::new(-dir.y, dir.x);
-    let w = edge.width;
-    vec![
-        start + normal * w,
-        end + normal * w,
-        end - normal * w,
-        start - normal * w,
-    ]
-}
+use crate::aisle_polygon::{
+    deduplicate_corridors, generate_miter_fills, merge_corridor_shapes,
+};
+#[cfg(test)]
+use crate::aisle_polygon::corridor_polygon;
 
 // ---------------------------------------------------------------------------
 // Face extraction via boolean overlay
 // ---------------------------------------------------------------------------
 
 /// Compute signed area of a path in [f64; 2] form.
-fn signed_area_f64(path: &[[f64; 2]]) -> f64 {
+pub(crate) fn signed_area_f64(path: &[[f64; 2]]) -> f64 {
     let n = path.len();
     let mut area = 0.0;
     for i in 0..n {
@@ -892,296 +878,6 @@ fn compute_face_spines(
     all_spines
 }
 
-// ---------------------------------------------------------------------------
-// Corridor merging
-// ---------------------------------------------------------------------------
-
-/// Build deduplicated corridor polygons (one rectangle per undirected edge).
-/// Returns (polygon, interior, travel_dir) where travel_dir is Some for
-/// one-way or two-way-oriented edges.
-fn deduplicate_corridors(graph: &DriveAisleGraph) -> Vec<(Vec<Vec2>, bool, Option<Vec2>)> {
-    let mut seen = std::collections::HashSet::new();
-    let mut corridors = Vec::new();
-    for edge in &graph.edges {
-        if edge.start == edge.end { continue; }
-        let key = if edge.start < edge.end {
-            (edge.start, edge.end)
-        } else {
-            (edge.end, edge.start)
-        };
-        if !seen.insert(key) {
-            continue;
-        }
-        let travel_dir = match edge.direction {
-            AisleDirection::OneWay | AisleDirection::TwoWayOriented => {
-                Some((graph.vertices[edge.end] - graph.vertices[edge.start]).normalize())
-            }
-            AisleDirection::TwoWay => None,
-        };
-        corridors.push((corridor_polygon(&graph.vertices, edge), edge.interior, travel_dir));
-    }
-    corridors
-}
-
-/// Generate miter-fill polygons at graph vertices where edges meet.
-/// At each vertex with 2+ edges, compute the convex hull of all corridor
-/// corner points (left and right sides of each edge at the vertex). This
-/// covers all gaps between corridor rectangles in one polygon, regardless
-/// of how many edges meet or their angles.
-fn generate_miter_fills(graph: &DriveAisleGraph, debug: &DebugToggles) -> Vec<Vec<Vec2>> {
-    if !debug.miter_fills {
-        return vec![];
-    }
-    let mut fills = Vec::new();
-    let mut seen_edges: std::collections::HashSet<(usize, usize)> =
-        std::collections::HashSet::new();
-
-    let nv = graph.vertices.len();
-    let mut adj: Vec<Vec<(Vec2, f64, bool)>> = vec![vec![]; nv];
-
-    for edge in &graph.edges {
-        let key = if edge.start < edge.end {
-            (edge.start, edge.end)
-        } else {
-            (edge.end, edge.start)
-        };
-        if !seen_edges.insert(key) {
-            continue;
-        }
-        let s = graph.vertices[edge.start];
-        let e = graph.vertices[edge.end];
-        if (e - s).length() < 1e-9 { continue; }
-        let dir = (e - s).normalize();
-        let w = edge.width;
-
-        adj[edge.start].push((dir, w, edge.interior));
-        adj[edge.end].push((Vec2::new(-dir.x, -dir.y), w, edge.interior));
-    }
-
-    for vi in 0..nv {
-        if adj[vi].len() < 2 {
-            continue;
-        }
-
-        // Skip vertices where all edges are interior — miter fills are
-        // only needed at boundary/hole aisle junctions.
-        if debug.boundary_only_miters && adj[vi].iter().all(|(_, _, int)| *int) {
-            continue;
-        }
-
-        let v = graph.vertices[vi];
-
-        // Sort edges by outgoing angle from the vertex.
-        let mut edges_sorted: Vec<(f64, Vec2, f64)> = adj[vi]
-            .iter()
-            .map(|(d, w, _)| (d.y.atan2(d.x), *d, *w))
-            .collect();
-        edges_sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-
-        // For each consecutive pair of edges (sorted by angle), create a
-        // miter fill wedge. The wedge connects the left side of edge i to
-        // the right side of edge j via their miter intersection point.
-        let ne = edges_sorted.len();
-        for i in 0..ne {
-            let j = (i + 1) % ne;
-            let (a1, d1, w1) = edges_sorted[i];
-            let (a2, d2, w2) = edges_sorted[j];
-
-            let n1 = Vec2::new(-d1.y, d1.x);
-            let n2 = Vec2::new(-d2.y, d2.x);
-
-            let p1 = v + n1 * w1;  // left side of edge i
-            let p2 = v - n2 * w2;  // right side of edge j
-
-            let denom = d1.cross(d2);
-            if denom.abs() < 1e-12 {
-                continue;
-            }
-
-            let t = (p2 - p1).cross(d2) / denom;
-            let miter = p1 + d1 * t;
-
-            // Angular gap from edge i to edge j (going CCW).
-            let gap = if j > i {
-                a2 - a1
-            } else {
-                (a2 + std::f64::consts::TAU) - a1
-            };
-
-            // For outer/convex gaps (< 180°), cap the miter distance to
-            // prevent spikes from acute corners extending across the lot.
-            // Inner/concave gaps point inward between corridors and are
-            // naturally bounded by neighboring geometry.
-            if gap < std::f64::consts::PI {
-                let max_w = w1.max(w2);
-                if (miter - v).length() > max_w * 4.0 {
-                    continue;
-                }
-            }
-
-            let wedge = vec![v, p1, miter, p2];
-            if signed_area(&wedge).abs() < 1.0 {
-                continue;
-            }
-            fills.push(wedge);
-        }
-    }
-
-    fills
-}
-/// Boolean-union all corridor rectangles + miter fills into merged
-/// shapes. Each shape is Vec<Vec<Vec2>> where [0] = outer contour and
-/// [1..] = hole contours (for corridors that form loops enclosing faces).
-fn merge_corridor_shapes(
-    corridors: &[Vec<Vec2>],
-    graph: &DriveAisleGraph,
-    debug: &DebugToggles,
-) -> Vec<Vec<Vec<Vec2>>> {
-    if corridors.is_empty() {
-        return vec![];
-    }
-
-    let miter_fills = generate_miter_fills(graph, debug);
-
-    // All corridor rects + miter fills as subject paths in a single
-    // union operation. Normalize all polygons to CCW winding (positive
-    // signed area) so the NonZero fill rule unions them correctly —
-    // mixed winding causes overlapping regions to cancel instead of merge.
-    let subj: Vec<Vec<[f64; 2]>> = corridors
-        .iter()
-        .chain(miter_fills.iter())
-        .map(|c| {
-            let mut pts = c.clone();
-            if signed_area(&pts) < 0.0 {
-                pts.reverse();
-            }
-            pts.iter().map(|v| [v.x, v.y]).collect()
-        })
-        .collect();
-
-    if subj.is_empty() {
-        return vec![];
-    }
-
-    // Self-union: union all subject paths with an empty clip set.
-    // NonZero fill rule merges all overlapping/touching paths into
-    // a single outline, preserving holes where corridors form loops.
-    let empty_clip: Vec<Vec<[f64; 2]>> = vec![];
-    let result = subj.overlay(&empty_clip, OverlayRule::Union, FillRule::NonZero);
-
-    // Compute minimum hole area threshold: holes in the merged corridor
-    // smaller than max_width² are junction artifacts, not real face
-    // regions. Real face holes (from corridor loops) are much larger.
-    let max_width = graph.edges.iter().map(|e| e.width).fold(0.0f64, f64::max);
-    let min_hole_area = max_width * max_width;
-
-    // Convert to Vec2, preserving outer contours and large holes.
-    // Clean up degenerate spikes and filter out small junction-artifact
-    // holes that would otherwise become sliver faces.
-    result
-        .into_iter()
-        .filter(|shape| !shape.is_empty())
-        .map(|shape| {
-            shape
-                .into_iter()
-                .enumerate()
-                .filter_map(|(i, contour)| {
-                    let pts: Vec<Vec2> = contour.into_iter().map(|p| Vec2::new(p[0], p[1])).collect();
-                    let pts = if debug.spike_removal {
-                        remove_contour_spikes(pts, 2.0)
-                    } else {
-                        pts
-                    };
-                    let pts = if debug.contour_simplification {
-                        rdp_simplify_contour(pts, 2.0)
-                    } else {
-                        pts
-                    };
-                    // Keep outer contour (index 0) unconditionally.
-                    // Filter hole contours (index 1+) by area.
-                    if i > 0 && debug.hole_filtering && signed_area(&pts).abs() < min_hole_area {
-                        return None;
-                    }
-                    Some(pts)
-                })
-                .collect()
-        })
-        .collect()
-}
-
-/// Remove degenerate spikes from a polygon contour. A spike is a
-/// vertex where consecutive edges are anti-parallel (the path doubles
-/// back on itself), creating a zero-area protrusion. This happens when
-/// boolean union merges thin miter fill wedges with corridor rectangles.
-fn remove_contour_spikes(mut contour: Vec<Vec2>, tolerance: f64) -> Vec<Vec2> {
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let n = contour.len();
-        if n < 4 {
-            break;
-        }
-        for i in 0..n {
-            let prev = if i == 0 { n - 1 } else { i - 1 };
-            let next = (i + 1) % n;
-            let a = contour[prev];
-            let b = contour[i];
-            let c = contour[next];
-            let ab = b - a;
-            let bc = c - b;
-            let ab_len = ab.length();
-            let bc_len = bc.length();
-            if ab_len < tolerance || bc_len < tolerance {
-                // Degenerate near-zero-length edge; remove the vertex.
-                contour.remove(i);
-                changed = true;
-                break;
-            }
-            let ab_n = ab * (1.0 / ab_len);
-            let bc_n = bc * (1.0 / bc_len);
-            // Anti-parallel: dot product ≈ -1.
-            if ab_n.dot(bc_n) < -0.95 {
-                // Spike at vertex i: the path goes A→B then reverses B→C.
-                // Also check if C is close to A (the path doubles back to
-                // where it started).
-                if (c - a).length() < tolerance {
-                    // Remove both the spike tip (i) and the return vertex
-                    // (next), collapsing A→B→C→D into A→D.
-                    let remove_second = next;
-                    if remove_second > i {
-                        contour.remove(remove_second);
-                        contour.remove(i);
-                    } else {
-                        contour.remove(i);
-                        contour.remove(remove_second);
-                    }
-                    changed = true;
-                    break;
-                }
-            }
-        }
-    }
-    contour
-}
-
-/// Simplify a polygon contour using Ramer-Douglas-Peucker (via the `geo`
-/// crate). Removes vertices that contribute less than `epsilon` perpendicular
-/// distance to the shape, eliminating degenerate needle spikes while
-/// preserving structurally significant features like V-notches.
-fn rdp_simplify_contour(contour: Vec<Vec2>, epsilon: f64) -> Vec<Vec2> {
-    if contour.len() < 4 {
-        return contour;
-    }
-    let coords: Vec<Coord<f64>> = contour.iter().map(|v| Coord { x: v.x, y: v.y }).collect();
-    let ring = LineString::new(coords);
-    let poly = geo::Polygon::new(ring, vec![]);
-    let simplified = poly.simplify(&epsilon);
-    let ext = simplified.exterior();
-    // geo's LineString repeats the closing coordinate; skip it since our
-    // contours are implicitly closed.
-    let n = ext.0.len().saturating_sub(1);
-    ext.0[..n].iter().map(|c| Vec2::new(c.x, c.y)).collect()
-}
 
 // ---------------------------------------------------------------------------
 // Spine merging
@@ -1545,98 +1241,9 @@ fn compute_extension_shift(ext: &SpineSegment, src: &SpineSegment, src_shift: f6
     }
 }
 
-/// Hash key for a stall quad based on its corner coordinates.
-fn stall_key(s: &StallQuad) -> [u64; 8] {
-    [
-        s.corners[0].x.to_bits(), s.corners[0].y.to_bits(),
-        s.corners[1].x.to_bits(), s.corners[1].y.to_bits(),
-        s.corners[2].x.to_bits(), s.corners[2].y.to_bits(),
-        s.corners[3].x.to_bits(), s.corners[3].y.to_bits(),
-    ]
-}
-
-/// Mark every Nth stall per spine row as StallKind::Island. Uses
-/// absolute position-based marking: each stall's island status depends
-/// on `floor(position / pitch) % interval`, not its index in the row.
-/// This makes marking completely independent of stall centering,
-/// grid-locking, and extension stalls — grid-locked rows naturally
-/// align because their stalls occupy the same absolute positions.
-/// The first and last stall in each row are always skipped.
-fn mark_island_stalls(
-    stalls_3: &mut [(StallQuad, usize, usize)],
-    tagged: &mut [(StallQuad, usize)],
-    spines: &[SpineSegment],
-    params: &ParkingParams,
-) {
-    let interval = params.island_stall_interval as usize;
-    if interval < 2 { return; }
-    let target_rem = (interval / 2) as i64;
-
-    // Group stall indices by spine_idx.
-    let mut by_spine: std::collections::BTreeMap<usize, Vec<usize>> =
-        std::collections::BTreeMap::new();
-    for (i, (_, _, spine_idx)) in stalls_3.iter().enumerate() {
-        by_spine.entry(*spine_idx).or_default().push(i);
-    }
-
-    let mut island_keys: std::collections::HashSet<[u64; 8]> = std::collections::HashSet::new();
-
-    for (&spine_idx, indices) in &by_spine {
-        if spine_idx >= spines.len() { continue; }
-        let seg = &spines[spine_idx];
-        let proj_dir = seg.oriented_dir();
-        let pitch = if seg.is_interior { params.stall_pitch() } else { params.stall_width };
-
-        // Sort stalls by position along the spine.
-        let mut sorted: Vec<(f64, usize)> = indices.iter().map(|&idx| {
-            let center = stall_center(&stalls_3[idx].0);
-            (center.dot(proj_dir), idx)
-        }).collect();
-        sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-
-        let count = sorted.len();
-        if count < interval { continue; }
-
-        // Mark stalls whose absolute grid position matches the island
-        // pattern: floor(proj / pitch) % interval == interval/2.
-        // Skip stalls near row ends using a position-based margin rather
-        // than index-based, so paired sides with different stall counts
-        // still agree on which absolute positions are eligible.
-        let end_margin = if seg.is_interior { 1.5 * pitch } else { 0.5 * pitch };
-        // Use the spine segment's own endpoints as the reference for end
-        // margins — not the stalls'. Paired sides share the same spine
-        // endpoints, so both sides agree on which positions are eligible
-        // even when extensions add different stall counts per side.
-        let (seg_start, seg_end) = seg.oriented_endpoints();
-        let proj_min = seg_start.dot(proj_dir).min(seg_end.dot(proj_dir));
-        let proj_max = seg_start.dot(proj_dir).max(seg_end.dot(proj_dir));
-        for &(proj, idx) in &sorted {
-            if proj - proj_min < end_margin || proj_max - proj < end_margin { continue; }
-            let k = (proj / pitch).floor() as i64;
-            if k.rem_euclid(interval as i64) == target_rem {
-                island_keys.insert(stall_key(&stalls_3[idx].0));
-            }
-        }
-    }
-
-    // Mark matching stalls as Island in both vectors.
-    for (s, _, _) in stalls_3.iter_mut() {
-        if island_keys.contains(&stall_key(s)) {
-            s.kind = StallKind::Island;
-        }
-    }
-    for (s, _) in tagged.iter_mut() {
-        if island_keys.contains(&stall_key(s)) {
-            s.kind = StallKind::Island;
-        }
-    }
-}
-
-fn stall_center(s: &StallQuad) -> Vec2 {
-    (s.corners[0] + s.corners[1] + s.corners[2] + s.corners[3]) * 0.25
-}
-
-
+use crate::island::{compute_islands, mark_island_stalls, stall_key};
+#[cfg(test)]
+use crate::island::stall_center;
 
 /// Deduplicate overlapping collinear spines. When two spines have the same
 /// direction and outward normal and overlap along their length, trim the
@@ -1742,73 +1349,6 @@ fn dedup_overlapping_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<Sp
     }
 
     result
-}
-
-/// Compute landscape island polygons.
-///
-/// For every face, subtract stall quads from the face's positive space
-/// (outer CCW + holes CW) and collect the residual polygons. Results may
-/// be simple (1 contour) or multi-contour (ring with holes) — both are
-/// emitted. Multi-contour islands are rendered with evenodd fill; stalls
-/// render on top, covering the ring's stall areas.
-fn compute_islands(
-    faces: &[Vec<Vec<Vec2>>],
-    all_stalls: &[StallQuad],
-    min_area: f64,
-) -> Vec<crate::types::Island> {
-    use crate::inset::signed_area;
-
-    let to_path = |pts: &[Vec2]| -> Vec<[f64; 2]> {
-        pts.iter().map(|v| [v.x, v.y]).collect()
-    };
-    let ensure_ccw = |pts: &[Vec2]| -> Vec<Vec2> {
-        if signed_area(pts) >= 0.0 { pts.to_vec() }
-        else { pts.iter().rev().copied().collect() }
-    };
-    let to_vec2 = |c: &Vec<[f64; 2]>| -> Vec<Vec2> {
-        c.iter().map(|p| Vec2::new(p[0], p[1])).collect()
-    };
-
-    let all_stall_paths: Vec<Vec<[f64; 2]>> = all_stalls.iter()
-        .filter(|s| s.kind != StallKind::Island)
-        .map(|s| to_path(&s.corners))
-        .collect();
-
-    let mut islands = Vec::new();
-
-    for (face_idx, shape) in faces.iter().enumerate() {
-        if shape.is_empty() || shape[0].len() < 3 { continue; }
-
-        // Build multi-contour subject: outer CCW + holes CW.
-        let mut subj: Vec<Vec<[f64; 2]>> = vec![to_path(&ensure_ccw(&shape[0]))];
-        for hole in shape.iter().skip(1) {
-            let mut h = to_path(hole);
-            if signed_area_f64(&h) > 0.0 { h.reverse(); }
-            subj.push(h);
-        }
-
-        if all_stall_paths.is_empty() {
-            let contour = ensure_ccw(&shape[0]);
-            if signed_area(&contour).abs() >= min_area {
-                islands.push(crate::types::Island { contour, holes: vec![], face_idx });
-            }
-            continue;
-        }
-
-        let raw = subj.overlay(&all_stall_paths, OverlayRule::Difference, FillRule::NonZero);
-
-        for sc in raw {
-            if sc.is_empty() { continue; }
-            let contour = ensure_ccw(&to_vec2(&sc[0]));
-            let holes: Vec<Vec<Vec2>> = sc[1..].iter().map(|h| to_vec2(h)).collect();
-            let net = signed_area(&contour).abs()
-                - holes.iter().map(|h| signed_area(h).abs()).sum::<f64>();
-            if net < min_area { continue; }
-            islands.push(crate::types::Island { contour, holes, face_idx });
-        }
-    }
-
-    islands
 }
 
 /// Extend each spine colinearly in both directions until it hits the face
@@ -2254,11 +1794,7 @@ pub fn generate_from_spines(
     // Extract faces by subtracting the merged corridor union from the
     // boundary. Since the union resolves all internal seams between
     // corridor rects and miter fills, no sliver artifacts remain.
-    let faces = if debug.face_extraction {
-        extract_faces(&raw_outer, &merged_corridors, &raw_holes)
-    } else {
-        vec![]
-    };
+    let faces = extract_faces(&raw_outer, &merged_corridors, &raw_holes);
 
     // Tag each face edge with its source corridor/wall for provenance.
     // Indexed by face_idx (parallel to `faces`); empty/small faces get a
@@ -3433,7 +2969,7 @@ mod tests {
                 DriveLine {
                     start: Vec2::new(-50.0, 250.0),
                     end: Vec2::new(800.0, 250.0),
-                hole_pin: None, },
+                hole_pin: None, id: 0, },
             ],
             annotations: vec![],
             params: ParkingParams::default(),
@@ -3626,13 +3162,16 @@ mod tests {
                 DriveLine {
                     start: Vec2::new(150.0, -50.0),
                     end: Vec2::new(150.0, 250.0),
-                hole_pin: None, },
+                hole_pin: None, id: 1, },
             ],
             annotations: vec![
-                Annotation::TwoWayOriented {
-                    midpoint: Vec2::new(150.0, 100.0),
-                    travel_dir: Vec2::new(0.0, 1.0),
-                    chain: true,
+                // Drive line spans y=-50→y=250 (length 300). The interior
+                // splice spans the inset boundary, ~y=0→y=200, i.e.
+                // t≈0.166→0.833 in normalized coords.
+                Annotation::SpliceTwoWayOriented {
+                    drive_line_id: 1,
+                    ta: 0.166,
+                    tb: 0.833,
                 },
             ],
             params: ParkingParams::default(),

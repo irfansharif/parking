@@ -1,4 +1,4 @@
-use crate::aisle_graph::{auto_generate, compute_inset_d, decompose_regions, derive_raw_holes, derive_raw_outer, find_or_add_vertex, intersect_line_polygon, merge_with_auto, subtract_intervals, Region};
+use crate::aisle_graph::{auto_generate, compute_inset_d, decompose_regions, derive_raw_holes, derive_raw_outer, intersect_line_polygon, merge_with_auto, subtract_intervals, Region};
 use crate::clip::point_in_polygon;
 use crate::face::generate_from_spines;
 use crate::inset::{inset_polygon, signed_area};
@@ -52,9 +52,13 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     // lookups that only match integer grid points. Legacy proximity
     // annotations intentionally run AFTER this so they can target
     // drive-line edges.
-    let drive_graph = clip_drive_lines(&input.drive_lines, &input.boundary, &input.params, &graph);
+    let (drive_graph, drive_anchors) =
+        clip_drive_lines(&input.drive_lines, &input.boundary, &input.params, &graph);
+    let mut splice_anchors: Vec<Option<(u32, f64)>> = vec![None; graph.vertices.len()];
     if !drive_graph.vertices.is_empty() {
-        graph = append_graph(graph, drive_graph);
+        let (merged, merged_anchors) = append_graph(graph, drive_graph, drive_anchors);
+        graph = merged;
+        splice_anchors = merged_anchors;
     }
 
     // Build the per-region frame list once, for both abstract annotation
@@ -68,8 +72,10 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     // annotations resolve by integer grid lookup into the region
     // frames; the legacy variants fall through to proximity matching
     // and can target both grid edges and drive-line-spliced edges.
-    let dormant_annotations =
-        apply_annotations(&mut graph, &input.annotations, &resolved_regions);
+    let dormant_annotations = apply_annotations(
+        &mut graph, &input.annotations, &resolved_regions,
+        &splice_anchors, &input.drive_lines, &input.params,
+    );
 
     let inset_d = compute_inset_d(&input.params);
     let derived_outer = derive_raw_outer(&input.boundary.outer, inset_d, input.params.site_offset);
@@ -191,14 +197,20 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
 /// the nearest existing aisle graph edge from each control point. This means
 /// a short segment between two inner aisles only extends to those aisles,
 /// while a long segment spanning the lot still clips to the perimeter.
+/// Returns (graph, splice_anchors) where splice_anchors[i] = Some((drive_line_id, t))
+/// for any vertex placed by the drive-line splice (t is normalized [0, 1] along
+/// the user-drawn line), and None otherwise. Anchors are parallel to graph.vertices.
 fn clip_drive_lines(
     lines: &[DriveLine],
     boundary: &Polygon,
     params: &ParkingParams,
     auto_graph: &DriveAisleGraph,
-) -> DriveAisleGraph {
+) -> (DriveAisleGraph, Vec<Option<(u32, f64)>>) {
     if lines.is_empty() {
-        return DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 };
+        return (
+            DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 },
+            vec![],
+        );
     }
 
     let hw = params.aisle_width;
@@ -206,7 +218,7 @@ fn clip_drive_lines(
     // boundary.outer is the aisle-edge perimeter — use directly (with site_offset).
     let outer_loop = if params.site_offset > 0.0 {
         let p = inset_polygon(&boundary.outer, params.site_offset);
-        if p.is_empty() { return DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 }; }
+        if p.is_empty() { return (DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 }, vec![]); }
         ensure_ccw(p)
     } else {
         ensure_ccw(boundary.outer.clone())
@@ -220,6 +232,7 @@ fn clip_drive_lines(
 
     let mut vertices: Vec<Vec2> = Vec::new();
     let mut edges: Vec<AisleEdge> = Vec::new();
+    let mut anchors: Vec<Option<(u32, f64)>> = Vec::new();
 
     for dl in lines {
         let dir = dl.end - dl.start;
@@ -300,8 +313,10 @@ fn clip_drive_lines(
             for pair in deduped.windows(2) {
                 let pa = origin + dir_norm * pair[0];
                 let pb = origin + dir_norm * pair[1];
-                let via = find_or_add_vertex(&mut vertices, pa, 1.0);
-                let vib = find_or_add_vertex(&mut vertices, pb, 1.0);
+                let via = find_or_add_vertex_anchored(
+                    &mut vertices, &mut anchors, pa, 1.0, dl.id, pair[0] / seg_len);
+                let vib = find_or_add_vertex_anchored(
+                    &mut vertices, &mut anchors, pb, 1.0, dl.id, pair[1] / seg_len);
                 if via != vib {
                     edges.push(AisleEdge { start: via, end: vib, width: hw, interior: true, direction: AisleDirection::TwoWay });
                     edges.push(AisleEdge { start: vib, end: via, width: hw, interior: true, direction: AisleDirection::TwoWay });
@@ -310,11 +325,34 @@ fn clip_drive_lines(
         }
     }
 
-    DriveAisleGraph {
+    let graph = DriveAisleGraph {
         vertices,
         edges,
         perim_vertex_count: 0,
+    };
+    debug_assert_eq!(graph.vertices.len(), anchors.len());
+    (graph, anchors)
+}
+
+/// Like find_or_add_vertex but also tracks the splice anchor for the
+/// returned vertex. If the vertex already exists (by proximity), the
+/// existing anchor wins (drive lines drawn earlier take precedence).
+fn find_or_add_vertex_anchored(
+    vertices: &mut Vec<Vec2>,
+    anchors: &mut Vec<Option<(u32, f64)>>,
+    p: Vec2,
+    tol: f64,
+    drive_line_id: u32,
+    t: f64,
+) -> usize {
+    for (i, v) in vertices.iter().enumerate() {
+        if (*v - p).length() < tol {
+            return i;
+        }
     }
+    vertices.push(p);
+    anchors.push(Some((drive_line_id, t)));
+    vertices.len() - 1
 }
 
 /// Find all intersection t-values of an infinite line with graph edge segments.
@@ -361,27 +399,47 @@ fn ensure_ccw(mut poly: Vec<Vec2>) -> Vec<Vec2> {
 /// existing vertex OR split the nearest a-edge that passes through it. This
 /// ensures drive line endpoints on the perimeter/hole loops create proper
 /// junctions for miter fill computation.
-fn append_graph(a: DriveAisleGraph, b: DriveAisleGraph) -> DriveAisleGraph {
+/// Merge graph `b` (with parallel splice anchors) into `a`. Returns the
+/// merged graph and a splice-anchor vector parallel to its vertices: a's
+/// vertices contribute `None` (auto-graph never has splice anchors), and
+/// b's anchors are remapped to merged indices. When a b-vertex collapses
+/// onto an existing a-vertex, the b anchor wins so the merged vertex
+/// remains addressable by drive-line annotations.
+fn append_graph(
+    a: DriveAisleGraph,
+    b: DriveAisleGraph,
+    b_anchors: Vec<Option<(u32, f64)>>,
+) -> (DriveAisleGraph, Vec<Option<(u32, f64)>>) {
     let vtx_tolerance = 1.0;
     let edge_tolerance = 2.0;
+    let a_vertex_count = a.vertices.len();
     let mut vertices = a.vertices;
     let base_edge_count = a.edges.len();
     let mut edges = a.edges;
+    let mut anchors: Vec<Option<(u32, f64)>> = vec![None; a_vertex_count];
 
     let mut b_to_merged: Vec<usize> = Vec::with_capacity(b.vertices.len());
-    for bv in &b.vertices {
+    for (bi, bv) in b.vertices.iter().enumerate() {
         // First try: merge with an existing vertex.
         let existing = vertices
             .iter()
             .position(|mv| (*mv - *bv).length() < vtx_tolerance);
         if let Some(mi) = existing {
             b_to_merged.push(mi);
+            // Promote: if the b-vertex carried a splice anchor, it
+            // wins over the (None) auto-graph anchor at the merged
+            // slot — otherwise the splice annotation has nothing to
+            // resolve to.
+            if anchors[mi].is_none() {
+                anchors[mi] = b_anchors[bi];
+            }
             continue;
         }
 
         // Second try: find an a-edge this vertex lies on, and split it.
         let new_vi = vertices.len();
         vertices.push(*bv);
+        anchors.push(b_anchors[bi]);
 
         let mut best_split: Option<(usize, f64)> = None;
         let mut best_dist = edge_tolerance;
@@ -440,11 +498,13 @@ fn append_graph(a: DriveAisleGraph, b: DriveAisleGraph) -> DriveAisleGraph {
         });
     }
 
-    DriveAisleGraph {
+    let merged = DriveAisleGraph {
         vertices,
         edges,
         perim_vertex_count: a.perim_vertex_count,
-    }
+    };
+    debug_assert_eq!(merged.vertices.len(), anchors.len());
+    (merged, anchors)
 }
 
 /// One region's abstract frame plus its clip polygon — what
@@ -600,6 +660,9 @@ fn apply_annotations(
     graph: &mut DriveAisleGraph,
     annotations: &[Annotation],
     regions: &[ResolvedRegion],
+    splice_anchors: &[Option<(u32, f64)>],
+    drive_lines: &[DriveLine],
+    params: &ParkingParams,
 ) -> Vec<usize> {
     if annotations.is_empty() {
         return Vec::new();
@@ -622,141 +685,37 @@ fn apply_annotations(
         std::collections::HashMap::new()
     };
 
-    // Precompute edge endpoints and directions (one per undirected edge).
-    struct EdgeInfo {
-        start: Vec2,
-        end: Vec2,
-        dir: Vec2,
-        idx: usize,
-    }
-    let mut edge_infos: Vec<EdgeInfo> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for (i, edge) in graph.edges.iter().enumerate() {
-        let key = if edge.start < edge.end {
-            (edge.start, edge.end)
-        } else {
-            (edge.end, edge.start)
-        };
-        if !seen.insert(key) {
-            continue;
-        }
-        let s = graph.vertices[edge.start];
-        let e = graph.vertices[edge.end];
-        let dir = (e - s).normalize();
-        edge_infos.push(EdgeInfo { start: s, end: e, dir, idx: i });
-    }
+    // Splice lookup: drive_line_id -> sorted Vec<(t, vertex_idx)>. Built
+    // only if there's a splice annotation in the list.
+    let has_splice = annotations.iter().any(|a| {
+        matches!(
+            a,
+            Annotation::SpliceDeleteVertex { .. }
+                | Annotation::SpliceDeleteEdge { .. }
+                | Annotation::SpliceOneWay { .. }
+                | Annotation::SpliceTwoWayOriented { .. }
+        )
+    });
+    let splice_lookup: std::collections::HashMap<u32, Vec<(f64, usize)>> = if has_splice {
+        build_splice_lookup(splice_anchors)
+    } else {
+        std::collections::HashMap::new()
+    };
+    // Drive-line length by id, used to convert the world-space tolerance
+    // (stall_pitch) into a normalized-t tolerance per line.
+    let line_lengths: std::collections::HashMap<u32, f64> = drive_lines
+        .iter()
+        .map(|dl| (dl.id, (dl.end - dl.start).length()))
+        .collect();
+    let pitch = params.stall_pitch();
 
-    // Tight threshold: annotation must be essentially on top of the edge.
-    let max_dist = 3.0;
-
-    // Indices of annotations whose abstract handle didn't resolve this
-    // pass. Populated by the two match blocks below and returned at
-    // the bottom so the caller can surface them as dormant.
+    // Indices of annotations whose handle didn't resolve this pass.
+    // Populated by the two match blocks below and returned at the
+    // bottom so the caller can surface them as dormant.
     let mut dormant: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
 
     for (ann_idx, ann) in annotations.iter().enumerate() {
         match ann {
-            Annotation::OneWay { midpoint, travel_dir, chain: expand_chain } => {
-                // Find the edge that passes closest to the annotation point.
-                let mut best: Option<(usize, f64)> = None;
-                for info in &edge_infos {
-                    // Edge must be roughly parallel to travel direction.
-                    if info.dir.dot(*travel_dir).abs() < 0.7 {
-                        continue;
-                    }
-                    let dist = point_to_segment_dist(*midpoint, info.start, info.end);
-                    if dist > max_dist {
-                        continue;
-                    }
-                    if best.is_none() || dist < best.unwrap().1 {
-                        best = Some((info.idx, dist));
-                    }
-                }
-                let Some((matched_idx, _dist)) = best else { continue };
-
-                // Expand to the full collinear chain, or stay on single segment.
-                let chain = if *expand_chain {
-                    find_collinear_chain(graph, matched_idx)
-                } else {
-                    vec![matched_idx]
-                };
-
-                // Apply direction to every edge in the chain.
-                for &chain_idx in &chain {
-                    let edge = &graph.edges[chain_idx];
-                    let s = edge.start;
-                    let e = edge.end;
-                    let edge_dir = (graph.vertices[e] - graph.vertices[s]).normalize();
-                    let needs_flip = edge_dir.dot(*travel_dir) < 0.0;
-
-                    for i in 0..graph.edges.len() {
-                        let ei = &graph.edges[i];
-                        let is_forward = ei.start == s && ei.end == e;
-                        let is_reverse = ei.start == e && ei.end == s;
-                        if !is_forward && !is_reverse {
-                            continue;
-                        }
-                        graph.edges[i].direction = AisleDirection::OneWay;
-                        if needs_flip && is_forward {
-                            graph.edges[i].start = e;
-                            graph.edges[i].end = s;
-                        } else if needs_flip && is_reverse {
-                            graph.edges[i].start = s;
-                            graph.edges[i].end = e;
-                        }
-                    }
-                }
-            }
-            Annotation::TwoWayOriented { midpoint, travel_dir, chain: expand_chain } => {
-                // Same edge-matching logic as OneWay, but we preserve full
-                // aisle width and set TwoWayOriented direction.
-                let mut best: Option<(usize, f64)> = None;
-                for info in &edge_infos {
-                    if info.dir.dot(*travel_dir).abs() < 0.7 {
-                        continue;
-                    }
-                    let dist = point_to_segment_dist(*midpoint, info.start, info.end);
-                    if dist > max_dist {
-                        continue;
-                    }
-                    if best.is_none() || dist < best.unwrap().1 {
-                        best = Some((info.idx, dist));
-                    }
-                }
-                let Some((matched_idx, _dist)) = best else { continue };
-
-                let chain = if *expand_chain {
-                    find_collinear_chain(graph, matched_idx)
-                } else {
-                    vec![matched_idx]
-                };
-
-                for &chain_idx in &chain {
-                    let edge = &graph.edges[chain_idx];
-                    let s = edge.start;
-                    let e = edge.end;
-                    let edge_dir = (graph.vertices[e] - graph.vertices[s]).normalize();
-                    let needs_flip = edge_dir.dot(*travel_dir) < 0.0;
-
-                    for i in 0..graph.edges.len() {
-                        let ei = &graph.edges[i];
-                        let is_forward = ei.start == s && ei.end == e;
-                        let is_reverse = ei.start == e && ei.end == s;
-                        if !is_forward && !is_reverse {
-                            continue;
-                        }
-                        graph.edges[i].direction = AisleDirection::TwoWayOriented;
-                        // Keep full width — don't halve like OneWay.
-                        if needs_flip && is_forward {
-                            graph.edges[i].start = e;
-                            graph.edges[i].end = s;
-                        } else if needs_flip && is_reverse {
-                            graph.edges[i].start = s;
-                            graph.edges[i].end = e;
-                        }
-                    }
-                }
-            }
             Annotation::AbstractOneWay { region, xa, ya, xb, yb } => {
                 let touched = apply_abstract_direction(
                     graph,
@@ -788,58 +747,11 @@ fn apply_annotations(
     }
 
     // Second pass: collect vertices and edges to delete.
-    let max_vtx_dist = 5.0;
     let mut vertices_to_remove = std::collections::HashSet::new();
     let mut edges_to_remove = std::collections::HashSet::new();
 
     for (ann_idx, ann) in annotations.iter().enumerate() {
         match ann {
-            Annotation::DeleteVertex { point } => {
-                // Find nearest vertex.
-                let mut best: Option<(usize, f64)> = None;
-                for (i, v) in graph.vertices.iter().enumerate() {
-                    let dist = (*v - *point).length();
-                    if dist < max_vtx_dist && (best.is_none() || dist < best.unwrap().1) {
-                        best = Some((i, dist));
-                    }
-                }
-                if let Some((vi, _)) = best {
-                    vertices_to_remove.insert(vi);
-                }
-            }
-            Annotation::DeleteEdge { midpoint, edge_dir, chain: expand_chain } => {
-                let mut best: Option<(usize, f64)> = None;
-                for info in &edge_infos {
-                    if info.dir.dot(*edge_dir).abs() < 0.7 {
-                        continue;
-                    }
-                    let dist = point_to_segment_dist(*midpoint, info.start, info.end);
-                    if dist > max_dist {
-                        continue;
-                    }
-                    if best.is_none() || dist < best.unwrap().1 {
-                        best = Some((info.idx, dist));
-                    }
-                }
-                if let Some((matched_idx, _)) = best {
-                    let chain = if *expand_chain {
-                        find_collinear_chain(graph, matched_idx)
-                    } else {
-                        vec![matched_idx]
-                    };
-                    for &ci in &chain {
-                        let edge = &graph.edges[ci];
-                        let s = edge.start;
-                        let e = edge.end;
-                        // Mark both forward and reverse edges.
-                        for (i, ei) in graph.edges.iter().enumerate() {
-                            if (ei.start == s && ei.end == e) || (ei.start == e && ei.end == s) {
-                                edges_to_remove.insert(i);
-                            }
-                        }
-                    }
-                }
-            }
             Annotation::AbstractDeleteVertex { region, xi, yi } => {
                 if let Some(&vi) = abstract_lookup.get(&(*region, *xi, *yi)) {
                     vertices_to_remove.insert(vi);
@@ -873,6 +785,42 @@ fn apply_annotations(
                     dormant.insert(ann_idx);
                 }
             }
+            Annotation::SpliceDeleteVertex { drive_line_id, t } => {
+                match resolve_splice_vertex(&splice_lookup, &line_lengths, *drive_line_id, *t, pitch) {
+                    Some(vi) => { vertices_to_remove.insert(vi); }
+                    None => { dormant.insert(ann_idx); }
+                }
+            }
+            Annotation::SpliceDeleteEdge { drive_line_id, ta, tb } => {
+                let via = resolve_splice_vertex(&splice_lookup, &line_lengths, *drive_line_id, *ta, pitch);
+                let vib = resolve_splice_vertex(&splice_lookup, &line_lengths, *drive_line_id, *tb, pitch);
+                let (Some(via), Some(vib)) = (via, vib) else {
+                    dormant.insert(ann_idx);
+                    continue;
+                };
+                let mut touched = false;
+                for (i, ei) in graph.edges.iter().enumerate() {
+                    if (ei.start == via && ei.end == vib)
+                        || (ei.start == vib && ei.end == via)
+                    {
+                        edges_to_remove.insert(i);
+                        touched = true;
+                    }
+                }
+                if !touched {
+                    dormant.insert(ann_idx);
+                }
+            }
+            Annotation::SpliceOneWay { drive_line_id, ta, tb } => {
+                if !apply_splice_direction(graph, &splice_lookup, &line_lengths, *drive_line_id, *ta, *tb, pitch, AisleDirection::OneWay) {
+                    dormant.insert(ann_idx);
+                }
+            }
+            Annotation::SpliceTwoWayOriented { drive_line_id, ta, tb } => {
+                if !apply_splice_direction(graph, &splice_lookup, &line_lengths, *drive_line_id, *ta, *tb, pitch, AisleDirection::TwoWayOriented) {
+                    dormant.insert(ann_idx);
+                }
+            }
             _ => {}
         }
     }
@@ -902,67 +850,78 @@ fn apply_annotations(
     dormant.into_iter().collect()
 }
 
-/// Find all edges in the same collinear chain as the seed edge. Two edges
-/// chain if they share a vertex and are collinear (direction dot > 0.99).
-/// Returns deduplicated edge indices (one per undirected edge pair).
-fn find_collinear_chain(graph: &DriveAisleGraph, seed_idx: usize) -> Vec<usize> {
-    let seed = &graph.edges[seed_idx];
-    let seed_dir = (graph.vertices[seed.end] - graph.vertices[seed.start]).normalize();
-
-    // Build adjacency: vertex → list of (edge_idx, other_vertex, direction).
-    let mut adj: std::collections::HashMap<usize, Vec<(usize, usize, Vec2)>> =
+/// Build a per-drive-line lookup of (t, vertex_idx) sorted by t. Vertices
+/// without a splice anchor are ignored.
+fn build_splice_lookup(
+    splice_anchors: &[Option<(u32, f64)>],
+) -> std::collections::HashMap<u32, Vec<(f64, usize)>> {
+    let mut lookup: std::collections::HashMap<u32, Vec<(f64, usize)>> =
         std::collections::HashMap::new();
-    let mut seen_edges = std::collections::HashSet::new();
-    for (i, edge) in graph.edges.iter().enumerate() {
-        let key = if edge.start < edge.end {
-            (edge.start, edge.end)
-        } else {
-            (edge.end, edge.start)
-        };
-        if !seen_edges.insert(key) {
-            continue;
-        }
-        let dir = (graph.vertices[edge.end] - graph.vertices[edge.start]).normalize();
-        adj.entry(edge.start).or_default().push((i, edge.end, dir));
-        adj.entry(edge.end).or_default().push((i, edge.start, Vec2::new(-dir.x, -dir.y)));
-    }
-
-    // BFS/walk from seed in both directions along collinear edges.
-    let mut chain = vec![seed_idx];
-    let mut visited = std::collections::HashSet::new();
-    visited.insert(seed_idx);
-
-    let mut frontier = vec![seed.start, seed.end];
-    while let Some(v) = frontier.pop() {
-        if let Some(neighbors) = adj.get(&v) {
-            for &(ei, other_v, dir) in neighbors {
-                if visited.contains(&ei) {
-                    continue;
-                }
-                // Must be collinear with seed direction.
-                if dir.dot(seed_dir).abs() < 0.99 {
-                    continue;
-                }
-                visited.insert(ei);
-                chain.push(ei);
-                frontier.push(other_v);
-            }
+    for (vi, anchor) in splice_anchors.iter().enumerate() {
+        if let Some((id, t)) = anchor {
+            lookup.entry(*id).or_default().push((*t, vi));
         }
     }
-
-    chain
+    for entries in lookup.values_mut() {
+        entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    }
+    lookup
 }
 
-/// Perpendicular distance from point `p` to the line segment `a`–`b`.
-fn point_to_segment_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
-    let ab = b - a;
-    let len_sq = ab.dot(ab);
-    if len_sq < 1e-12 {
-        return (p - a).length();
+/// Find the splice vertex on `drive_line_id` whose stored `t` is closest
+/// to the requested `t`, accepting it only if the world-space distance
+/// (|Δt| × line_length) is within `pitch`. Returns the graph vertex index.
+fn resolve_splice_vertex(
+    splice_lookup: &std::collections::HashMap<u32, Vec<(f64, usize)>>,
+    line_lengths: &std::collections::HashMap<u32, f64>,
+    drive_line_id: u32,
+    t: f64,
+    pitch: f64,
+) -> Option<usize> {
+    let entries = splice_lookup.get(&drive_line_id)?;
+    let line_len = *line_lengths.get(&drive_line_id)?;
+    if line_len < 1e-9 { return None; }
+    let tol_t = pitch / line_len;
+    let mut best: Option<(f64, usize)> = None;
+    for &(et, vi) in entries {
+        let d = (et - t).abs();
+        if d > tol_t { continue; }
+        if best.is_none() || d < best.unwrap().0 {
+            best = Some((d, vi));
+        }
     }
-    let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
-    let proj = a + ab * t;
-    (p - proj).length()
+    best.map(|(_, vi)| vi)
+}
+
+/// Apply a one-way / two-way-oriented direction to the graph edge between
+/// the two splice vertices identified by (id, ta) and (id, tb). Flips edge
+/// start/end so the stored ordering matches ta→tb. Returns true on hit.
+fn apply_splice_direction(
+    graph: &mut DriveAisleGraph,
+    splice_lookup: &std::collections::HashMap<u32, Vec<(f64, usize)>>,
+    line_lengths: &std::collections::HashMap<u32, f64>,
+    drive_line_id: u32,
+    ta: f64,
+    tb: f64,
+    pitch: f64,
+    direction: AisleDirection,
+) -> bool {
+    let Some(via) = resolve_splice_vertex(splice_lookup, line_lengths, drive_line_id, ta, pitch) else { return false };
+    let Some(vib) = resolve_splice_vertex(splice_lookup, line_lengths, drive_line_id, tb, pitch) else { return false };
+    let mut touched = false;
+    for i in 0..graph.edges.len() {
+        let ei = &graph.edges[i];
+        let is_forward = ei.start == via && ei.end == vib;
+        let is_reverse = ei.start == vib && ei.end == via;
+        if !is_forward && !is_reverse { continue; }
+        graph.edges[i].direction = direction.clone();
+        if is_reverse {
+            graph.edges[i].start = via;
+            graph.edges[i].end = vib;
+        }
+        touched = true;
+    }
+    touched
 }
 
 #[cfg(test)]

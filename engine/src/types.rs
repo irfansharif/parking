@@ -687,12 +687,8 @@ pub struct DebugToggles {
     pub spike_removal: bool,
     #[serde(default)]
     pub contour_simplification: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub hole_filtering: bool,
-
-    // Face extraction
-    #[serde(default = "default_true")]
-    pub face_extraction: bool,
 
     // Spine generation
     #[serde(default)]
@@ -707,7 +703,7 @@ pub struct DebugToggles {
     pub spine_dedup: bool,
     #[serde(default = "default_true")]
     pub spine_merging: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub short_spine_filter: bool,
 
     // Spine extensions (extend spines colinearly to face boundary)
@@ -721,7 +717,7 @@ pub struct DebugToggles {
     pub stall_face_clipping: bool,
 
     // Boundary
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub boundary_clipping: bool,
 
     // Conflict removal
@@ -731,6 +727,7 @@ pub struct DebugToggles {
     // Short segment filter (remove spines with too few stalls after merge)
     #[serde(default = "default_true")]
     pub short_segment_filter: bool,
+    // (kept default_true to match UI's app.ts initial value)
 
     // Edge provenance (tag face edges with source corridor/wall)
     #[serde(default = "default_true")]
@@ -748,20 +745,19 @@ impl Default for DebugToggles {
             boundary_only_miters: true,
             spike_removal: true,
             contour_simplification: true,
-            hole_filtering: true,
-            face_extraction: true,
+            hole_filtering: false,
             face_simplification: false,
             edge_classification: true,
             spine_clipping: true,
             spine_dedup: true,
             spine_merging: true,
-            short_spine_filter: true,
+            short_spine_filter: false,
             spine_extensions: true,
             stall_centering: true,
             stall_face_clipping: true,
-            boundary_clipping: true,
+            boundary_clipping: false,
             conflict_removal: true,
-            short_segment_filter: false,
+            short_segment_filter: true,
             edge_provenance: true,
             skeleton_debug: false,
         }
@@ -779,6 +775,14 @@ pub struct DriveLine {
     /// When set, this drive line is a separator pinned to a hole vertex.
     #[serde(default, rename = "holePin")]
     pub hole_pin: Option<HolePin>,
+    /// Stable identifier assigned by the UI at creation time. Splice
+    /// annotations key off this id + a fractional position along the
+    /// line, so the annotation survives rotation/stretch of the grid
+    /// even though splice vertices don't sit on the abstract grid.
+    /// Default 0 is the "no id" sentinel for legacy fixtures and is
+    /// never matched by splice annotations.
+    #[serde(default)]
+    pub id: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -796,36 +800,6 @@ pub struct HolePin {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Annotation {
-    /// Mark the nearest aisle edge as one-way in the given travel direction.
-    /// When `chain` is true (default), expands to the full collinear chain.
-    OneWay {
-        midpoint: Vec2,
-        travel_dir: Vec2,
-        #[serde(default = "default_true")]
-        chain: bool,
-    },
-    /// Mark the nearest aisle edge as two-way with oriented lanes. The
-    /// `travel_dir` determines which side gets which lane direction, which
-    /// in turn affects stall angles on adjacent faces. Full aisle width is
-    /// preserved (unlike OneWay).
-    TwoWayOriented {
-        midpoint: Vec2,
-        travel_dir: Vec2,
-        #[serde(default = "default_true")]
-        chain: bool,
-    },
-    /// Remove the nearest vertex and all its incident edges.
-    DeleteVertex {
-        point: Vec2,
-    },
-    /// Remove the nearest edge. When `chain` is true, removes the full
-    /// collinear chain.
-    DeleteEdge {
-        midpoint: Vec2,
-        edge_dir: Vec2,
-        #[serde(default = "default_true")]
-        chain: bool,
-    },
     /// Delete a vertex identified by its position in a region's abstract
     /// grid. Stable under parameter changes because (region, xi, yi) is
     /// an integer triple that doesn't move when the frame rotates or
@@ -867,6 +841,34 @@ pub enum Annotation {
         ya: i32,
         xb: i32,
         yb: i32,
+    },
+    /// Delete a drive-line splice vertex by its parametric position
+    /// `t ∈ [0, 1]` along the line identified by `drive_line_id`.
+    /// Resolves to the splice vertex with the closest `t` within
+    /// tolerance `stall_pitch / line_length`. Goes dormant if the drive
+    /// line is removed.
+    SpliceDeleteVertex {
+        drive_line_id: u32,
+        t: f64,
+    },
+    /// Delete the drive-line edge spanning `(t_a, t_b)`.
+    SpliceDeleteEdge {
+        drive_line_id: u32,
+        ta: f64,
+        tb: f64,
+    },
+    /// Mark a drive-line edge as one-way, travel direction from t_a to t_b.
+    SpliceOneWay {
+        drive_line_id: u32,
+        ta: f64,
+        tb: f64,
+    },
+    /// Mark a drive-line edge as two-way with oriented lanes; from→to
+    /// ordering picks which side gets which lane direction.
+    SpliceTwoWayOriented {
+        drive_line_id: u32,
+        ta: f64,
+        tb: f64,
     },
 }
 

@@ -252,6 +252,38 @@ export function worldToAbstractVertex(
   return null;
 }
 
+/**
+ * Project a world-space point onto the closest drive line and return its
+ * stable splice anchor — `(drive_line_id, t)` where `t ∈ [0, 1]` is the
+ * fractional position along the line. Returns null if no drive line is
+ * within `snap_tol_world` of the point. Mirrors `worldToAbstractVertex`
+ * for the splice axis.
+ */
+export function worldToSpliceVertex(
+  world: Vec2,
+  driveLines: DriveLine[],
+  snapTolWorld: number = 0.5,
+): { drive_line_id: number; t: number } | null {
+  let best: { id: number; t: number; dist: number } | null = null;
+  for (const dl of driveLines) {
+    const dx = dl.end.x - dl.start.x;
+    const dy = dl.end.y - dl.start.y;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1e-12) continue;
+    // Project onto infinite line; t may fall outside [0, 1] if the
+    // splice extends past the user-drawn endpoints.
+    const tRaw = ((world.x - dl.start.x) * dx + (world.y - dl.start.y) * dy) / len2;
+    const px = dl.start.x + dx * tRaw;
+    const py = dl.start.y + dy * tRaw;
+    const dist = Math.hypot(world.x - px, world.y - py);
+    if (dist > snapTolWorld) continue;
+    if (best === null || dist < best.dist) {
+      best = { id: dl.id, t: tRaw, dist };
+    }
+  }
+  return best ? { drive_line_id: best.id, t: best.t } : null;
+}
+
 /** Forward transform: abstract → world. */
 export function frameForward(frame: AbstractFrame, p: AbstractPoint2): Vec2 {
   return {
@@ -287,8 +319,6 @@ export interface DebugToggles {
   spike_removal: boolean;
   contour_simplification: boolean;
   hole_filtering: boolean;
-  // Face extraction
-  face_extraction: boolean;
   // Spine generation
   face_simplification: boolean;
   edge_classification: boolean;
@@ -317,6 +347,9 @@ export interface DebugToggles {
 export interface DriveLine {
   start: Vec2;
   end: Vec2;
+  /** Stable identifier assigned by the UI at creation time. Used by
+   *  Splice* annotations as the addressing axis. */
+  id: number;
   /** When set, start is pinned to a hole vertex (separator). */
   holePin?: { holeIndex: number; vertexIndex: number };
   /** When set, end is pinned to a boundary edge at parameter t. */
@@ -411,14 +444,14 @@ export function computeBoundaryPin(
 }
 
 export type Annotation =
-  | OneWayAnnotation
-  | TwoWayOrientedAnnotation
-  | DeleteVertexAnnotation
-  | DeleteEdgeAnnotation
   | AbstractDeleteVertexAnnotation
   | AbstractDeleteEdgeAnnotation
   | AbstractOneWayAnnotation
-  | AbstractTwoWayOrientedAnnotation;
+  | AbstractTwoWayOrientedAnnotation
+  | SpliceDeleteVertexAnnotation
+  | SpliceDeleteEdgeAnnotation
+  | SpliceOneWayAnnotation
+  | SpliceTwoWayOrientedAnnotation;
 
 /**
  * True if the annotation is keyed by abstract grid coordinates, not
@@ -442,38 +475,6 @@ export function isAbstractAnnotation(
     ann.kind === "AbstractOneWay" ||
     ann.kind === "AbstractTwoWayOriented"
   );
-}
-
-export interface OneWayAnnotation {
-  kind: "OneWay";
-  midpoint: Vec2;
-  travel_dir: Vec2;
-  chain?: boolean;
-  _origDir?: Vec2;
-  _active?: boolean; // false = tombstone
-}
-
-export interface TwoWayOrientedAnnotation {
-  kind: "TwoWayOriented";
-  midpoint: Vec2;
-  travel_dir: Vec2;
-  chain?: boolean;
-  _origDir?: Vec2;
-  _active?: boolean;
-}
-
-export interface DeleteVertexAnnotation {
-  kind: "DeleteVertex";
-  point: Vec2;
-  _active?: boolean;
-}
-
-export interface DeleteEdgeAnnotation {
-  kind: "DeleteEdge";
-  midpoint: Vec2;
-  edge_dir: Vec2;
-  chain?: boolean;
-  _active?: boolean;
 }
 
 /**
@@ -532,6 +533,46 @@ export interface AbstractTwoWayOrientedAnnotation {
   ya: number;
   xb: number;
   yb: number;
+  _active?: boolean;
+}
+
+/**
+ * Delete the splice vertex on drive line `drive_line_id` at fractional
+ * position `t ∈ [0, 1]`. Resolves to the splice with the closest stored
+ * `t`; goes dormant if the drive line is removed.
+ */
+export interface SpliceDeleteVertexAnnotation {
+  kind: "SpliceDeleteVertex";
+  drive_line_id: number;
+  t: number;
+  _active?: boolean;
+}
+
+/**
+ * Delete the drive-line edge spanning splice positions `(ta, tb)` along
+ * the same drive line.
+ */
+export interface SpliceDeleteEdgeAnnotation {
+  kind: "SpliceDeleteEdge";
+  drive_line_id: number;
+  ta: number;
+  tb: number;
+  _active?: boolean;
+}
+
+export interface SpliceOneWayAnnotation {
+  kind: "SpliceOneWay";
+  drive_line_id: number;
+  ta: number;
+  tb: number;
+  _active?: boolean;
+}
+
+export interface SpliceTwoWayOrientedAnnotation {
+  kind: "SpliceTwoWayOriented";
+  drive_line_id: number;
+  ta: number;
+  tb: number;
   _active?: boolean;
 }
 
