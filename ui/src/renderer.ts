@@ -11,42 +11,10 @@ import {
   ParkingParams,
   Annotation,
   isAbstractAnnotation,
+  abstractAnnotationWorldPos,
   computeRegionFrame,
   frameForward,
 } from "./types";
-
-/**
- * Compute the current world position of an abstract annotation by
- * looking up its host region in the layout's region_debug and
- * forward-transforming the integer (xi, yi) — or the midpoint of
- * (xa, ya) and (xb, yb) for edge variants — through that region's
- * AbstractFrame. Returns null if the region isn't in the current
- * layout (dormant annotation).
- */
-function abstractAnnotationWorldPos(
-  ann: Annotation,
-  lot: ParkingLot,
-  params: ParkingParams,
-): Vec2 | null {
-  if (!isAbstractAnnotation(ann)) return null;
-  const rd = lot.layout?.region_debug;
-  if (!rd) return null;
-  const region = rd.regions.find((r) => r.id === ann.region);
-  if (!region) return null;
-  const frame = computeRegionFrame(
-    params,
-    region.aisle_angle_deg,
-    region.aisle_offset,
-  );
-  if (ann.kind === "AbstractDeleteVertex") {
-    return frameForward(frame, { x: ann.xi, y: ann.yi });
-  }
-  // Edge variants: show the marker at the midpoint of the two
-  // endpoints.
-  const a = frameForward(frame, { x: ann.xa, y: ann.ya });
-  const b = frameForward(frame, { x: ann.xb, y: ann.yb });
-  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-}
 
 /**
  * Find an AbstractOneWay / AbstractTwoWayOriented annotation whose
@@ -916,13 +884,30 @@ export class Renderer {
       ctx.stroke();
     }
 
-    const aisleVerts = (graph?.vertices ?? []).map((v, i) => ({
-      pos: v,
-      ref: { type: "aisle" as const, index: i },
-      color: isManualGraph
-        ? "rgba(100, 150, 255, 0.9)"
-        : "rgba(100, 150, 255, 0.5)",
-    }));
+    // Hide orphan aisle vertices (no incident edges) — these are
+    // vestiges of edge deletions or post-deletion graph simplification
+    // (degree-2 collinear merges). They aren't real graph nodes anymore.
+    const aisleDegree = new Int32Array(graph?.vertices.length ?? 0);
+    if (graph) {
+      const seenE = new Set<string>();
+      for (const e of graph.edges) {
+        const k = Math.min(e.start, e.end) + "," + Math.max(e.start, e.end);
+        if (seenE.has(k)) continue;
+        seenE.add(k);
+        aisleDegree[e.start]++;
+        aisleDegree[e.end]++;
+      }
+    }
+    const aisleVerts = (graph?.vertices ?? []).flatMap((v, i) => {
+      if (aisleDegree[i] === 0) return [];
+      return [{
+        pos: v,
+        ref: { type: "aisle" as const, index: i },
+        color: isManualGraph
+          ? "rgba(100, 150, 255, 0.9)"
+          : "rgba(100, 150, 255, 0.5)",
+      }];
+    });
 
     const driveLineVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
     if (state.layers.driveLines) {
@@ -954,7 +939,7 @@ export class Renderer {
           // Compute their current world position through the hosting
           // region's AbstractFrame so the marker follows the grid as
           // parameters change.
-          pos = abstractAnnotationWorldPos(ann, lot, state.params);
+          pos = abstractAnnotationWorldPos(ann, lot.layout?.region_debug, state.params);
           if (!pos) return;
           isDelete =
             ann.kind === "AbstractDeleteVertex" ||

@@ -13,6 +13,8 @@ import {
   computeBoundaryPin,
   evalBoundaryEdge,
   isAbstractAnnotation,
+  abstractAnnotationWorldPos,
+  chainToAbstractLatticeEdge,
   worldToAbstractVertex,
   worldToSpliceVertex,
 } from "./types";
@@ -449,7 +451,20 @@ export class App {
       // via the engine. Splice annotations live on a drive line, so we
       // compute their world position from (drive_line_id, t) here.
       lot.annotations.forEach((ann, i) => {
-        if (isAbstractAnnotation(ann)) return;
+        if (isAbstractAnnotation(ann)) {
+          // Resolve abstract grid coords to a world anchor via the
+          // host region's AbstractFrame. Dormant annotations (region
+          // gone) return null and are skipped — nothing to click.
+          const pos = abstractAnnotationWorldPos(
+            ann,
+            lot.layout?.region_debug,
+            this.state.params,
+          );
+          if (pos) {
+            result.push({ ref: { type: "annotation", index: i, lotId: lid }, pos });
+          }
+          return;
+        }
         // Splice annotation: world pos = midpoint of (ta, tb) along the
         // line, or just `t` for the vertex variant.
         const dl = lot.driveLines.find((d) => d.id === ann.drive_line_id);
@@ -1048,49 +1063,64 @@ export class App {
     const lot = this.activeLot();
     const graph = this.getEffectiveAisleGraph(lot);
     if (!graph) return;
-    const edge = graph.edges[sel.index];
-    if (!edge) return;
-    const s = graph.vertices[edge.start];
-    const e = graph.vertices[edge.end];
-    const mid = { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 };
-    const dx = e.x - s.x, dy = e.y - s.y;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    if (len < 1e-9) return;
 
-    // Try abstract grid first, then splice (both endpoints on the
-    // same drive line). Bail if neither addresses the edge.
-    const a = lot.layout?.region_debug
-      ? worldToAbstractVertex(s, this.state.params, lot.layout.region_debug)
-      : null;
-    const b = lot.layout?.region_debug
-      ? worldToAbstractVertex(e, this.state.params, lot.layout.region_debug)
-      : null;
-    if (a && b && a.region === b.region) {
+    // Gather all chain endpoints in world space. The chain is the
+    // collinear run of sub-edges the user selected; its outermost
+    // endpoints land on integer lattice intersections (junctions),
+    // while interior breaks may be drive-line/boundary intersections
+    // that aren't on the lattice.
+    const chainPts: Vec2[] = [];
+    for (const ei of sel.chain) {
+      const edge = graph.edges[ei];
+      if (!edge) continue;
+      chainPts.push(graph.vertices[edge.start]);
+      chainPts.push(graph.vertices[edge.end]);
+    }
+    if (chainPts.length < 2) return;
+
+    // Resolve to lattice extents in some region's abstract frame.
+    // The engine walks collinear sub-edges between (xa, ya) and
+    // (xb, yb), so any drive-line splits inside the chain are
+    // handled implicitly.
+    const latticeEdge = chainToAbstractLatticeEdge(
+      chainPts,
+      this.state.params,
+      lot.layout?.region_debug,
+    );
+    if (latticeEdge) {
       lot.annotations.push({
         kind: "AbstractDeleteEdge",
-        region: a.region,
-        xa: a.xi,
-        ya: a.yi,
-        xb: b.xi,
-        yb: b.yi,
+        region: latticeEdge.region,
+        xa: latticeEdge.xa,
+        ya: latticeEdge.ya,
+        xb: latticeEdge.xb,
+        yb: latticeEdge.yb,
       });
-    } else {
-      const sa = worldToSpliceVertex(s, lot.driveLines);
-      const sb = worldToSpliceVertex(e, lot.driveLines);
-      if (sa && sb && sa.drive_line_id === sb.drive_line_id) {
-        lot.annotations.push({
-          kind: "SpliceDeleteEdge",
-          drive_line_id: sa.drive_line_id,
-          ta: sa.t,
-          tb: sb.t,
-        });
-      } else {
-        return;
-      }
+      this.state.selectedEdge = null;
+      lot.aisleGraph = null;
+      this.generate();
+      return;
     }
-    this.state.selectedEdge = null;
-    lot.aisleGraph = null;
-    this.generate();
+
+    // Fallback: splice deletion when the chain lies on a single
+    // drive line and isn't grid-addressable.
+    const seedEdge = graph.edges[sel.index];
+    if (!seedEdge) return;
+    const s = graph.vertices[seedEdge.start];
+    const e = graph.vertices[seedEdge.end];
+    const sa = worldToSpliceVertex(s, lot.driveLines);
+    const sb = worldToSpliceVertex(e, lot.driveLines);
+    if (sa && sb && sa.drive_line_id === sb.drive_line_id) {
+      lot.annotations.push({
+        kind: "SpliceDeleteEdge",
+        drive_line_id: sa.drive_line_id,
+        ta: sa.t,
+        tb: sb.t,
+      });
+      this.state.selectedEdge = null;
+      lot.aisleGraph = null;
+      this.generate();
+    }
   }
 
   deleteDriveLine(index: number, lotId?: string): void {

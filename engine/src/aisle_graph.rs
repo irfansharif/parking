@@ -274,9 +274,14 @@ fn generate_region_aisles(
     // perpendicular axis by aisle_offset, so dragging the aisle vector
     // slides the entire grid (and annotations keyed by integer
     // (xi, yi) follow the shift).
+    // Widen the iteration range by one step on each side so that grid lines
+    // are a stable function of `aisle_offset`/`row_spacing` rather than
+    // jumping in/out as polygon-vertex projections cross integer multiples
+    // of the spacing. Lines outside the polygon produce no hits and are
+    // discarded naturally.
     let (first, grid_end) = {
-        let k_min = ((min_proj - aisle_offset) / row_spacing).ceil() as i64;
-        let k_max = ((max_proj - aisle_offset) / row_spacing).floor() as i64;
+        let k_min = ((min_proj - aisle_offset) / row_spacing).ceil() as i64 - 1;
+        let k_max = ((max_proj - aisle_offset) / row_spacing).floor() as i64 + 1;
         (
             aisle_offset + k_min as f64 * row_spacing,
             aisle_offset + k_max as f64 * row_spacing,
@@ -380,8 +385,9 @@ fn generate_region_aisles(
             .map(|v| v.dot(aisle_dir))
             .fold(f64::NEG_INFINITY, f64::max);
 
-        let k_min = (min_along / col_spacing).ceil() as i64;
-        let k_max = (max_along / col_spacing).floor() as i64;
+        // Widen by one step on each side (see row_spacing comment above).
+        let k_min = (min_along / col_spacing).ceil() as i64 - 1;
+        let k_max = (max_along / col_spacing).floor() as i64 + 1;
         let (col_start, col_end) =
             (k_min as f64 * col_spacing, k_max as f64 * col_spacing);
 
