@@ -760,26 +760,51 @@ fn apply_annotations(
                 }
             }
             Annotation::AbstractDeleteEdge { region, xa, ya, xb, yb } => {
-                let Some(&via) = abstract_lookup.get(&(*region, *xa, *ya)) else {
+                // Geometric filter: the annotation names a lattice line
+                // segment in the region's abstract frame. Any sub-edge
+                // whose midpoint lies on that segment (axis-aligned in
+                // abstract coords, within the integer extents) is part
+                // of the lattice edge and gets deleted. Drive-line and
+                // boundary intersections that split the lattice into
+                // sub-segments are handled implicitly — each sub-segment
+                // also has its midpoint on the segment.
+                let Some(region_data) = regions.iter().find(|r| r.id == *region) else {
                     dormant.insert(ann_idx);
                     continue;
                 };
-                let Some(&vib) = abstract_lookup.get(&(*region, *xb, *yb)) else {
-                    dormant.insert(ann_idx);
-                    continue;
-                };
-                // Find all graph edges that connect via↔vib in either
-                // direction (the stamp emits bidirectional edges, and
-                // drive-line splicing may introduce mid-edge vertices we
-                // don't yet handle). Delete each matching edge.
+                let frame = &region_data.frame;
+                // Determine axis (the lattice this segment runs along).
+                let along_x = xa != xb;
+                let fixed = if along_x { *ya } else { *xa };
+                let lo = if along_x { (*xa).min(*xb) } else { (*ya).min(*yb) };
+                let hi = if along_x { (*xa).max(*xb) } else { (*ya).max(*yb) };
+                const TOL: f64 = 0.05; // abstract-coord tolerance (fraction of a cell)
                 let mut touched = false;
-                for (i, ei) in graph.edges.iter().enumerate() {
-                    if (ei.start == via && ei.end == vib)
-                        || (ei.start == vib && ei.end == via)
-                    {
-                        edges_to_remove.insert(i);
-                        touched = true;
+                for (i, edge) in graph.edges.iter().enumerate() {
+                    let a = graph.vertices[edge.start];
+                    let b = graph.vertices[edge.end];
+                    let mid = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                    let abs_mid = frame.inverse(mid);
+                    let abs_a = frame.inverse(a);
+                    let abs_b = frame.inverse(b);
+                    let edge_along_x = (abs_b.x - abs_a.x).abs()
+                        > (abs_b.y - abs_a.y).abs();
+                    if edge_along_x != along_x {
+                        continue;
                     }
+                    let (mid_fixed, mid_var) = if along_x {
+                        (abs_mid.y, abs_mid.x)
+                    } else {
+                        (abs_mid.x, abs_mid.y)
+                    };
+                    if (mid_fixed - fixed as f64).abs() > TOL {
+                        continue;
+                    }
+                    if mid_var < lo as f64 - TOL || mid_var > hi as f64 + TOL {
+                        continue;
+                    }
+                    edges_to_remove.insert(i);
+                    touched = true;
                 }
                 if !touched {
                     dormant.insert(ann_idx);
@@ -792,17 +817,37 @@ fn apply_annotations(
                 }
             }
             Annotation::SpliceDeleteEdge { drive_line_id, ta, tb } => {
-                let via = resolve_splice_vertex(&splice_lookup, &line_lengths, *drive_line_id, *ta, pitch);
-                let vib = resolve_splice_vertex(&splice_lookup, &line_lengths, *drive_line_id, *tb, pitch);
-                let (Some(via), Some(vib)) = (via, vib) else {
+                // Delete every sub-edge of this drive line whose t-range
+                // lies within [ta, tb]. Matching on a single direct edge
+                // is too brittle: when the user nudges the drive line's
+                // endpoints, new intersections can split the originally-
+                // deleted region into multiple sub-edges, and the exact
+                // (via, vib) pair stops existing.
+                let line_len = line_lengths.get(drive_line_id).copied().unwrap_or(0.0);
+                let entries = splice_lookup.get(drive_line_id);
+                let (Some(entries), true) = (entries, line_len > 1e-9) else {
                     dormant.insert(ann_idx);
                     continue;
                 };
+                // The annotation is anchored to a single point on the
+                // drive line (the midpoint of the stored range, which
+                // is also where the marker renders). Delete whichever
+                // sub-edge of the drive line that point sits on.
+                let tol_t = pitch / line_len;
+                let t_mid = 0.5 * (ta + tb);
+                let mut v_to_t: std::collections::HashMap<usize, f64> =
+                    std::collections::HashMap::with_capacity(entries.len());
+                for &(et, vi) in entries {
+                    v_to_t.insert(vi, et);
+                }
                 let mut touched = false;
                 for (i, ei) in graph.edges.iter().enumerate() {
-                    if (ei.start == via && ei.end == vib)
-                        || (ei.start == vib && ei.end == via)
-                    {
+                    let (Some(&ts), Some(&te)) = (v_to_t.get(&ei.start), v_to_t.get(&ei.end)) else {
+                        continue;
+                    };
+                    let lo = ts.min(te);
+                    let hi = ts.max(te);
+                    if lo - tol_t <= t_mid && t_mid <= hi + tol_t {
                         edges_to_remove.insert(i);
                         touched = true;
                     }
@@ -842,12 +887,98 @@ fn apply_annotations(
             .collect();
         graph.edges = new_edges;
 
+        // Simplify: any vertex left with degree-2 collinear is a vestige
+        // (e.g., a former row×column intersection where the row was
+        // deleted). Merge its two edges into one and orphan the vertex.
+        // Run iteratively in case merges create new degree-2 candidates.
+        // Skip perimeter vertices (boundary inset corners are kept).
+        simplify_collinear_degree2(graph);
+
         // Note: we don't compact vertices (remove unused ones) since vertex
         // indices are referenced by edges and the perimeter_vertex_count.
         // Orphaned vertices are harmless.
     }
 
     dormant.into_iter().collect()
+}
+
+/// Iteratively merge degree-2 collinear interior vertices. After deleting
+/// a row of edges, the vertices where the row crossed columns become
+/// degree-2 (just the two column halves). Those aren't real junctions —
+/// the column should be a single straight edge through them. Replaces
+/// the two incident edges with one spanning edge and leaves the vertex
+/// orphaned (rendering filters orphans).
+fn simplify_collinear_degree2(graph: &mut crate::types::DriveAisleGraph) {
+    use std::collections::HashMap;
+    let perim_n = graph.perim_vertex_count;
+    loop {
+        // Adjacency: vertex_idx -> Vec<edge_idx>. Deduplicate
+        // bidirectional edges by canonical (min, max) endpoint key.
+        let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut canon_seen: std::collections::HashSet<(usize, usize)> =
+            std::collections::HashSet::new();
+        let mut canon_edges: Vec<usize> = Vec::new();
+        for (i, e) in graph.edges.iter().enumerate() {
+            let key = (e.start.min(e.end), e.start.max(e.end));
+            if canon_seen.insert(key) {
+                canon_edges.push(i);
+                adj.entry(e.start).or_default().push(i);
+                adj.entry(e.end).or_default().push(i);
+            }
+        }
+
+        let mut merged_any = false;
+        for (&vi, edges) in &adj {
+            if vi < perim_n { continue; } // keep boundary vertices
+            if edges.len() != 2 { continue; }
+            let e1 = &graph.edges[edges[0]];
+            let e2 = &graph.edges[edges[1]];
+            let other1 = if e1.start == vi { e1.end } else { e1.start };
+            let other2 = if e2.start == vi { e2.end } else { e2.start };
+            if other1 == other2 { continue; } // degenerate loop
+            let p = graph.vertices[vi];
+            let a = graph.vertices[other1];
+            let b = graph.vertices[other2];
+            // Check collinearity: a→p direction matches p→b direction.
+            let d1x = p.x - a.x;
+            let d1y = p.y - a.y;
+            let d2x = b.x - p.x;
+            let d2y = b.y - p.y;
+            let l1 = (d1x * d1x + d1y * d1y).sqrt();
+            let l2 = (d2x * d2x + d2y * d2y).sqrt();
+            if l1 < 1e-9 || l2 < 1e-9 { continue; }
+            let dot = (d1x * d2x + d1y * d2y) / (l1 * l2);
+            if dot < 0.999 { continue; } // not collinear
+            // Direction must also match (no U-turns).
+            // Already implied by dot>0.999.
+
+            // Merge: remove e1 and e2 (and their reverse twins, if any),
+            // add a single edge other1 → other2 with merged direction.
+            let key1 = (e1.start.min(e1.end), e1.start.max(e1.end));
+            let key2 = (e2.start.min(e2.end), e2.start.max(e2.end));
+            let direction = e1.direction.clone();
+            let interior = e1.interior && e2.interior;
+            let width = e1.width.max(e2.width);
+            let new_edges: Vec<crate::types::AisleEdge> = graph.edges.iter()
+                .filter(|e| {
+                    let k = (e.start.min(e.end), e.start.max(e.end));
+                    k != key1 && k != key2
+                })
+                .cloned()
+                .collect();
+            graph.edges = new_edges;
+            graph.edges.push(crate::types::AisleEdge {
+                start: other1,
+                end: other2,
+                width,
+                direction,
+                interior,
+            });
+            merged_any = true;
+            break; // restart since adjacency changed
+        }
+        if !merged_any { break; }
+    }
 }
 
 /// Build a per-drive-line lookup of (t, vertex_idx) sorted by t. Vertices

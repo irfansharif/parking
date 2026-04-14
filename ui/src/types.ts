@@ -253,6 +253,70 @@ export function worldToAbstractVertex(
 }
 
 /**
+ * Resolve a world-space chain of collinear aisle sub-edges to the
+ * **lattice-edge extents** in some region's abstract frame. Returns
+ * (region, xa, ya, xb, yb) describing the unit/multi-cell lattice edge
+ * that bounds the chain.
+ *
+ * Used to address chains that have been split by drive-line or boundary
+ * intersections: the chain endpoints land on integer lattice
+ * intersections (junctions), while interior break points are fractional.
+ * The bounding lattice extents are the rounded min/max of all chain
+ * endpoints along the varying axis.
+ *
+ * Returns null if the chain isn't collinear, no region contains its
+ * midpoint, or the rounded extents collapse (degenerate edge).
+ */
+export function chainToAbstractLatticeEdge(
+  chainPoints: Vec2[],
+  params: ParkingParams,
+  regionDebug: RegionDebug | undefined,
+): { region: RegionId; xa: number; ya: number; xb: number; yb: number } | null {
+  if (!regionDebug || chainPoints.length < 2) return null;
+  const mid = {
+    x: chainPoints.reduce((a, p) => a + p.x, 0) / chainPoints.length,
+    y: chainPoints.reduce((a, p) => a + p.y, 0) / chainPoints.length,
+  };
+  for (const region of regionDebug.regions) {
+    if (!pointInPolygon(mid, region.clip_poly)) continue;
+    const frame = computeRegionFrame(
+      params,
+      region.aisle_angle_deg,
+      region.aisle_offset,
+    );
+    const abs = chainPoints.map((p) => frameInverse(frame, p));
+    const xs = abs.map((p) => p.x);
+    const ys = abs.map((p) => p.y);
+    const xRange = Math.max(...xs) - Math.min(...xs);
+    const yRange = Math.max(...ys) - Math.min(...ys);
+    // Reject chains that aren't actually axis-aligned in this frame
+    // (e.g. drive-line chains at arbitrary angles). The "constant"
+    // axis must lie within snap tolerance of an integer grid line,
+    // otherwise we'd silently project the chain onto the nearest
+    // lattice edge and anchor the annotation there.
+    const snapTol = 0.5;
+    if (xRange > yRange) {
+      const yi = Math.round(ys.reduce((a, b) => a + b, 0) / ys.length);
+      const yDev = Math.max(...ys.map((y) => Math.abs(y - yi))) * frame.dy;
+      if (yDev > snapTol) return null;
+      const xa = Math.floor(Math.min(...xs));
+      const xb = Math.ceil(Math.max(...xs));
+      if (xa === xb) return null;
+      return { region: region.id, xa, ya: yi, xb, yb: yi };
+    } else {
+      const xi = Math.round(xs.reduce((a, b) => a + b, 0) / xs.length);
+      const xDev = Math.max(...xs.map((x) => Math.abs(x - xi))) * frame.dx;
+      if (xDev > snapTol) return null;
+      const ya = Math.floor(Math.min(...ys));
+      const yb = Math.ceil(Math.max(...ys));
+      if (ya === yb) return null;
+      return { region: region.id, xa: xi, ya, xb: xi, yb };
+    }
+  }
+  return null;
+}
+
+/**
  * Project a world-space point onto the closest drive line and return its
  * stable splice anchor — `(drive_line_id, t)` where `t ∈ [0, 1]` is the
  * fractional position along the line. Returns null if no drive line is
@@ -475,6 +539,35 @@ export function isAbstractAnnotation(
     ann.kind === "AbstractOneWay" ||
     ann.kind === "AbstractTwoWayOriented"
   );
+}
+
+/**
+ * Resolve an abstract annotation to its current world-space anchor by
+ * forward-transforming its integer (xi, yi) — or the midpoint of
+ * (xa, ya) and (xb, yb) for edge variants — through its host region's
+ * AbstractFrame. Returns null if the annotation isn't abstract or its
+ * region isn't in the current layout (dormant).
+ */
+export function abstractAnnotationWorldPos(
+  ann: Annotation,
+  regionDebug: RegionDebug | undefined,
+  params: ParkingParams,
+): Vec2 | null {
+  if (!isAbstractAnnotation(ann)) return null;
+  if (!regionDebug) return null;
+  const region = regionDebug.regions.find((r) => r.id === ann.region);
+  if (!region) return null;
+  const frame = computeRegionFrame(
+    params,
+    region.aisle_angle_deg,
+    region.aisle_offset,
+  );
+  if (ann.kind === "AbstractDeleteVertex") {
+    return frameForward(frame, { x: ann.xi, y: ann.yi });
+  }
+  const a = frameForward(frame, { x: ann.xa, y: ann.ya });
+  const b = frameForward(frame, { x: ann.xb, y: ann.yb });
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
 
 /**

@@ -58,6 +58,7 @@ async function main() {
   // Expose command API for testing
   const commandAPI = createCommandAPI(app);
   (window as any).app = commandAPI;
+  (window as any).__app = app;
 
   // Expose fixture dumper for debugging. Usage:
   //   copy(window.dumpFixture())
