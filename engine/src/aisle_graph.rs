@@ -86,147 +86,98 @@ pub struct Region {
 }
 
 /// Decompose the annular area between the outer boundary and holes into
-/// regions based on separator drive lines. Each separator is a segment
-/// from a hole vertex to a user-specified boundary point (the drive line
-/// endpoint). When 2+ separators exist on the same hole, enclosed regions
-/// form between consecutive separators with per-region aisle angles.
+/// regions via planar-arrangement face enumeration over the outer,
+/// holes, and partitioning drive lines. A partitioning line that
+/// dangles inside a face doesn't split it. When no partitioning lines
+/// are supplied, a single region is returned.
 ///
-/// `separator_lines` contains (hole_index, vertex_index, boundary_endpoint)
-/// for each pinned separator drive line.
+/// `partitioning_lines` contains `(drive_line_id, start, end)` for each
+/// drive line with `partitions == true`. `default_angle_deg` /
+/// `default_offset` are used for regions that don't touch a hole (the
+/// historical convention was to derive angle from the dominant hole
+/// edge span; we preserve that when a hole is present).
 pub fn decompose_regions(
     outer_loop: &[Vec2],
     hole_loops: &[Vec<Vec2>],
-    separator_lines: &[(usize, usize, Vec2)],
+    partitioning_lines: &[(u32, Vec2, Vec2)],
+    default_angle_deg: f64,
+    default_offset: f64,
 ) -> Vec<Region> {
-    let mut regions = Vec::new();
-    let outer_n = outer_loop.len();
+    use crate::regions::{enumerate_regions, PartitionedRegion};
 
-    // Group separators by hole index.
-    let mut by_hole: std::collections::HashMap<usize, Vec<(usize, Vec2)>> =
-        std::collections::HashMap::new();
-    for &(hi, vi, boundary_pt) in separator_lines {
-        by_hole.entry(hi).or_default().push((vi, boundary_pt));
+    let hole_slices: Vec<&[Vec2]> = hole_loops.iter().map(|h| h.as_slice()).collect();
+    let parts: Vec<PartitionedRegion> =
+        enumerate_regions(outer_loop, &hole_slices, partitioning_lines);
+
+    if parts.is_empty() {
+        return Vec::new();
     }
 
-    for (hole_idx, mut seps) in by_hole {
-        let hole = match hole_loops.get(hole_idx) {
-            Some(h) if h.len() >= 3 => h,
-            _ => continue,
-        };
-        let n = hole.len();
+    // When there are no partitioning lines, the enumerator yields a
+    // single face covering the lot. Map it to the legacy
+    // single-region-fallback ID so existing RegionOverride keys
+    // continue to resolve.
+    let no_partitions = partitioning_lines.is_empty();
 
-        // Need 2+ separators to form regions.
-        if seps.len() < 2 {
-            continue;
-        }
-
-        // Sort by vertex index (CCW order around hole).
-        seps.sort_by_key(|(vi, _)| *vi);
-        seps.dedup_by_key(|(vi, _)| *vi);
-
-        if seps.len() < 2 {
-            continue;
-        }
-
-        // Find which outer boundary edge each separator endpoint is on.
-        let find_boundary_edge = |pt: Vec2| -> (usize, f64) {
-            let mut best_dist = f64::INFINITY;
-            let mut best_edge = 0usize;
-            let mut best_t = 0.0;
-            for ei in 0..outer_n {
-                let ej = (ei + 1) % outer_n;
-                let a = outer_loop[ei];
-                let b = outer_loop[ej];
-                let ab = b - a;
-                let len_sq = ab.dot(ab);
-                if len_sq < 1e-12 { continue; }
-                let t = ((pt - a).dot(ab) / len_sq).clamp(0.0, 1.0);
-                let proj = a + ab * t;
-                let dist = (pt - proj).length();
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_edge = ei;
-                    best_t = t;
-                }
-            }
-            (best_edge, best_t)
-        };
-
-        // Build one region per consecutive pair of separators.
-        for idx in 0..seps.len() {
-            let (vi, bpt_i) = seps[idx];
-            let (vj, bpt_j) = seps[(idx + 1) % seps.len()];
-            let (edge_i, t_i) = find_boundary_edge(bpt_i);
-            let (edge_j, t_j) = find_boundary_edge(bpt_j);
-
-            let mut poly = Vec::new();
-
-            // Hole vertex i → boundary point i.
-            poly.push(hole[vi]);
-            poly.push(bpt_i);
-
-            // Walk outer boundary CCW from bpt_i to bpt_j.
-            if edge_i == edge_j {
-                if t_i > t_j {
-                    let mut k = (edge_i + 1) % outer_n;
-                    loop {
-                        poly.push(outer_loop[k]);
-                        if k == edge_j { break; }
-                        k = (k + 1) % outer_n;
-                        if poly.len() > outer_n + 10 { break; }
-                    }
-                }
+    parts
+        .into_iter()
+        .map(|r| {
+            let id = if no_partitions {
+                RegionId::single_region_fallback()
             } else {
-                let mut k = (edge_i + 1) % outer_n;
-                loop {
-                    poly.push(outer_loop[k]);
-                    if k == edge_j { break; }
-                    k = (k + 1) % outer_n;
-                    if poly.len() > outer_n + 10 { break; }
-                }
-            }
-
-            // Boundary point j → hole vertex j.
-            poly.push(bpt_j);
-            poly.push(hole[vj]);
-
-            // Walk hole edges from vj back to vi.
-            if vj != vi {
-                let mut k = (vj + 1) % n;
-                while k != vi {
-                    poly.push(hole[k]);
-                    k = (k + 1) % n;
-                }
-            }
-
-            // Aisle angle from the dominant (longest) hole edge in this span.
-            let mut best_len = 0.0f64;
-            let mut best_dir = Vec2::new(1.0, 0.0);
-            let mut k = vi;
-            loop {
-                let kn = (k + 1) % n;
-                let edge_len = (hole[kn] - hole[k]).length();
-                if edge_len > best_len {
-                    best_len = edge_len;
-                    best_dir = (hole[kn] - hole[k]).normalize();
-                }
-                k = kn;
-                if k == vj { break; }
-            }
-            let mut angle = best_dir.y.atan2(best_dir.x).to_degrees();
-            angle = ((angle % 180.0) + 180.0) % 180.0;
-
-            regions.push(Region {
-                id: RegionId::from_signature(hole_idx, vi, vj),
-                clip_poly: poly,
+                r.id
+            };
+            // Derive aisle angle from the longest hole-kind edge on the
+            // region boundary; fall back to default otherwise.
+            let (angle, offset) = derive_region_frame(
+                &r.clip_poly,
+                &r.boundary_kinds,
+                default_angle_deg,
+                default_offset,
+            );
+            Region {
+                id,
+                clip_poly: r.clip_poly,
                 aisle_angle_deg: angle,
-                aisle_offset: 0.0,
-            });
+                aisle_offset: offset,
+            }
+        })
+        .collect()
+}
+
+fn derive_region_frame(
+    clip_poly: &[Vec2],
+    boundary_kinds: &[crate::regions::EdgeKind],
+    default_angle_deg: f64,
+    default_offset: f64,
+) -> (f64, f64) {
+    use crate::regions::EdgeKind;
+    let n = clip_poly.len();
+    if n < 2 || boundary_kinds.len() != n {
+        return (default_angle_deg, default_offset);
+    }
+    let mut best_len = 0.0f64;
+    let mut best_dir: Option<Vec2> = None;
+    for i in 0..n {
+        if !matches!(boundary_kinds[i], EdgeKind::Hole(_, _)) {
+            continue;
+        }
+        let j = (i + 1) % n;
+        let d = clip_poly[j] - clip_poly[i];
+        let len = d.length();
+        if len > best_len {
+            best_len = len;
+            best_dir = Some(d.normalize());
         }
     }
-
-    regions
+    let Some(dir) = best_dir else {
+        return (default_angle_deg, default_offset);
+    };
+    let mut angle = dir.y.atan2(dir.x).to_degrees();
+    angle = ((angle % 180.0) + 180.0) % 180.0;
+    (angle, default_offset)
 }
+
 
 /// Result of generating aisles for a single region.
 struct RegionAisleResult {
@@ -463,14 +414,14 @@ fn generate_region_aisles(
 /// 2. Hole loops (aisle-edge rings around each hole) — stalls face away from hole
 /// 3. Interior parallel aisles at stall_angle_deg, clipped to perimeter minus holes
 /// 4. Interior aisle endpoints spliced into perimeter edges for full connectivity
-/// `separator_lines` contains (hole_index, vertex_index, boundary_endpoint)
-/// for each pinned separator drive line. These are used for region
+/// `partitioning_lines` contains `(drive_line_id, start, end)` for each
+/// drive line with `partitions == true`. These are used for region
 /// decomposition only — the drive lines themselves become aisle edges
-/// via clip_drive_lines separately.
+/// via `clip_drive_lines` separately.
 pub fn auto_generate(
     boundary: &Polygon,
     params: &ParkingParams,
-    separator_lines: &[(usize, usize, Vec2)],
+    partitioning_lines: &[(u32, Vec2, Vec2)],
     region_overrides: &[RegionOverride],
 ) -> DriveAisleGraph {
     // aisle_width is one driving lane. Auto-generated edges are two-way
@@ -583,8 +534,14 @@ pub fn auto_generate(
         (None, angle, offset)
     };
 
-    let regions = if params.use_regions && !separator_lines.is_empty() {
-        let mut regions = decompose_regions(&outer_loop, &hole_loops, separator_lines);
+    let regions = if params.use_regions && !partitioning_lines.is_empty() {
+        let mut regions = decompose_regions(
+            &outer_loop,
+            &hole_loops,
+            partitioning_lines,
+            params.aisle_angle_deg,
+            params.aisle_offset,
+        );
         for ov in region_overrides {
             if let Some(r) = regions.iter_mut().find(|r| r.id == ov.region_id) {
                 if let Some(a) = ov.aisle_angle_deg { r.aisle_angle_deg = a; }
@@ -732,7 +689,7 @@ pub fn merge_with_auto(
     // not itself know whether the caller intends the abstract stamp.
     // Default to false here — manual overlays don't participate in
     // the abstract grid refactor.
-    let auto = auto_generate(boundary, params, &[] as &[(usize, usize, Vec2)], &[]);
+    let auto = auto_generate(boundary, params, &[] as &[(u32, Vec2, Vec2)], &[]);
 
     // Compute corridor polygons for manual edges.
     let manual_corridors: Vec<Vec<Vec2>> = manual

@@ -366,7 +366,10 @@ export function setupInteraction(
       // Toggle region projection on selected hole vertex, or cycle
       // direction on selected aisle graph edge / annotation anchor.
       const sel = app.state.selectedVertex;
-      if (sel?.type === "boundary-hole" && sel.holeIndex !== undefined) {
+      if (sel?.type === "drive-line") {
+        app.toggleDriveLinePartitions(sel.index, sel.lotId);
+        renderer.render(app.state);
+      } else if (sel?.type === "boundary-hole" && sel.holeIndex !== undefined) {
         app.toggleSeparator(sel.holeIndex, sel.index);
         renderer.render(app.state);
       } else if (app.state.selectedEdge) {

@@ -208,6 +208,7 @@ export function createCommandAPI(app: App): CommandAPI {
           if (points.length < 2) return "error: drive-line requires 2 points";
           // Parse optional hole-pin=holeIndex,vertexIndex
           const pinMatch = command.match(/hole-pin=(\d+),(\d+)/);
+          const partitions = /\bpartitions\b/.test(command);
           const lot = app.activeLot();
           if (pinMatch) {
             const holeIndex = parseInt(pinMatch[1]);
@@ -219,12 +220,20 @@ export function createCommandAPI(app: App): CommandAPI {
               end: bpin.pos,
               holePin: { holeIndex, vertexIndex },
               boundaryPin: { edgeIndex: bpin.edgeIndex, t: bpin.t },
+              partitions: true,
             });
           } else {
-            lot.driveLines.push({ id: app.newDriveLineId(), start: points[0], end: points[1] });
+            lot.driveLines.push({
+              id: app.newDriveLineId(),
+              start: points[0],
+              end: points[1],
+              partitions,
+            });
           }
           app.generate();
-          const pinSuffix = pinMatch ? ` hole-pin=${pinMatch[1]},${pinMatch[2]}` : "";
+          const pinSuffix = pinMatch
+            ? ` hole-pin=${pinMatch[1]},${pinMatch[2]}`
+            : partitions ? ` partitions` : "";
           return `drive-line: ${points[0].x},${points[0].y} -> ${points[1].x},${points[1].y}${pinSuffix}`;
         }
 

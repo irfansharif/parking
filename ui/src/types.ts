@@ -418,6 +418,10 @@ export interface DriveLine {
   holePin?: { holeIndex: number; vertexIndex: number };
   /** When set, end is pinned to a boundary edge at parameter t. */
   boundaryPin?: { edgeIndex: number; t: number };
+  /** When true, participates in face enumeration and partitions the lot
+   *  into regions. Otherwise, the line is a corridor-only drive line
+   *  (aisle graph edge, no partitioning effect). */
+  partitions?: boolean;
 }
 
 /** Project a point onto the nearest outer boundary edge. */

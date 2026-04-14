@@ -29,9 +29,13 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     let mut input = input;
     input.boundary = crate::bezier::discretize_polygon(&input.boundary);
 
-    // Extract separator lines from pinned drive lines: (hole_index, vertex_index, boundary_endpoint).
-    let separator_lines: Vec<(usize, usize, Vec2)> = input.drive_lines.iter()
-        .filter_map(|dl| dl.hole_pin.as_ref().map(|p| (p.hole_index, p.vertex_index, dl.end)))
+    // Partitioning drive lines contribute to the planar-arrangement
+    // face enumeration (regions). During the migration we accept
+    // either the new `partitions` flag or the legacy `hole_pin` as the
+    // signal — either one means "this line divides space".
+    let partitioning_lines: Vec<(u32, Vec2, Vec2)> = input.drive_lines.iter()
+        .filter(|dl| dl.partitions || dl.hole_pin.is_some())
+        .map(|dl| (dl.id, dl.start, dl.end))
         .collect();
 
     // First, resolve the aisle graph from manual + auto as usual.
@@ -40,7 +44,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         None => auto_generate(
             &input.boundary,
             &input.params,
-            &separator_lines,
+            &partitioning_lines,
             &input.region_overrides,
         ),
     };
@@ -66,7 +70,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     // cheap enough to compute here again (auto_generate also runs it
     // internally) — a future cleanup could share the result.
     let resolved_regions: Vec<ResolvedRegion> =
-        resolve_regions_for_frames(&input, &separator_lines);
+        resolve_regions_for_frames(&input, &partitioning_lines);
 
     // Apply spatial annotations to the resolved graph. Abstract
     // annotations resolve by integer grid lookup into the region
@@ -133,8 +137,14 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
             .cloned()
             .collect();
 
-        let mut region_list = if !separator_lines.is_empty() {
-            decompose_regions(&outer_loop, &hole_loops, &separator_lines)
+        let mut region_list = if !partitioning_lines.is_empty() {
+            decompose_regions(
+                &outer_loop,
+                &hole_loops,
+                &partitioning_lines,
+                input.params.aisle_angle_deg,
+                input.params.aisle_offset,
+            )
         } else {
             vec![]
         };
@@ -520,7 +530,7 @@ struct ResolvedRegion {
 /// below but returns the frames for annotation resolution.
 fn resolve_regions_for_frames(
     input: &GenerateInput,
-    separator_lines: &[(usize, usize, Vec2)],
+    partitioning_lines: &[(u32, Vec2, Vec2)],
 ) -> Vec<ResolvedRegion> {
     let outer_loop = if input.params.site_offset > 0.0 {
         let p = inset_polygon(&input.boundary.outer, input.params.site_offset);
@@ -540,8 +550,14 @@ fn resolve_regions_for_frames(
         .cloned()
         .collect();
 
-    let mut region_list = if !separator_lines.is_empty() {
-        decompose_regions(&outer_loop, &hole_loops, separator_lines)
+    let mut region_list = if !partitioning_lines.is_empty() {
+        decompose_regions(
+            &outer_loop,
+            &hole_loops,
+            partitioning_lines,
+            input.params.aisle_angle_deg,
+            input.params.aisle_offset,
+        )
     } else {
         vec![]
     };

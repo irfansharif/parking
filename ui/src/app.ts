@@ -204,8 +204,8 @@ export class App {
       ),
       driveLines: [
         { id: 1, start: { x: 824.53, y: 531.97 }, end: { x: 224.60, y: 654.85 } },
-        { id: 2, start: { x: 611.14, y: 251.80 }, end: { x: 762.23, y: 244.23 }, holePin: { holeIndex: 0, vertexIndex: 1 } },
-        { id: 3, start: { x: 394.53, y: 251.80 }, end: { x: 250.39, y: 0 }, holePin: { holeIndex: 0, vertexIndex: 0 } },
+        { id: 2, start: { x: 611.14, y: 251.80 }, end: { x: 762.23, y: 244.23 }, holePin: { holeIndex: 0, vertexIndex: 1 }, partitions: true },
+        { id: 3, start: { x: 394.53, y: 251.80 }, end: { x: 250.39, y: 0 }, holePin: { holeIndex: 0, vertexIndex: 0 }, partitions: true },
       ],
       regionOverrides: {},
       layout: null,
@@ -892,6 +892,16 @@ export class App {
     this.generate();
   }
 
+  toggleDriveLinePartitions(index: number, lotId?: string): void {
+    const lot = (lotId && this.state.lots.find((l) => l.id === lotId)) || this.activeLot();
+    const dl = lot.driveLines[index];
+    if (!dl) return;
+    dl.partitions = !(dl.partitions ?? false);
+    lot.regionOverrides = {};
+    lot.aisleGraph = null;
+    this.generate();
+  }
+
   toggleSeparator(holeIndex: number, vertexIndex: number): void {
     const lot = this.activeLot();
     const idx = lot.driveLines.findIndex(
@@ -910,6 +920,7 @@ export class App {
         end: proj.pos,
         holePin: { holeIndex, vertexIndex },
         boundaryPin: { edgeIndex: proj.edgeIndex, t: proj.t },
+        partitions: true,
       });
     }
     lot.regionOverrides = {};

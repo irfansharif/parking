@@ -9,6 +9,7 @@ pub mod aisle_polygon;
 pub mod face;
 pub mod island;
 pub mod generate;
+pub mod regions;
 
 use wasm_bindgen::prelude::*;
 use crate::generate::generate;

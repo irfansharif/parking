@@ -2969,7 +2969,7 @@ mod tests {
                 DriveLine {
                     start: Vec2::new(-50.0, 250.0),
                     end: Vec2::new(800.0, 250.0),
-                hole_pin: None, id: 0, },
+                hole_pin: None, id: 0, partitions: false, },
             ],
             annotations: vec![],
             params: ParkingParams::default(),
@@ -3162,7 +3162,7 @@ mod tests {
                 DriveLine {
                     start: Vec2::new(150.0, -50.0),
                     end: Vec2::new(150.0, 250.0),
-                hole_pin: None, id: 1, },
+                hole_pin: None, id: 1, partitions: false, },
             ],
             annotations: vec![
                 // Drive line spans y=-50→y=250 (length 300). The interior

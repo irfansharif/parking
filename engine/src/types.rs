@@ -783,6 +783,12 @@ pub struct DriveLine {
     /// never matched by splice annotations.
     #[serde(default)]
     pub id: u32,
+    /// When true, this drive line participates in planar-arrangement
+    /// face enumeration and partitions the lot into regions. When
+    /// false, it's a corridor-only line (aisle graph edge, no
+    /// partitioning effect).
+    #[serde(default)]
+    pub partitions: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

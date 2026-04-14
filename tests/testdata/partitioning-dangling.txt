@@ -1,0 +1,22 @@
+# A dangling partitioning drive line (one endpoint strictly interior
+# to the lot) does NOT split the lot: face enumeration finds no new
+# closed cycle, so the single-region fallback remains.
+
+polygon outer
+0,0
+300,0
+300,200
+0,200
+----
+polygon outer: 4 vertices
+
+# Partition endpoint (150,100) is strictly interior.
+drive-line partitions
+0,100
+150,100
+----
+drive-line: 0,100 -> 150,100 partitions
+
+generate
+----
+total_stalls: 154
