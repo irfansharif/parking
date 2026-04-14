@@ -196,16 +196,18 @@ export class App {
         ],
       },
       aisleGraph: null,
-      annotations: [],
+      annotations: [
+        { kind: "SpliceDeleteVertex", drive_line_id: 2, t: 1.00 },
+      ],
       aisleVector: aisleVectorFromAngle(90, 0, { x: -80, y: 250 }),
       aisleOffsetBaseline: midpointPerpProj(
         aisleVectorFromAngle(90, 0, { x: -80, y: 250 }),
         90,
       ),
       driveLines: [
-        { id: 1, start: { x: 824.53, y: 531.97 }, end: { x: 224.60, y: 654.85 } },
-        { id: 2, start: { x: 611.14, y: 251.80 }, end: { x: 762.23, y: 244.23 }, holePin: { holeIndex: 0, vertexIndex: 1 }, partitions: true },
-        { id: 3, start: { x: 394.53, y: 251.80 }, end: { x: 250.39, y: 0 }, holePin: { holeIndex: 0, vertexIndex: 0 }, partitions: true },
+        { id: 1, start: { x: 930.76, y: 427.57 }, end: { x: 177.91, y: 723.79 }, partitions: true },
+        { id: 2, start: { x: 198.60, y: -53.66 }, end: { x: 475.79, y: 349.25 }, partitions: true },
+        { id: 3, start: { x: 446.56, y: 335.61 }, end: { x: 930.76, y: 135.52 }, partitions: true },
       ],
       regionOverrides: {},
       layout: null,

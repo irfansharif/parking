@@ -346,11 +346,25 @@ impl Arrangement {
             if cycle.is_empty() {
                 continue;
             }
-            // Build polygon.
-            let poly: Vec<Vec2> = cycle
-                .iter()
-                .map(|&he| self.vertices[self.origin[he]])
-                .collect();
+            // Build polygon. When a partition line passes through a
+            // hole, the face cycle here weaves hole edges into the
+            // region's boundary. Strip those out: emit a vertex only
+            // when the half-edge is NOT a hole edge, plus the entry
+            // vertex of the first hole edge in each hole-run (so the
+            // polygon bridges across the hole instead of wrapping
+            // around it). The renderer subtracts whole holes
+            // separately, so the bridge is invisible.
+            let m = cycle.len();
+            let mut poly: Vec<Vec2> = Vec::with_capacity(m);
+            for i in 0..m {
+                let he = cycle[i];
+                let prev_he = cycle[(i + m - 1) % m];
+                let is_hole = matches!(self.kind[he], EdgeKind::Hole(_, _));
+                let prev_hole = matches!(self.kind[prev_he], EdgeKind::Hole(_, _));
+                if !is_hole || !prev_hole {
+                    poly.push(self.vertices[self.origin[he]]);
+                }
+            }
             // Reject unbounded / exterior cycles by requiring positive
             // signed area. A cycle walking the exterior has negative
             // area (it goes CW around the infinite face). Hole interior
