@@ -147,21 +147,21 @@ pub fn decompose_regions(
 
 fn derive_region_frame(
     clip_poly: &[Vec2],
-    boundary_kinds: &[crate::regions::EdgeKind],
+    _boundary_kinds: &[crate::regions::EdgeKind],
     default_angle_deg: f64,
     default_offset: f64,
 ) -> (f64, f64) {
-    use crate::regions::EdgeKind;
+    // Pick the longest edge of the region polygon — regardless of
+    // whether it came from the outer boundary, a hole, or a partition
+    // line. This lets a region whose dominant side is a partition
+    // chord inherit the chord's orientation.
     let n = clip_poly.len();
-    if n < 2 || boundary_kinds.len() != n {
+    if n < 2 {
         return (default_angle_deg, default_offset);
     }
     let mut best_len = 0.0f64;
     let mut best_dir: Option<Vec2> = None;
     for i in 0..n {
-        if !matches!(boundary_kinds[i], EdgeKind::Hole(_, _)) {
-            continue;
-        }
         let j = (i + 1) % n;
         let d = clip_poly[j] - clip_poly[i];
         let len = d.length();
