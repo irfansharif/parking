@@ -145,6 +145,22 @@ export class Renderer {
           ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.5)`;
           ctx.lineWidth = 1.0;
           ctx.stroke();
+          // Mark the region's abstract-frame (0,0) anchor — the
+          // point around which the aisle grid rotates, translates,
+          // and stretches.
+          const frame = computeRegionFrame(
+            state.params,
+            rd.regions[i].aisle_angle_deg,
+            rd.regions[i].aisle_offset,
+          );
+          const anchor = frame.origin_world;
+          ctx.beginPath();
+          ctx.arc(anchor.x, anchor.y, 4, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.9)`;
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+          ctx.lineWidth = 1.0;
+          ctx.stroke();
         }
         for (const [start, end] of rd.separators) {
           ctx.beginPath();
