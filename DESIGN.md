@@ -81,11 +81,10 @@ Vertices are 2D points. Each edge carries some metadata:
   bays, where it informs stall placement: which sides of an aisle gets stalls,
   and which way angled stalls lean.
 
-The graph's vertices are partitioned: there are **boundary vertices** (pinned to
-the inset boundary and hole loops, brown dots below), and the rest are
-**interior vertices** (blue dots in the figure below). Only boundary vertices
-can be moved around manually in the prototype, effectively reshaping the
-site/holes.
+Each vertex is tagged **perimeter** (pinned to the inset boundary and hole
+loops, brown dots below) or **interior** (blue dots in the figure below). Only
+perimeter vertices can be moved around manually in the prototype, effectively
+reshaping the site/holes.
 
 ![Underlying edges and vertices, with the red edges indicating the perimeter aisles. We also see the edge provenance in play, showing each side of the individual parking bays coloured depending on the corresponding aisle (blue for interior edges therefore containing angled stalls, yellow otherwise, and pink of representing some wall where there’s no aisle entry).](attachment:77214313-a5a1-4f70-a6b1-7d8ecf494600:image.png)
 
@@ -95,35 +94,41 @@ individual parking bays coloured depending on the corresponding aisle (blue for
 interior edges therefore containing angled stalls, yellow otherwise, and pink of
 representing some wall where there’s no aisle entry).
 
-### 1.3 Drive Lines and Regions, and Stall Controls
+### 1.3 Drive Lines and Regions
 
 **Drive lines** are user-drawn line segments that cut through the site, creating
 additional driving aisles (think cross-cuts). They're clipped to the inset
 boundary and spliced into the aisle graph using interior edges and vertices.
+Each drive line carries a `partitions` flag — when set, the line participates
+in region decomposition; when unset, it's a corridor that lives in the aisle
+graph but doesn't divide space.
 
-Drive lines can be used to partition the annular space around a building into
-independent **regions**, each a clipping polygon with its own aisle angle and
-offset. The user can override these per-region properties through a “control
-vector”. Region centers are computed via polylabel (pole of inaccessibility) to
-try and ensure the control vector sits inside the region even for concave or
-ring-shaped ones.
+**Regions** are the bounded faces of the planar arrangement of `{outer
+boundary ∪ hole boundaries ∪ partitioning drive lines}`. Holes aren't special:
+they're arrangement edges like anything else. A dangling partition (one that
+doesn't close a cycle) is inert by construction — no new face. Each region
+gets its own aisle angle and offset, overridable through a "control vector".
+Region centers are computed via polylabel (pole of inaccessibility) so the
+control vector sits inside the region even for concave or ring-shaped ones.
 
-We’ll also allow for a different sort of free form line, one that controls how
-overlapping stalls behave. We could use it in a few ways, like a
-**SuppressStalls** variant for example, that removes any stalls whose geometry
-overlaps the line (useful for clearing entrances, fire lanes, or any corridor
-that should remain unobstructed). We could also use this control to place a row
-of ADA stalls, or any custom stall for instance. Lines are also a general form
-of an individual point, which we can use to place a single stall of a certain
-kind somewhere.
+### 1.4 Stall Modifiers
 
-![tDrive lines and separator lines, the latter partitioning the space into independent regions (colored). Each region has a “control vector” to adjust angle and offset.](attachment:79be9336-9a37-4bc3-977c-f52c3d218995:image.png)
+Stall modifiers are user-drawn geometry, applied as a post-pass against placed
+stalls and faces. We'll support two kinds:
 
-tDrive lines and separator lines, the latter partitioning the space into
-independent regions (colored). Each region has a “control vector” to adjust
-angle and offset.
+- **Suppress** — removes any stall whose geometry overlaps the modifier
+  (useful for clearing entrances, fire lanes, or any corridor that should
+  remain unobstructed).
+- **StallType** — retypes overlapping stalls (ADA, EV, compact, etc.).
 
-### 1.4 Annotations
+The modifier geometry is a polyline; a single point is the zero-length case
+(e.g., place one ADA stall here). Modifiers stay in world-space and don't
+follow grid transforms — suppressing a fire lane shouldn't move when the user
+nudges aisle-angle.
+
+![Drive lines, with partitioning ones dividing the space into independent regions (colored). Each region has a “control vector” to adjust angle and offset.](attachment:79be9336-9a37-4bc3-977c-f52c3d218995:image.png)
+
+### 1.5 Annotations
 
 Annotations are spatial intents that survive graph regeneration. They’re tied to
 the underlying grid itself (i.e. specific edges and vertices), and they remain
@@ -219,25 +224,27 @@ Output (ParkingLayout)
 ### 3.1 Aisle Graph Construction
 
 Given a boundary polygon with holes, we produce a regular grid of driving
-aisles, following roughly the following steps:
+aisles in two phases.
+
+**Phase A — auto-generate.**
 
 1. Apply site offset (inset the outer boundary).
-2. (**Optional**) Snap hole vertices onto nearby perimeter edges (within
-   `aisle-width`). When a building sits close to the boundary, this collapses
-   near-duplicate parallel edges that would otherwise produce unusable sliver
-   faces.
-3. For each region:
-    - Determine the dominant aisle angle for the region (e.g. from the longest
-      hole edge, or a global fallback). User-overridable per region.
-    - Compute how wide the site is in the direction perpendicular to the aisles,
-      to determine how many rows fit.
+2. Snap hole vertices onto nearby perimeter edges (within `aisle-width`). When
+   a building sits close to the boundary, this collapses near-duplicate
+   parallel edges that would otherwise produce unusable sliver faces.
+3. Decompose the site into regions (bounded faces of the planar arrangement of
+   outer boundary, hole boundaries, and partitioning drive lines). For each
+   region:
+    - Determine the dominant aisle angle (e.g. from the longest hole edge, or
+      a global fallback). User-overridable per region.
+    - Compute how wide the region is in the direction perpendicular to the
+      aisles, to determine how many rows fit.
     - Space grid lines at intervals of `2 * stall-reach + aisle-width`, where
       `stall-reach = stall-depth * sin(stall-angle) + cos(stall-angle) *
       stall-width / 2` is the perpendicular depth a stall occupies from the
       aisle edge.
-    - For each grid line, intersect with the outer perimeter to get enter/exit
-      intervals. Subtract hole interiors. Clip to the region polygon if
-      applicable.
+    - For each grid line, intersect with the region face to get enter/exit
+      intervals.
     - Record where grid lines cross perimeter/hole edges (split points).
 4. Generate perpendicular cross-aisles at user-configured stall intervals. If
    both main and cross aisles exist, split edges at their intersections.
@@ -245,16 +252,16 @@ aisles, following roughly the following steps:
    intersections.
 6. Build interior edges for each grid and cross-aisle segment.
 
-The result is a `DriveAisleGraph` with all vertices, edges, and the perimeter
-vertex count. (**Later**) If the user has edited aisle positions (manual graph),
-the auto-generated graph is merged with it: auto edges that overlap manual
-aisles are filtered out.
+**Phase B — apply edits.**
 
-Drive lines are then spliced in: clipped to the inset boundary minus holes,
-clamped to the nearest auto-graph edge crossings at each end, and merged into
-the graph (snapping endpoints to nearby vertices or splitting existing edges to
-create junctions). Finally, annotations are applied — direction and deletion —
-to produce the resolved graph.
+1. (**Later**) Merge any user-edited manual graph: auto edges that overlap
+   manual aisles are filtered out.
+2. Splice in non-partitioning drive lines: clipped to the inset boundary minus
+   holes, clamped to the nearest auto-graph edge crossings at each end, and
+   merged into the graph (snapping endpoints to nearby vertices or splitting
+   existing edges to create junctions).
+3. Apply annotations — direction and deletion — to produce the resolved
+   graph.
 
 ### 3.2 Aisle Polygon Construction
 
@@ -279,22 +286,19 @@ angles, so we get proper cornering.
 All aisle rectangles and miter fills are boolean-unioned into merged aisle
 polygons. Post-union cleanup:
 
-- (**Optional**) **Spike removal** — clean up vertices where the path doubles
-  back on itself (anti-parallel edges, dot product less than −0.95).
-- (**Optional**) **Contour simplification** — Ramer-Douglas-Peucker to remove
-  vertices contributing less than a tolerance of perpendicular distance.
-- (**Optional**) **Hole filtering** — removes small holes (area less than
-  max-aisle-width²) that are junction artifacts.
+- **Spike removal** — clean up vertices where the path doubles back on itself
+  (anti-parallel edges, dot product less than −0.95).
+- **Contour simplification** — Ramer-Douglas-Peucker to remove vertices
+  contributing less than a tolerance of perpendicular distance.
+- **Hole filtering** — removes small holes (area less than max-aisle-width²)
+  that are junction artifacts.
 
 ### 3.3 Parking Bay Extraction
 
-Parking bay are the positive-space regions between drive aisles where stalls
-will be placed. They're computed via two-step boolean subtraction:
-
-1. `boundary − merged-aisles` (removes drive aisles from the site).
-2. `result − raw-holes` (removes building footprints).
-
-The end state is a set of polygons-with-holes, each representing a parking bay.
+Parking bays are the positive-space regions between drive aisles where stalls
+will be placed. They're computed by subtracting the merged aisles and the
+building footprints (holes) from the site boundary. The end state is a set of
+polygons-with-holes, each representing a parking bay.
 
 ### 3.4 Edge Provenance
 
@@ -310,13 +314,11 @@ search at the transition point. The resulting tagged edge carries per-edge
 provenance that informs all downstream decisions:
 
 - **Boundary classification** — a face with any wall edge (or only perimeter
-  aisle edges) is a boundary face and gets 90° stalls regardless of the global
-  stall angle. Interior faces use the configured angle.
-- **Stall suppression** — on one-way aisles, stalls on each side are angled with
-  the travel direction in mind. On two-way-oriented aisles, the orientation
-  determines which side gets which angle lean. Edges with `SuppressStalls` lines
-  suppress any overlapping stalls so if users want to avoid stall placements on
-  one side of one-way aisles, they’ll be able to do so manually.
+  aisle edges) is flagged as a **boundary face**. This flag drives a stall-angle
+  policy applied during stall placement (see §3.6).
+- **Stall direction handling** — on one-way aisles, stalls on each side are
+  angled with the travel direction in mind. On two-way-oriented aisles the
+  orientation determines which side gets which angle lean.
 - **Spine weighting** — wall edges get skeleton weight 0 (fixed), aisle edges
   get weight 1 (shrink normally).
 
@@ -350,50 +352,57 @@ split events (pink squares), spines, spine extensions (described below), and
 also for asymmetric parking bays like those on the right, we generate one-sided
 spines (described below).
 
-We do some additional spine post-processing:
+We do some additional spine post-processing, in two groups.
 
-- **Clipping** — spines are clipped to the face interior, with a dual-clip that
-  also validates the stall-reach offset has depth clearance.
-- **Deduplication** — overlapping collinear spines are trimmed to their
-  non-overlapping tails.
-- **Merging** — collinear touching spines with matching normals are joined.
-- **Short spine filter** — spines shorter than `stall-reach` are removed.
-- **Narrow face handling** — if the face is too narrow for a wavefront at the
-  target depth (e.g., a face between two close aisles), the system suppresses
-  one aisle-facing edge at a time, re-runs the skeleton, and collects one-sided
-  spines.
-- **Spine extensions** — Interior spines are extended colinearly to the face
-  boundary in both directions. Extensions use dual-clipping (both spine and
-  stall-reach positions must be inside the face) and a margin of 1.5x stall
-  pitch to prevent sliver islands. Extensions are placed greedily in
-  longest-first order, skipping any that conflict with already-placed stalls.
+- **Validity passes** — drop or repair spines that won't yield usable stalls:
+    - **Clipping** — spines are clipped to the face interior, with a dual-clip that
+      also validates the stall-reach offset has depth clearance.
+    - **Deduplication** — overlapping collinear spines are trimmed to their
+      non-overlapping tails.
+    - **Merging** — collinear touching spines with matching normals are joined.
+    - **Short spine filter** — spines that won't fit at least 3 stalls (length
+      shorter than `stall-reach` or insufficient for `3 × pitch`) are removed.
 
-(**Optional**) For curved face edges, we could instead consider a manual inset
+- **Shaping passes** — handle awkward face geometry and reach into corners:
+    - **Narrow face handling** — if the face is too narrow for a wavefront at the
+      target depth (e.g., a face between two close aisles), the system suppresses
+      one aisle-facing edge at a time, re-runs the skeleton, and collects one-sided
+      spines.
+    - **Spine extensions** — Interior spines are extended colinearly to the face
+      boundary in both directions. Extensions use dual-clipping (both spine and
+      stall-reach positions must be inside the face) and a margin of 1.5x stall
+      pitch to prevent sliver islands. Extensions are placed greedily in
+      longest-first order, skipping any that conflict with already-placed stalls.
+
+(**Future**) For curved face edges, we could instead consider a manual inset
 at `stall-reach`.
 
 ### 3.6 Stall Placement
 
 Stalls are placed on spines:
 
-1. **Stall pitch** = `stall-width / sin(angle)` — the spacing between stall
+1. **Stall angle policy** — interior faces use the configured global stall
+   angle. Boundary faces (those flagged in §3.4) override to 90°: the
+   perimeter band between the outer driving loop and the site edge reads and
+   packs better at 90°. This is a design choice, not a geometric constraint.
+2. **Stall pitch** = `stall-width / sin(angle)` — the spacing between stall
    centers along the spine.
-2. **Depth direction** (angle braiding): `depth_dir = normal * sin(stall_angle)
+3. **Depth direction** (angle braiding): `depth_dir = normal * sin(stall_angle)
    ± edge_dir * cos(stall_angle)`. At 90° this is purely perpendicular to the
    spine. At 45° the stall leans along the spine direction. The sign of the
    cosine term is determined by travel direction: it flips so that stalls on
    opposite sides of a two-way aisle lean in opposite directions (herringbone),
    while stalls on both sides of a one-way aisle lean the same way (matching
    traffic flow).
-3. **Stall quad corners**:
+4. **Stall quad corners**:
     - Back corners (at the spine): `mid ± width-dir * (stall-width / 2)`
     - Aisle corners (at the drive aisle): `depth-dir` projection at `stall-reach
       / sin(stall-angle)`, spread by `± edge-dir * (pitch / 2)`.
-    - Convention: corners [0]–[1] are the back wall, [2]–[3] are the aisle
-      entrance. The renderer draws [3]→[0]→[1]→[2], leaving [2]→[3] open.
-4. (**Optional**) **Grid alignment**: Stalls snap to an absolute grid along the
-   spine direction. A centering shift distributes remaining space symmetrically.
-   Opposing spines (back-to-back across a face) grid-lock to each other's shift,
-   or negate it (mod pitch) for opposite orientations.
+    - Quads are emitted closed, tagged with which side is the aisle entrance.
+5. **Grid alignment**: Stalls snap to an absolute grid along the spine
+   direction. A centering shift distributes remaining space symmetrically.
+   Opposing spines (back-to-back across a face) grid-lock to each other's
+   shift, or negate it (mod pitch) for opposite orientations.
 
 ![Stall placement within each parking bay with respect to underlying spines, and following driving aisle directions (sometimes stall strips are suppressed accordingly). Stalls are also actually centered on the spine somewhat, and we try to place islands in opposing spines in way such that they’re aligned.](attachment:b5a72bb3-2a4c-4369-a8db-097625acc1a8:image.png)
 
@@ -413,10 +422,8 @@ After placement, stalls go through several filters:
 - **Conflict removal** — within each face, overlapping stalls are detected. On
   interior faces the stall from the shorter spine is removed. On boundary faces
   both conflicting stalls are removed (makes for more symmetrical corners).
-- **Short segment filter** — removes all stalls on spines with fewer than 3
-  total stalls.
 - **Suppression filter** — removes stalls whose geometry overlaps any
-  `SuppressStalls` line.
+  `Suppress` stall modifier (see §1.4).
 
 ### 3.8 Island Computation
 
@@ -453,17 +460,17 @@ Every edit triggers full regeneration: the input state is serialized, sent to
 the engine, and the output is re-rendered. The pipeline is fast enough for
 interactive use. Some parameters:
 
-| Parameter | Range | Effect |
-| --- | --- | --- |
-| `stall-width` | 7–40 ft | Individual stall width |
-| `stall-depth` | 8–30 ft | Stall depth perpendicular to aisle |
-| `aisle-width` | 8–24 ft | Full driving aisle width (same for one-way/two-way) |
-| `stall-angle` | 45–90° | Stall angle relative to aisle |
-| `aisle-angle` | any° | Dominant aisle grid direction |
-| `aisle-offset` | any | Perpendicular grid offset |
-| `site-offset` | 0–50 ft | Inset from raw boundary |
-| `cross-aisle-max-run` | 3–50 | Stalls between cross-aisles |
-| `island-stall-interval` | 0–20 | Stalls between landscape islands |
+ | Parameter               | Range   | Effect                             |
+ |-------------------------|---------|------------------------------------|
+ | `stall-width`           | 7–40 ft | Individual stall width             |
+ | `stall-depth`           | 8–30 ft | Stall depth perpendicular to aisle |
+ | `aisle-width`           | 8–24 ft | Full driving aisle width           |
+ | `stall-angle`           | 45–90°  | Stall angle relative to aisle      |
+ | `aisle-angle`           | any°    | Dominant aisle grid direction      |
+ | `aisle-offset`          | any     | Perpendicular grid offset          |
+ | `site-offset`           | 0–50 ft | Inset from raw boundary            |
+ | `cross-aisle-max-run`   | 3–50    | Stalls between cross-aisles        |
+ | `island-stall-interval` | 0–20    | Stalls between landscape islands   |
 
 ## 5. Additional Integration Points
 
@@ -473,8 +480,9 @@ In structured garages, columns and cores punch through parking floors. The
 system's polygon-with-holes model already handles this — columns become
 additional holes in the boundary input. We can project intersecting 3D geometry
 onto the parking plane and inject them as holes before generation. The
-pipeline's face extraction and stall clipping will handle the rest. We might
-want some way to suppress stall generation on certain face edges.
+pipeline's face extraction and stall clipping will handle the rest. The
+`Suppress` stall modifier (§1.4) covers the case where a particular column or
+core warrants extra clearance beyond its hole footprint.
 
 ### 5.2 Custom Stall Types and Placement
 
@@ -483,11 +491,10 @@ provides the hook. In production we want something akin to:
 
 - User-specified counts per type (not auto-calculated — letting users do the
   math themselves and input counts directly).
-- Drag-to-place for ADA and specialty stalls rather than control-point-based
-  placement. The annotation system's proximity-matching pattern is the right
-  model: place a "stall type override" annotation at a position, match it to the
-  nearest stall(s) at generation time. We can start off with a best-effort
-  default guess but lets users manipulate to their needs.
+- Drag-to-place for ADA and specialty stalls. The `StallType` modifier (§1.4)
+  is the mechanism: drop a point or short polyline at a position; the
+  post-placement pass retypes the overlapping stall(s). We can start with a
+  best-effort default guess but let users manipulate to their needs.
     - Stall groups are simply individual stalls underneath, so can be split
       across buildings (e.g., ADA stalls distributed near multiple entrances,
       not blocked together).
@@ -499,7 +506,7 @@ Two types:
 - **Sloped drive aisles** are aisle edges with additional metadata, like the
   grade. The aisle polygon layer extrudes them normally; the stall layer could
   automatically skip faces adjacent to ramp edges (we’d likely power it through
-  stall suppression primitives described above). We could tie the ramp angle
+  the `Suppress` stall modifier from §1.4). We could tie the ramp angle
   parameter and floor-to-floor height to auto-calculate the ramp length. We’d
   start off with just showing a 2D sketch of the ramp on the parking floor plan,
   extending to actual 3D ramp geometry later.
