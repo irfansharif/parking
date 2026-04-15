@@ -114,17 +114,34 @@ export class Renderer {
       if (state.layers.regions && layout.region_debug) {
         const rd = layout.region_debug;
         const colors = Renderer.FACE_COLORS;
+        const BIG = 1e7;
         for (let i = 0; i < rd.regions.length; i++) {
           const [r, g, b] = colors[i % colors.length];
+          // Fill inside a stacked clip: (region interior) ∩ (not any
+          // lot hole). Clipping avoids the evenodd-with-shared-edges
+          // problem that arises when the region's clip_poly weaves
+          // hole edges into its boundary cycle.
+          ctx.save();
           ctx.beginPath();
           this.tracePath(rd.regions[i].clip_poly);
+          ctx.clip();
           for (const hole of lot.boundary.holes) {
-            if (hole.length >= 3) {
-              this.tracePath(hole);
-            }
+            if (hole.length < 3) continue;
+            ctx.beginPath();
+            ctx.moveTo(-BIG, -BIG);
+            ctx.lineTo(BIG, -BIG);
+            ctx.lineTo(BIG, BIG);
+            ctx.lineTo(-BIG, BIG);
+            ctx.closePath();
+            this.tracePath(hole);
+            ctx.clip("evenodd");
           }
           ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.15)`;
-          ctx.fill("evenodd");
+          ctx.fillRect(-BIG, -BIG, 2 * BIG, 2 * BIG);
+          ctx.restore();
+          // Stroke outline without any clip applied.
+          ctx.beginPath();
+          this.tracePath(rd.regions[i].clip_poly);
           ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.5)`;
           ctx.lineWidth = 1.0;
           ctx.stroke();
