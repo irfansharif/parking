@@ -114,19 +114,20 @@ fn format_fixture(input: &GenerateInput) -> String {
 
     // Drive lines.
     for dl in &input.drive_lines {
+        let id_prefix = if dl.id != 0 { format!(" id={}", dl.id) } else { String::new() };
         let pin_suffix = match (&dl.hole_pin, dl.partitions) {
             (Some(p), _) => format!(" hole-pin={},{}", p.hole_index, p.vertex_index),
             (None, true) => " partitions".to_string(),
             (None, false) => String::new(),
         };
         out.push_str(&format!(
-            "\ndrive-line{}\n{},{}\n{},{}\n----\ndrive-line: {},{} -> {},{}{}\n",
-            pin_suffix,
+            "\ndrive-line{}{}\n{},{}\n{},{}\n----\ndrive-line: {},{} -> {},{}{}{}\n",
+            id_prefix, pin_suffix,
             fmt_coord(dl.start.x), fmt_coord(dl.start.y),
             fmt_coord(dl.end.x), fmt_coord(dl.end.y),
             fmt_coord(dl.start.x), fmt_coord(dl.start.y),
             fmt_coord(dl.end.x), fmt_coord(dl.end.y),
-            pin_suffix,
+            id_prefix, pin_suffix,
         ));
     }
 

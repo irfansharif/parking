@@ -173,6 +173,15 @@ export class App {
     return this.nextDriveLineId++;
   }
 
+  /** Advance the id allocator past a specific value — used when loading
+   *  a fixture that assigns explicit ids, so future auto-mints don't
+   *  collide with them. */
+  bumpDriveLineId(past: number): void {
+    if (past >= this.nextDriveLineId) {
+      this.nextDriveLineId = past + 1;
+    }
+  }
+
   constructor(generateFn: GenerateFn, onUpdate: () => void) {
     this.generateFn = generateFn;
     this.onUpdate = onUpdate;

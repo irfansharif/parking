@@ -206,16 +206,23 @@ export function createCommandAPI(app: App): CommandAPI {
           if (!body) return "error: drive-line requires body with start and end points";
           const points = parsePoints(body);
           if (points.length < 2) return "error: drive-line requires 2 points";
-          // Parse optional hole-pin=holeIndex,vertexIndex
+          // Parse optional id=N, hole-pin=holeIndex,vertexIndex, and
+          // `partitions` flag. When id= is present, reuse it verbatim
+          // (round-trips through dumpFixture preserve drive-line ids
+          // so annotations keyed off them stay addressable); bump the
+          // allocator past it so fresh mints don't collide.
+          const idMatch = command.match(/\bid=(\d+)/);
           const pinMatch = command.match(/hole-pin=(\d+),(\d+)/);
           const partitions = /\bpartitions\b/.test(command);
           const lot = app.activeLot();
+          const id = idMatch ? parseInt(idMatch[1]) : app.newDriveLineId();
+          if (idMatch) app.bumpDriveLineId(id);
           if (pinMatch) {
             const holeIndex = parseInt(pinMatch[1]);
             const vertexIndex = parseInt(pinMatch[2]);
             const bpin = computeBoundaryPin(points[1], lot.boundary.outer);
             lot.driveLines.push({
-              id: app.newDriveLineId(),
+              id,
               start: points[0],
               end: bpin.pos,
               holePin: { holeIndex, vertexIndex },
@@ -224,17 +231,18 @@ export function createCommandAPI(app: App): CommandAPI {
             });
           } else {
             lot.driveLines.push({
-              id: app.newDriveLineId(),
+              id,
               start: points[0],
               end: points[1],
               partitions,
             });
           }
           app.generate();
+          const idPrefix = idMatch ? ` id=${idMatch[1]}` : "";
           const pinSuffix = pinMatch
             ? ` hole-pin=${pinMatch[1]},${pinMatch[2]}`
             : partitions ? ` partitions` : "";
-          return `drive-line: ${points[0].x},${points[0].y} -> ${points[1].x},${points[1].y}${pinSuffix}`;
+          return `drive-line: ${points[0].x},${points[0].y} -> ${points[1].x},${points[1].y}${idPrefix}${pinSuffix}`;
         }
 
         case "annotation": {
