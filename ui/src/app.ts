@@ -182,7 +182,7 @@ export class App {
       boundary: {
         outer: [
           { x: 76.30, y: 0 },
-          { x: 750, y: 0 },
+          { x: 692.14, y: 0 },
           { x: 782.80, y: 654.85 },
           { x: 168.78, y: 654.85 },
         ],
@@ -197,7 +197,8 @@ export class App {
       },
       aisleGraph: null,
       annotations: [
-        { kind: "SpliceDeleteVertex", drive_line_id: 2, t: 1.00 },
+        { kind: "AbstractDeleteEdge", region: 38732162085172, xa: -2, ya: 0, xb: -2, yb: 1 },
+        { kind: "AbstractDeleteEdge", region: 38732162085172, xa: -2, ya: 1, xb: -2, yb: 2 },
       ],
       aisleVector: aisleVectorFromAngle(90, 0, { x: -80, y: 250 }),
       aisleOffsetBaseline: midpointPerpProj(
@@ -205,11 +206,13 @@ export class App {
         90,
       ),
       driveLines: [
-        { id: 1, start: { x: 930.76, y: 427.57 }, end: { x: 177.91, y: 723.79 }, partitions: true },
+        { id: 1, start: { x: 930.76, y: 381.06 }, end: { x: -42.60, y: 512.33 } },
         { id: 2, start: { x: 198.60, y: -53.66 }, end: { x: 475.79, y: 349.25 }, partitions: true },
         { id: 3, start: { x: 446.56, y: 335.61 }, end: { x: 930.76, y: 135.52 }, partitions: true },
       ],
-      regionOverrides: {},
+      regionOverrides: {
+        "221108085334326": { offset: 154.58 },
+      },
       layout: null,
     };
 
@@ -224,9 +227,9 @@ export class App {
         aisle_angle_deg: 90,
         aisle_offset: 0,
         site_offset: 0,
-        stalls_per_face: 15,
+        stalls_per_face: 29,
         use_regions: true,
-        island_stall_interval: 8,
+        island_stall_interval: 12,
       },
       debug: {
         miter_fills: true,

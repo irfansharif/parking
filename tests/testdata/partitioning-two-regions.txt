@@ -18,4 +18,4 @@ drive-line: 150,0 -> 150,200 partitions
 
 generate
 ----
-total_stalls: 190
+total_stalls: 198

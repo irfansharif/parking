@@ -11,7 +11,7 @@ polygon outer: 4 vertices
 
 generate
 ----
-total_stalls: 208
+total_stalls: 218
 
 # Dump the auto graph to identify the vertical edge we'll cross.
 # At 90° default angle, interior aisles run vertically.
@@ -32,13 +32,6 @@ graph
 11: 112,200
 12: 56,0
 13: 56,200
-14: 300,191
-15: 0,191
-16: 279,191
-17: 223,191
-18: 167,191
-19: 112,191
-20: 56,191
 
 # Short drive line: endpoint BEFORE the vertical edge at x≈180.
 # Must project outward → t_end captures the crossing.
@@ -65,17 +58,10 @@ graph precise
 11: 111.6,200.0
 12: 55.8,-0.0
 13: 55.8,200.0
-14: 300.0,190.9
-15: 0.0,190.9
-16: 279.1,190.9
-17: 223.3,190.9
-18: 167.5,190.9
-19: 111.6,190.9
-20: 55.8,190.9
-21: 0.0,100.0
-22: 55.8,100.0
-23: 111.6,100.0
-24: 167.5,100.0
+14: 0.0,100.0
+15: 55.8,100.0
+16: 111.6,100.0
+17: 167.5,100.0
 
 screenshot drive-line-intersection-short.png
 ----
