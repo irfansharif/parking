@@ -1,5 +1,6 @@
-import { App } from "./app";
+import { App, EdgeRef } from "./app";
 import { Annotation, Vec2, computeBoundaryPin } from "./types";
+import { findCollinearChain } from "./interaction";
 
 export interface CommandAPI {
   execute(command: string, body?: string): string;
@@ -184,14 +185,117 @@ export function createCommandAPI(app: App): CommandAPI {
         }
 
         case "graph": {
-          // Dump the effective aisle graph vertex positions.
+          // Dump the effective aisle graph. Default is vertex positions;
+          // `graph edges` dumps deduplicated edges as `ei: start->end`.
           const graph = app.getEffectiveAisleGraph();
           if (!graph) return "error: no graph";
+          if (parts[1] === "edges") {
+            const seen = new Set<string>();
+            const lines: string[] = [];
+            for (let ei = 0; ei < graph.edges.length; ei++) {
+              const e = graph.edges[ei];
+              const key = Math.min(e.start, e.end) + "," + Math.max(e.start, e.end);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              lines.push(`${ei}: ${e.start}->${e.end}`);
+            }
+            return lines.join("\n");
+          }
           const precision = parts[1] === "precise" ? 1 : 0;
           const fmt = (n: number) => precision ? n.toFixed(1) : String(Math.round(n));
           const lines = graph.vertices.map((v, i) =>
             `${i}: ${fmt(v.x)},${fmt(v.y)}`
           );
+          return lines.join("\n");
+        }
+
+        case "edge-select": {
+          // Test-only: populate `selectedEdge` so a subsequent
+          // edge-delete / edge-cycle mirrors what the UI does after a
+          // real click. Mode chooses between chain (entire collinear
+          // run, from a single click) and segment (just the seed edge,
+          // from a double-click).
+          //
+          // Usage:
+          //   edge-select seed=<i> mode=chain|segment
+          //   edge-select near=<x>,<y> mode=chain|segment
+          const graph = app.getEffectiveAisleGraph();
+          if (!graph) return "error: no graph";
+          let seedIdx: number | undefined;
+          let mode: "chain" | "segment" = "chain";
+          let nearX: number | undefined;
+          let nearY: number | undefined;
+          for (const p of parts.slice(1)) {
+            const [k, v] = p.split("=");
+            if (k === "seed") {
+              seedIdx = Number(v);
+            } else if (k === "mode") {
+              if (v !== "chain" && v !== "segment") {
+                return "error: edge-select mode must be chain or segment";
+              }
+              mode = v;
+            } else if (k === "near") {
+              const [xs, ys] = v.split(",");
+              nearX = Number(xs);
+              nearY = Number(ys);
+            }
+          }
+          if (seedIdx === undefined && (nearX === undefined || nearY === undefined)) {
+            return "error: edge-select requires seed=<i> or near=<x>,<y>";
+          }
+          if (seedIdx === undefined) {
+            // Pick the deduplicated edge whose segment is closest to
+            // the query point — same logic as hitTestEdge but without
+            // the screen-space radius filter.
+            const seen = new Set<string>();
+            let best: { idx: number; dist: number } | null = null;
+            for (let i = 0; i < graph.edges.length; i++) {
+              const e = graph.edges[i];
+              const key = Math.min(e.start, e.end) + "," + Math.max(e.start, e.end);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              const a = graph.vertices[e.start];
+              const b = graph.vertices[e.end];
+              const dist = pointToSegmentDist({ x: nearX!, y: nearY! }, a, b);
+              if (!best || dist < best.dist) best = { idx: i, dist };
+            }
+            if (!best) return "error: no edges";
+            seedIdx = best.idx;
+          }
+          const chain = mode === "chain"
+            ? findCollinearChain(graph, seedIdx)
+            : [seedIdx];
+          const ref: EdgeRef = { index: seedIdx, chain, mode };
+          app.state.selectedEdge = ref;
+          app.state.selectedVertex = null;
+          return `edge-select seed=${seedIdx} mode=${mode} chain_len=${chain.length}`;
+        }
+
+        case "edge-delete": {
+          // Test-only: invoke the UI delete path on the currently
+          // selected edge (see edge-select).
+          if (!app.state.selectedEdge) return "error: no selectedEdge";
+          app.deleteSelectedEdge();
+          return "edge-delete";
+        }
+
+        case "edge-cycle": {
+          // Test-only: invoke the UI direction-cycle path on the
+          // currently selected edge (see edge-select).
+          const sel = app.state.selectedEdge;
+          if (!sel) return "error: no selectedEdge";
+          app.cycleEdgeDirection(sel);
+          return "edge-cycle";
+        }
+
+        case "annotations": {
+          // Dump active annotations in a compact, stable form. Anchor
+          // is printed when set (chain-mode annotations carry a
+          // separate click-anchor for marker placement).
+          const lot = app.activeLot();
+          const lines = lot.annotations
+            .filter((a: any) => a._active !== false)
+            .map((a: any) => formatAnnotation(a));
           return lines.join("\n");
         }
 
@@ -455,6 +559,44 @@ export function createCommandAPI(app: App): CommandAPI {
       return app.activeLot().layout ?? {};
     },
   };
+}
+
+function pointToSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.sqrt((p.x - a.x) ** 2 + (p.y - a.y) ** 2);
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const projX = a.x + t * dx;
+  const projY = a.y + t * dy;
+  return Math.sqrt((p.x - projX) ** 2 + (p.y - projY) ** 2);
+}
+
+function formatAnnotation(a: any): string {
+  const anchor = a.anchor
+    ? ` anchor=${a.anchor.xa},${a.anchor.ya}->${a.anchor.xb},${a.anchor.yb}`
+    : "";
+  switch (a.kind) {
+    case "AbstractDeleteVertex":
+      return `abstract-delete-vertex region=0x${a.region.toString(16).padStart(16, "0")} x=${a.xi} y=${a.yi}`;
+    case "AbstractDeleteEdge":
+      return `abstract-delete-edge region=0x${a.region.toString(16).padStart(16, "0")} from=${a.xa},${a.ya} to=${a.xb},${a.yb}${anchor}`;
+    case "AbstractOneWay":
+      return `abstract-one-way region=0x${a.region.toString(16).padStart(16, "0")} from=${a.xa},${a.ya} to=${a.xb},${a.yb}${anchor}`;
+    case "AbstractTwoWayOriented":
+      return `abstract-two-way-oriented region=0x${a.region.toString(16).padStart(16, "0")} from=${a.xa},${a.ya} to=${a.xb},${a.yb}${anchor}`;
+    case "SpliceDeleteVertex":
+      return `splice-delete-vertex line=${a.drive_line_id} t=${a.t}`;
+    case "SpliceDeleteEdge":
+      return `splice-delete-edge line=${a.drive_line_id} from=${a.ta} to=${a.tb}`;
+    case "SpliceOneWay":
+      return `splice-one-way line=${a.drive_line_id} from=${a.ta} to=${a.tb}`;
+    case "SpliceTwoWayOriented":
+      return `splice-two-way-oriented line=${a.drive_line_id} from=${a.ta} to=${a.tb}`;
+    default:
+      return `unknown ${JSON.stringify(a)}`;
+  }
 }
 
 function parsePoints(body: string): Vec2[] {

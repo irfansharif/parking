@@ -632,34 +632,70 @@ fn build_abstract_vertex_lookup(
 }
 
 /// Apply an AbstractOneWay / AbstractTwoWayOriented direction to every
-/// graph edge connecting the two abstract grid points. Flips
-/// `start`/`end` so the stored ordering points from `a` to `b`,
-/// matching the user's declared travel direction. Returns true if at
-/// least one graph edge was touched — false means the annotation
-/// target didn't resolve and the annotation should be reported as
-/// dormant.
+/// graph sub-edge whose midpoint lies on the lattice segment from
+/// `a` to `b` in the given region's abstract frame. Chain-mode
+/// annotations span multiple cells — there's no single graph edge
+/// between the endpoints — so we match geometrically, mirroring
+/// AbstractDeleteEdge. Each touched edge also gets its `start`/`end`
+/// flipped so its stored orientation points from the a-side to the
+/// b-side, matching the user's declared travel direction.
 fn apply_abstract_direction(
     graph: &mut DriveAisleGraph,
-    abstract_lookup: &std::collections::HashMap<(RegionId, i32, i32), usize>,
+    regions: &[ResolvedRegion],
     region: RegionId,
     a: (i32, i32),
     b: (i32, i32),
     direction: AisleDirection,
 ) -> bool {
-    let Some(&via) = abstract_lookup.get(&(region, a.0, a.1)) else { return false };
-    let Some(&vib) = abstract_lookup.get(&(region, b.0, b.1)) else { return false };
+    let Some(region_data) = regions.iter().find(|r| r.id == region) else { return false };
+    let frame = &region_data.frame;
+    let along_x = a.0 != b.0;
+    if along_x && a.1 != b.1 {
+        return false; // not lattice-aligned; shouldn't happen
+    }
+    if !along_x && a.0 != b.0 {
+        return false;
+    }
+    let fixed = if along_x { a.1 } else { a.0 };
+    let lo = if along_x { a.0.min(b.0) } else { a.1.min(b.1) };
+    let hi = if along_x { a.0.max(b.0) } else { a.1.max(b.1) };
+    // The user's forward direction along the lattice: +1 if (b - a) is
+    // positive on the varying axis, -1 otherwise. Sub-edges already
+    // aligned with this sign stay as stored; the others get flipped.
+    let forward_sign: f64 = if along_x {
+        (b.0 - a.0).signum() as f64
+    } else {
+        (b.1 - a.1).signum() as f64
+    };
+    const TOL: f64 = 0.05;
     let mut touched = false;
     for i in 0..graph.edges.len() {
-        let ei = &graph.edges[i];
-        let is_forward = ei.start == via && ei.end == vib;
-        let is_reverse = ei.start == vib && ei.end == via;
-        if !is_forward && !is_reverse {
+        let s = graph.vertices[graph.edges[i].start];
+        let e = graph.vertices[graph.edges[i].end];
+        let abs_s = frame.inverse(s);
+        let abs_e = frame.inverse(e);
+        let edge_along_x = (abs_e.x - abs_s.x).abs() > (abs_e.y - abs_s.y).abs();
+        if edge_along_x != along_x {
+            continue;
+        }
+        let (s_fixed, s_var) = if along_x { (abs_s.y, abs_s.x) } else { (abs_s.x, abs_s.y) };
+        let (e_fixed, e_var) = if along_x { (abs_e.y, abs_e.x) } else { (abs_e.x, abs_e.y) };
+        // Both endpoints must sit on the lattice line at `fixed`.
+        if (s_fixed - fixed as f64).abs() > TOL || (e_fixed - fixed as f64).abs() > TOL {
+            continue;
+        }
+        let mid_var = (s_var + e_var) * 0.5;
+        if mid_var < lo as f64 - TOL || mid_var > hi as f64 + TOL {
             continue;
         }
         graph.edges[i].direction = direction.clone();
-        if is_reverse {
-            graph.edges[i].start = via;
-            graph.edges[i].end = vib;
+        // Flip orientation if the stored start→end points against the
+        // user's a→b intent.
+        let edge_sign = (e_var - s_var).signum();
+        if edge_sign * forward_sign < 0.0 {
+            let t = graph.edges[i].start;
+            graph.edges[i].start = graph.edges[i].end;
+            graph.edges[i].end = t;
         }
         touched = true;
     }
@@ -735,7 +771,7 @@ fn apply_annotations(
             Annotation::AbstractOneWay { region, xa, ya, xb, yb } => {
                 let touched = apply_abstract_direction(
                     graph,
-                    &abstract_lookup,
+                    regions,
                     *region,
                     (*xa, *ya),
                     (*xb, *yb),
@@ -748,7 +784,7 @@ fn apply_annotations(
             Annotation::AbstractTwoWayOriented { region, xa, ya, xb, yb } => {
                 let touched = apply_abstract_direction(
                     graph,
-                    &abstract_lookup,
+                    regions,
                     *region,
                     (*xa, *ya),
                     (*xb, *yb),

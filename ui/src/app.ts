@@ -14,7 +14,7 @@ import {
   evalBoundaryEdge,
   isAbstractAnnotation,
   abstractAnnotationWorldPos,
-  chainToAbstractLatticeEdge,
+  chainExtentsInRegion,
   worldToAbstractVertex,
   worldToSpliceVertex,
 } from "./types";
@@ -1082,6 +1082,36 @@ export class App {
     this.generate();
   }
 
+  /**
+   * Compute the abstract-lattice scope for an aisle-edge selection.
+   * Segment mode returns the seed sub-edge's extents. Chain mode
+   * widens to the full collinear run, projected into the seed's
+   * region frame (no tolerance rejection — unlike
+   * `chainToAbstractLatticeEdge`, this always succeeds on a multi-edge
+   * chain so chain mode never silently collapses into segment mode).
+   */
+  private computeChainScope(
+    sel: EdgeRef,
+    graph: DriveAisleGraph,
+    lot: ParkingLot,
+    regionId: number,
+    seedScope: { xa: number; ya: number; xb: number; yb: number },
+  ): { xa: number; ya: number; xb: number; yb: number } {
+    if (sel.mode !== "chain" || sel.chain.length <= 1) return seedScope;
+    const region = lot.layout?.region_debug?.regions.find((r) => r.id === regionId);
+    if (!region) return seedScope;
+    const chainPts: Vec2[] = [];
+    for (const ei of sel.chain) {
+      const ce = graph.edges[ei];
+      if (!ce) continue;
+      chainPts.push(graph.vertices[ce.start]);
+      chainPts.push(graph.vertices[ce.end]);
+    }
+    const extents = chainExtentsInRegion(chainPts, this.state.params, region);
+    if (!extents) return seedScope;
+    return { xa: extents.xa, ya: extents.ya, xb: extents.xb, yb: extents.yb };
+  }
+
   deleteSelectedEdge(): void {
     const sel = this.state.selectedEdge;
     if (!sel) return;
@@ -1089,37 +1119,35 @@ export class App {
     const graph = this.getEffectiveAisleGraph(lot);
     if (!graph) return;
 
-    // Gather all chain endpoints in world space. The chain is the
-    // collinear run of sub-edges the user selected; its outermost
-    // endpoints land on integer lattice intersections (junctions),
-    // while interior breaks may be drive-line/boundary intersections
-    // that aren't on the lattice.
-    const chainPts: Vec2[] = [];
-    for (const ei of sel.chain) {
-      const edge = graph.edges[ei];
-      if (!edge) continue;
-      chainPts.push(graph.vertices[edge.start]);
-      chainPts.push(graph.vertices[edge.end]);
-    }
-    if (chainPts.length < 2) return;
+    // Seed sub-edge — the clicked one. Its abstract-lattice extents
+    // are the segment-mode scope AND, when chain mode widens the
+    // scope, the anchor that pins the marker to the click.
+    const seedEdge = graph.edges[sel.index];
+    if (!seedEdge) return;
+    const s = graph.vertices[seedEdge.start];
+    const e = graph.vertices[seedEdge.end];
+    const absA = lot.layout?.region_debug
+      ? worldToAbstractVertex(s, this.state.params, lot.layout.region_debug)
+      : null;
+    const absB = lot.layout?.region_debug
+      ? worldToAbstractVertex(e, this.state.params, lot.layout.region_debug)
+      : null;
 
-    // Resolve to lattice extents in some region's abstract frame.
-    // The engine walks collinear sub-edges between (xa, ya) and
-    // (xb, yb), so any drive-line splits inside the chain are
-    // handled implicitly.
-    const latticeEdge = chainToAbstractLatticeEdge(
-      chainPts,
-      this.state.params,
-      lot.layout?.region_debug,
-    );
-    if (latticeEdge) {
+    if (absA && absB && absA.region === absB.region) {
+      const scope = this.computeChainScope(
+        sel, graph, lot, absA.region,
+        { xa: absA.xi, ya: absA.yi, xb: absB.xi, yb: absB.yi },
+      );
+      const anchor = (scope.xa !== absA.xi || scope.ya !== absA.yi ||
+                      scope.xb !== absB.xi || scope.yb !== absB.yi)
+        ? { xa: absA.xi, ya: absA.yi, xb: absB.xi, yb: absB.yi }
+        : undefined;
       lot.annotations.push({
         kind: "AbstractDeleteEdge",
-        region: latticeEdge.region,
-        xa: latticeEdge.xa,
-        ya: latticeEdge.ya,
-        xb: latticeEdge.xb,
-        yb: latticeEdge.yb,
+        region: absA.region,
+        xa: scope.xa, ya: scope.ya,
+        xb: scope.xb, yb: scope.yb,
+        ...(anchor ? { anchor } : {}),
       });
       this.state.selectedEdge = null;
       lot.aisleGraph = null;
@@ -1127,25 +1155,38 @@ export class App {
       return;
     }
 
-    // Fallback: splice deletion when the chain lies on a single
-    // drive line and isn't grid-addressable.
-    const seedEdge = graph.edges[sel.index];
-    if (!seedEdge) return;
-    const s = graph.vertices[seedEdge.start];
-    const e = graph.vertices[seedEdge.end];
+    // Splice path: chain lies on a single drive line and isn't
+    // grid-addressable. Segment mode deletes just the seed edge;
+    // chain mode spans the whole collinear run's t-range.
     const sa = worldToSpliceVertex(s, lot.driveLines);
     const sb = worldToSpliceVertex(e, lot.driveLines);
-    if (sa && sb && sa.drive_line_id === sb.drive_line_id) {
-      lot.annotations.push({
-        kind: "SpliceDeleteEdge",
-        drive_line_id: sa.drive_line_id,
-        ta: sa.t,
-        tb: sb.t,
-      });
-      this.state.selectedEdge = null;
-      lot.aisleGraph = null;
-      this.generate();
+    if (!(sa && sb && sa.drive_line_id === sb.drive_line_id)) return;
+    let ta = sa.t;
+    let tb = sb.t;
+    if (sel.mode === "chain" && sel.chain.length > 1) {
+      const ts: number[] = [];
+      for (const ei of sel.chain) {
+        const ce = graph.edges[ei];
+        if (!ce) continue;
+        const p1 = worldToSpliceVertex(graph.vertices[ce.start], lot.driveLines);
+        const p2 = worldToSpliceVertex(graph.vertices[ce.end], lot.driveLines);
+        if (p1 && p1.drive_line_id === sa.drive_line_id) ts.push(p1.t);
+        if (p2 && p2.drive_line_id === sa.drive_line_id) ts.push(p2.t);
+      }
+      if (ts.length >= 2) {
+        ta = Math.min(...ts);
+        tb = Math.max(...ts);
+      }
     }
+    lot.annotations.push({
+      kind: "SpliceDeleteEdge",
+      drive_line_id: sa.drive_line_id,
+      ta,
+      tb,
+    });
+    this.state.selectedEdge = null;
+    lot.aisleGraph = null;
+    this.generate();
   }
 
   deleteDriveLine(index: number, lotId?: string): void {
@@ -1155,23 +1196,18 @@ export class App {
     this.generate();
   }
 
-  cycleEdgeDirection(edgeIndex: number): void {
+  cycleEdgeDirection(sel: EdgeRef): void {
     const lot = this.activeLot();
     const graph = this.getEffectiveAisleGraph(lot);
     if (!graph) return;
-    const edge = graph.edges[edgeIndex];
-    if (!edge) return;
+    const seed = graph.edges[sel.index];
+    if (!seed) return;
+    const s = graph.vertices[seed.start];
+    const e = graph.vertices[seed.end];
 
-    const s = graph.vertices[edge.start];
-    const e = graph.vertices[edge.end];
-    const mid = { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 };
-    const len = Math.sqrt((e.x - s.x) ** 2 + (e.y - s.y) ** 2);
-    if (len < 1e-9) return;
-    const edgeDir = { x: (e.x - s.x) / len, y: (e.y - s.y) / len };
-
-    // Try to resolve both endpoints to abstract grid points so the
-    // direction annotation survives parameter changes. Off-grid
-    // clicks fall back to the legacy world-space variant below.
+    // Resolve the seed sub-edge's endpoints to abstract grid points.
+    // This is both the segment-mode scope AND (when chain mode) the
+    // click anchor that pins the marker.
     const absA = lot.layout?.region_debug
       ? worldToAbstractVertex(s, this.state.params, lot.layout.region_debug)
       : null;
@@ -1179,9 +1215,19 @@ export class App {
       ? worldToAbstractVertex(e, this.state.params, lot.layout.region_debug)
       : null;
     if (absA && absB && absA.region === absB.region) {
-      // Check for an existing abstract direction annotation on the
-      // same edge (either direction). If present, cycle; else add a
-      // new AbstractTwoWayOriented.
+      const scope = this.computeChainScope(
+        sel, graph, lot, absA.region,
+        { xa: absA.xi, ya: absA.yi, xb: absB.xi, yb: absB.yi },
+      );
+      // Anchor is the clicked seed sub-edge; only meaningful when the
+      // scope extends past it (chain mode spanning multiple cells).
+      const anchor = (scope.xa !== absA.xi || scope.ya !== absA.yi ||
+                      scope.xb !== absB.xi || scope.yb !== absB.yi)
+        ? { xa: absA.xi, ya: absA.yi, xb: absB.xi, yb: absB.yi }
+        : undefined;
+
+      // Match existing direction annotation by scope (not anchor).
+      // Either orientation matches — cycle flips orientation.
       const existing = lot.annotations.findIndex((ann) => {
         if (
           ann.kind !== "AbstractOneWay" &&
@@ -1191,9 +1237,11 @@ export class App {
         }
         if (ann.region !== absA.region) return false;
         const matchFwd =
-          ann.xa === absA.xi && ann.ya === absA.yi && ann.xb === absB.xi && ann.yb === absB.yi;
+          ann.xa === scope.xa && ann.ya === scope.ya &&
+          ann.xb === scope.xb && ann.yb === scope.yb;
         const matchRev =
-          ann.xa === absB.xi && ann.ya === absB.yi && ann.xb === absA.xi && ann.yb === absA.yi;
+          ann.xa === scope.xb && ann.ya === scope.yb &&
+          ann.xb === scope.xa && ann.yb === scope.ya;
         return matchFwd || matchRev;
       });
       if (existing < 0) {
@@ -1201,10 +1249,9 @@ export class App {
         lot.annotations.push({
           kind: "AbstractTwoWayOriented",
           region: absA.region,
-          xa: absA.xi,
-          ya: absA.yi,
-          xb: absB.xi,
-          yb: absB.yi,
+          xa: scope.xa, ya: scope.ya,
+          xb: scope.xb, yb: scope.yb,
+          ...(anchor ? { anchor } : {}),
           _active: true,
         });
         this.state.selectedVertex = { type: "annotation", index: annIdx, lotId: lot.id };

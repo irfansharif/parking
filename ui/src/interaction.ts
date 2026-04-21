@@ -367,7 +367,7 @@ export function setupInteraction(
       // direction on selected aisle graph edge / annotation anchor.
       const sel = app.state.selectedVertex;
       if (app.state.selectedEdge) {
-        app.cycleEdgeDirection(app.state.selectedEdge.index);
+        app.cycleEdgeDirection(app.state.selectedEdge);
         renderer.render(app.state);
       } else if (sel?.type === "drive-line") {
         app.toggleDriveLinePartitions(sel.index, sel.lotId);

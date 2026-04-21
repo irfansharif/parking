@@ -317,6 +317,44 @@ export function chainToAbstractLatticeEdge(
 }
 
 /**
+ * Compute the lattice-edge extents of a world-space chain in a *given*
+ * region's abstract frame — like `chainToAbstractLatticeEdge` but
+ * without the tolerance rejection. The caller has already decided
+ * which region the scope should live in (typically the seed sub-edge's
+ * region); this helper just floors/ceils the chain's min/max along
+ * the varying axis and snaps the fixed axis to the nearest integer.
+ *
+ * Used for chain-mode annotations that cross region boundaries — the
+ * strict variant returns null in that case, silently collapsing chain
+ * mode into segment mode.
+ */
+export function chainExtentsInRegion(
+  chainPoints: Vec2[],
+  params: ParkingParams,
+  region: { id: RegionId; aisle_angle_deg: number; aisle_offset: number },
+): { region: RegionId; xa: number; ya: number; xb: number; yb: number } | null {
+  if (chainPoints.length < 2) return null;
+  const frame = computeRegionFrame(params, region.aisle_angle_deg, region.aisle_offset);
+  const abs = chainPoints.map((p) => frameInverse(frame, p));
+  const xs = abs.map((p) => p.x);
+  const ys = abs.map((p) => p.y);
+  const xRange = Math.max(...xs) - Math.min(...xs);
+  const yRange = Math.max(...ys) - Math.min(...ys);
+  if (xRange > yRange) {
+    const yi = Math.round(ys.reduce((a, b) => a + b, 0) / ys.length);
+    const xa = Math.floor(Math.min(...xs));
+    const xb = Math.ceil(Math.max(...xs));
+    if (xa === xb) return null;
+    return { region: region.id, xa, ya: yi, xb, yb: yi };
+  }
+  const xi = Math.round(xs.reduce((a, b) => a + b, 0) / xs.length);
+  const ya = Math.floor(Math.min(...ys));
+  const yb = Math.ceil(Math.max(...ys));
+  if (ya === yb) return null;
+  return { region: region.id, xa: xi, ya, xb: xi, yb };
+}
+
+/**
  * Project a world-space point onto the closest drive line and return its
  * stable splice anchor — `(drive_line_id, t)` where `t ∈ [0, 1]` is the
  * fractional position along the line. Returns null if no drive line is
@@ -569,8 +607,12 @@ export function abstractAnnotationWorldPos(
   if (ann.kind === "AbstractDeleteVertex") {
     return frameForward(frame, { x: ann.xi, y: ann.yi });
   }
-  const a = frameForward(frame, { x: ann.xa, y: ann.ya });
-  const b = frameForward(frame, { x: ann.xb, y: ann.yb });
+  // Chain-mode annotations carry an anchor describing the clicked
+  // sub-edge; pin the marker there so the diamond sits where the user
+  // actually clicked rather than at the midpoint of a long row/column.
+  const src = ann.anchor ?? { xa: ann.xa, ya: ann.ya, xb: ann.xb, yb: ann.yb };
+  const a = frameForward(frame, { x: src.xa, y: src.ya });
+  const b = frameForward(frame, { x: src.xb, y: src.yb });
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
 
@@ -589,6 +631,21 @@ export interface AbstractDeleteVertexAnnotation {
 }
 
 /**
+ * UI-only marker-position hint for multi-cell abstract-edge annotations
+ * (chain-mode selections, where `(xa,ya)→(xb,yb)` spans a whole row or
+ * column). When set, the annotation's visual anchor renders at the
+ * midpoint of the anchor sub-edge instead of the midpoint of the full
+ * extents — i.e. pinned to the sub-edge the user actually clicked. The
+ * engine ignores this field (unknown-field-ignoring serde).
+ */
+export interface AbstractEdgeAnchor {
+  xa: number;
+  ya: number;
+  xb: number;
+  yb: number;
+}
+
+/**
  * Delete the grid-aligned edge connecting two integer abstract grid
  * points in the same region. One of the two axes must match (it's
  * either a parallel-aisle segment at fixed xi or a cross-aisle
@@ -601,6 +658,7 @@ export interface AbstractDeleteEdgeAnnotation {
   ya: number;
   xb: number;
   yb: number;
+  anchor?: AbstractEdgeAnchor;
   _active?: boolean;
 }
 
@@ -615,6 +673,7 @@ export interface AbstractOneWayAnnotation {
   ya: number;
   xb: number;
   yb: number;
+  anchor?: AbstractEdgeAnchor;
   _active?: boolean;
 }
 
@@ -630,6 +689,7 @@ export interface AbstractTwoWayOrientedAnnotation {
   ya: number;
   xb: number;
   yb: number;
+  anchor?: AbstractEdgeAnchor;
   _active?: boolean;
 }
 
