@@ -10,16 +10,21 @@ import {
   GenerateInput,
   DebugToggles,
   Annotation,
+  RegionId,
   computeBoundaryPin,
+  computeRegionFrame,
   evalBoundaryEdge,
+  frameInverse,
   isAbstractAnnotation,
   abstractAnnotationWorldPos,
   chainExtentsInRegion,
+  chainToAbstractLatticeEdge,
   worldToAbstractVertex,
   worldToSpliceVertex,
 } from "./types";
 import { SnapGuide, SnapState, emptySnapState } from "./snap";
 import { findCollinearChain } from "./interaction";
+import { showToast } from "./toast";
 
 // ---------------------------------------------------------------------------
 // Bezier helpers for curve editing
@@ -1112,39 +1117,99 @@ export class App {
     return { xa: extents.xa, ya: extents.ya, xb: extents.xb, yb: extents.yb };
   }
 
+  /**
+   * Resolve an aisle-edge selection to the abstract-grid triple that an
+   * Abstract* annotation needs: region, engine-visible scope, and an
+   * optional visual anchor pinning the marker to the clicked sub-edge.
+   *
+   * Two strategies in order:
+   *   1. Seed sub-edge's endpoints both snap to lattice junctions in
+   *      the same region. Scope = chain extents; anchor = seed's
+   *      lattice edge (only emitted when scope is wider).
+   *   2. Seed is an interior break (endpoints off-grid — a drive-line
+   *      crossing, hole edge, or region boundary split it mid-cell)
+   *      but the chain's outer junctions *are* on-grid. Scope = chain
+   *      extents; anchor = 1-unit lattice segment in the scope
+   *      containing the seed's midpoint.
+   */
+  private resolveAbstractAnchor(
+    sel: EdgeRef,
+    graph: DriveAisleGraph,
+    seed: { start: number; end: number },
+    lot: ParkingLot,
+  ): {
+    region: RegionId;
+    scope: { xa: number; ya: number; xb: number; yb: number };
+    anchor?: { xa: number; ya: number; xb: number; yb: number };
+  } | null {
+    const regionDebug = lot.layout?.region_debug;
+    if (!regionDebug) return null;
+    const s = graph.vertices[seed.start];
+    const e = graph.vertices[seed.end];
+
+    const absA = worldToAbstractVertex(s, this.state.params, regionDebug);
+    const absB = worldToAbstractVertex(e, this.state.params, regionDebug);
+    if (absA && absB && absA.region === absB.region) {
+      const seedScope = { xa: absA.xi, ya: absA.yi, xb: absB.xi, yb: absB.yi };
+      const scope = this.computeChainScope(sel, graph, lot, absA.region, seedScope);
+      const anchor = scopeDiffers(scope, seedScope) ? seedScope : undefined;
+      return { region: absA.region, scope, anchor };
+    }
+
+    // Seed itself is off-grid (or straddles regions); fall back to
+    // the chain's outer junctions.
+    const chainPts: Vec2[] = [];
+    for (const ei of sel.chain) {
+      const ce = graph.edges[ei];
+      if (!ce) continue;
+      chainPts.push(graph.vertices[ce.start]);
+      chainPts.push(graph.vertices[ce.end]);
+    }
+    const chainScope = chainToAbstractLatticeEdge(chainPts, this.state.params, regionDebug);
+    if (!chainScope) return null;
+    const regionData = regionDebug.regions.find((r) => r.id === chainScope.region);
+    if (!regionData) return null;
+    const frame = computeRegionFrame(
+      this.state.params,
+      regionData.aisle_angle_deg,
+      regionData.aisle_offset,
+    );
+    const midAbs = frameInverse(frame, { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 });
+    const scope = {
+      xa: chainScope.xa, ya: chainScope.ya,
+      xb: chainScope.xb, yb: chainScope.yb,
+    };
+    let anchor: { xa: number; ya: number; xb: number; yb: number };
+    if (scope.ya === scope.yb) {
+      // Varying axis is x; anchor is a 1-unit segment on the same row.
+      const lo = Math.max(scope.xa, Math.min(scope.xb - 1, Math.floor(midAbs.x)));
+      anchor = { xa: lo, ya: scope.ya, xb: lo + 1, yb: scope.yb };
+    } else {
+      const lo = Math.max(scope.ya, Math.min(scope.yb - 1, Math.floor(midAbs.y)));
+      anchor = { xa: scope.xa, ya: lo, xb: scope.xb, yb: lo + 1 };
+    }
+    return {
+      region: chainScope.region,
+      scope,
+      anchor: scopeDiffers(scope, anchor) ? anchor : undefined,
+    };
+  }
+
   deleteSelectedEdge(): void {
     const sel = this.state.selectedEdge;
     if (!sel) return;
     const lot = this.activeLot();
     const graph = this.getEffectiveAisleGraph(lot);
     if (!graph) return;
-
-    // Seed sub-edge — the clicked one. Its abstract-lattice extents
-    // are the segment-mode scope AND, when chain mode widens the
-    // scope, the anchor that pins the marker to the click.
     const seedEdge = graph.edges[sel.index];
     if (!seedEdge) return;
-    const s = graph.vertices[seedEdge.start];
-    const e = graph.vertices[seedEdge.end];
-    const absA = lot.layout?.region_debug
-      ? worldToAbstractVertex(s, this.state.params, lot.layout.region_debug)
-      : null;
-    const absB = lot.layout?.region_debug
-      ? worldToAbstractVertex(e, this.state.params, lot.layout.region_debug)
-      : null;
 
-    if (absA && absB && absA.region === absB.region) {
-      const scope = this.computeChainScope(
-        sel, graph, lot, absA.region,
-        { xa: absA.xi, ya: absA.yi, xb: absB.xi, yb: absB.yi },
-      );
-      const anchor = (scope.xa !== absA.xi || scope.ya !== absA.yi ||
-                      scope.xb !== absB.xi || scope.yb !== absB.yi)
-        ? { xa: absA.xi, ya: absA.yi, xb: absB.xi, yb: absB.yi }
-        : undefined;
+    const resolved = this.resolveAbstractAnchor(sel, graph, seedEdge, lot);
+    if (resolved) {
+      const { region, scope, anchor } = resolved;
       lot.annotations.push({
         kind: "AbstractDeleteEdge",
-        region: absA.region,
+        region,
         xa: scope.xa, ya: scope.ya,
         xb: scope.xb, yb: scope.yb,
         ...(anchor ? { anchor } : {}),
@@ -1158,9 +1223,14 @@ export class App {
     // Splice path: chain lies on a single drive line and isn't
     // grid-addressable. Segment mode deletes just the seed edge;
     // chain mode spans the whole collinear run's t-range.
+    const s = graph.vertices[seedEdge.start];
+    const e = graph.vertices[seedEdge.end];
     const sa = worldToSpliceVertex(s, lot.driveLines);
     const sb = worldToSpliceVertex(e, lot.driveLines);
-    if (!(sa && sb && sa.drive_line_id === sb.drive_line_id)) return;
+    if (!(sa && sb && sa.drive_line_id === sb.drive_line_id)) {
+      showToast("delete: no stable anchor for this sub-edge");
+      return;
+    }
     let ta = sa.t;
     let tb = sb.t;
     if (sel.mode === "chain" && sel.chain.length > 1) {
@@ -1202,30 +1272,10 @@ export class App {
     if (!graph) return;
     const seed = graph.edges[sel.index];
     if (!seed) return;
-    const s = graph.vertices[seed.start];
-    const e = graph.vertices[seed.end];
 
-    // Resolve the seed sub-edge's endpoints to abstract grid points.
-    // This is both the segment-mode scope AND (when chain mode) the
-    // click anchor that pins the marker.
-    const absA = lot.layout?.region_debug
-      ? worldToAbstractVertex(s, this.state.params, lot.layout.region_debug)
-      : null;
-    const absB = lot.layout?.region_debug
-      ? worldToAbstractVertex(e, this.state.params, lot.layout.region_debug)
-      : null;
-    if (absA && absB && absA.region === absB.region) {
-      const scope = this.computeChainScope(
-        sel, graph, lot, absA.region,
-        { xa: absA.xi, ya: absA.yi, xb: absB.xi, yb: absB.yi },
-      );
-      // Anchor is the clicked seed sub-edge; only meaningful when the
-      // scope extends past it (chain mode spanning multiple cells).
-      const anchor = (scope.xa !== absA.xi || scope.ya !== absA.yi ||
-                      scope.xb !== absB.xi || scope.yb !== absB.yi)
-        ? { xa: absA.xi, ya: absA.yi, xb: absB.xi, yb: absB.yi }
-        : undefined;
-
+    const resolved = this.resolveAbstractAnchor(sel, graph, seed, lot);
+    if (resolved) {
+      const { region, scope, anchor } = resolved;
       // Match existing direction annotation by scope (not anchor).
       // Either orientation matches — cycle flips orientation.
       const existing = lot.annotations.findIndex((ann) => {
@@ -1235,7 +1285,7 @@ export class App {
         ) {
           return false;
         }
-        if (ann.region !== absA.region) return false;
+        if (ann.region !== region) return false;
         const matchFwd =
           ann.xa === scope.xa && ann.ya === scope.ya &&
           ann.xb === scope.xb && ann.yb === scope.yb;
@@ -1248,27 +1298,28 @@ export class App {
         const annIdx = lot.annotations.length;
         lot.annotations.push({
           kind: "AbstractTwoWayOriented",
-          region: absA.region,
+          region,
           xa: scope.xa, ya: scope.ya,
           xb: scope.xb, yb: scope.yb,
           ...(anchor ? { anchor } : {}),
           _active: true,
         });
         this.state.selectedVertex = { type: "annotation", index: annIdx, lotId: lot.id };
+        this.generate();
       } else {
         this.cycleAnnotationDirection(existing, lot.id);
         this.state.selectedVertex = { type: "annotation", index: existing, lotId: lot.id };
-        return;
       }
-      this.generate();
       return;
     }
 
     // Splice path: both endpoints on the same drive line.
+    const s = graph.vertices[seed.start];
+    const e = graph.vertices[seed.end];
     const sa = worldToSpliceVertex(s, lot.driveLines);
     const sb = worldToSpliceVertex(e, lot.driveLines);
     if (!(sa && sb && sa.drive_line_id === sb.drive_line_id)) {
-      // No stable anchor — skip silently.
+      showToast("f: no stable anchor for this sub-edge");
       return;
     }
     const sliceTol = 1e-3;
@@ -1295,6 +1346,13 @@ export class App {
       this.state.selectedVertex = { type: "annotation", index: existing, lotId: lot.id };
     }
   }
+}
+
+function scopeDiffers(
+  a: { xa: number; ya: number; xb: number; yb: number },
+  b: { xa: number; ya: number; xb: number; yb: number },
+): boolean {
+  return a.xa !== b.xa || a.ya !== b.ya || a.xb !== b.xb || a.yb !== b.yb;
 }
 
 function aisleVectorFromAngle(angleDeg: number, _offset: number, center: Vec2): { start: Vec2; end: Vec2 } {

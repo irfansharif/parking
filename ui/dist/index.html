@@ -131,14 +131,32 @@
       color: #606080;
       z-index: 10;
     }
+    #toast {
+      position: absolute;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(22, 33, 62, 0.95);
+      color: #e0e0e0;
+      border: 1px solid #e94560;
+      border-radius: 4px;
+      padding: 8px 14px;
+      font-size: 12px;
+      z-index: 20;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 120ms ease-out;
+    }
+    #toast.visible { opacity: 1; }
   </style>
-  <script type="module" crossorigin src="/parking/assets/index-CasqI_9M.js"></script>
+  <script type="module" crossorigin src="/parking/assets/index-DbCcZgJl.js"></script>
 </head>
 <body>
   <div id="canvas-container">
     <div id="toolbar"></div>
     <canvas id="canvas"></canvas>
     <div id="mode-hint"></div>
+    <div id="toast"></div>
   </div>
   <div id="params-panel"></div>
 </body>
