@@ -537,3 +537,165 @@ parking ratio (stalls per unit area), and utilization percentage. Stall run
 labels (e.g., "12 stalls" per row) can be derived from the spine data — each
 spine's stall count is known after placement, and the spine's midpoint gives the
 label position.
+
+## 6. Arcol Integration
+
+### 6.1 File format
+
+Parking v2 is a function assigned to a sketch — attached per-face on
+`FaceProperties`, alongside the existing `parking` field.
+Feature-flagged until launch.
+
+```ts
+type FaceProperties = {
+  color: Color;  isVoid?: boolean;
+  typology?: TypologyId;  areaType?: AreaTypeId;
+  parking?:   ParkingConfig;
+  parkingV2?: ParkingV2;       // new
+};
+
+type ParkingV2 = {
+  inputs: ParkingV2Inputs;     // editable
+  baked?: ParkingV2Baked;      // immutable pipeline output
+};
+```
+
+Two buckets. `inputs` is the only thing the UI writes; `baked` is a
+complete replacement each regen. Everything the tools need between
+regens — including the resolved aisle graph that backs edit-mode
+handles — is part of `baked` (see below). Transient pipeline state
+like the grid transform and region signatures are pure functions of
+`inputs` + current topology, recomputed inside the generator each
+regen.
+
+**Inputs:**
+
+```ts
+type ParkingV2Inputs = {
+  config: ParkingV2Config;                    // global params + region overrides
+  annotations: ParkingV2Annotation[];         // grid-space, survive regen
+};
+
+type ParkingV2Config = {
+  // global parameters (DESIGN §4): stallWidth, stallDepth, aisleWidth,
+  // stallAngle, aisleAngle, aisleOffset, siteOffset, crossAisleMaxRun,
+  // islandStallInterval, pillar / ADA controls, etc.
+  // ...
+
+  // Per-region overrides of the global aisle angle / offset, keyed by
+  // stable region id (§6.2).
+  regionOverrides: ParkingV2RegionOverride[];
+};
+
+type ParkingV2RegionOverride = { regionId: string; aisleAngle?: number; aisleOffset?: number };
+
+type ParkingV2Annotation =
+  | { kind: "direction";    target: GridEdgeRef;   chain: boolean;
+      direction: "TwoWayForward" | "TwoWayReverse" | "OneWayForward" | "OneWayReverse" }
+  | { kind: "deleteEdge";   target: GridEdgeRef;   chain: boolean }
+  | { kind: "deleteVertex"; target: GridVertexRef };
+
+// Annotations key off abstract (u,v) grid coords; the pipeline computes
+// the grid→world transform fresh each regen and re-matches by (u,v).
+type GridVertexRef = { u: number; v: number };
+type GridEdgeRef   = { a: GridVertexRef; b: GridVertexRef };
+```
+
+All the user-drawn lines — boundary, holes, drive lines, **and stall
+modifiers** — live as edges in the sketch's own `PlanarNetwork`, so
+they share its editing infrastructure (endpoint drag, snap,
+split-on-cross, vertex-merge). A new additive per-edge discriminator
+distinguishes their role to the pipeline:
+
+```ts
+userKind: "boundary" | "hole" | "driveLine" | "stallModifier";
+partitions?: boolean;              // drive-line-only; §1.3
+stallKind?: ParkingV2StallKind;    // stall-modifier-only; §1.4
+```
+
+"Suppress" is not a separate concept from retype — it folds into
+`stallKind` as a distinguished `Suppressed` value; the pipeline
+retypes overlapping stalls to that kind and the renderer skips them.
+No separate suppress-vs-retype discriminator at the schema level.
+
+**Baked** (the intermediate representation):
+
+```ts
+type ParkingV2Baked = {
+  generatorVersion: number;
+  inputHash: string;                           // over (sketch PlanarNetwork, inputs.*)
+
+  // Render geometry — 2D polylines + arcs, no back-refs.
+  stalls: Array<{ loop: PlanarPath; kind: ParkingV2StallKind }>;
+  aisles: PlanarPath[];
+  islands: PlanarPath[];
+  spineLabels: Array<{ midpoint: Vec2; stallCount: number }>;
+  metrics: { totalStalls: number; stallsByKind: Record<ParkingV2StallKind, number> };
+
+  // The resolved aisle graph. Vertices carry their (u,v) grid coord;
+  // edges carry interior/perimeter and direction. Read by the
+  // edit-mode manipulation tool to render addressable handles; not
+  // rendered directly. (This is why it's in baked rather than
+  // recomputed — it backs user-visible handles, so regenerating it
+  // on entry to edit mode would flash.)
+  aisleNetwork: PlanarNetwork;
+};
+```
+
+Persisting `baked` locks doc appearance to whatever was baked at last
+edit, independent of algorithm churn: a doc saved at generator version
+N opened at N+1 keeps its look until an input changes. The code
+surface responsible for doc appearance shrinks to the `baked` → scene
+renderer. The pattern is generator-agnostic — the `baked<T>` field +
+`Execution.ts` skip-on-hash-match path should be parameterised so
+other procedural sketch functions can reuse it. Invariants: (1) the
+renderer reads `baked` only; (2) regen is input-driven — skip if
+`inputHash` matches and `generatorVersion === current`, else replace
+`baked` atomically; (3) `baked` is never edited in place.
+
+### 6.2 PlanarNetwork reuse — where things live
+
+| Primitive                                     | Lives in                                          |
+|-----------------------------------------------|---------------------------------------------------|
+| Boundary, holes, drive lines, stall modifiers | Sketch's `PlanarNetwork`, tagged via `userKind`   |
+| Aisle graph (output)                          | `baked.aisleNetwork` (separate `PlanarNetwork`)   |
+| Annotations                                   | `inputs.annotations`, grid-space keyed            |
+| Region overrides                              | `inputs.config.regionOverrides`, keyed by stable id |
+| Stalls, islands, spine labels                 | `baked` geometry arrays                           |
+
+User-drawn lines all share `PlanarNetwork` so they share its editing
+infrastructure. `userKind` tells the pipeline the role of each line:
+drive lines participate in the aisle graph (and optionally region
+decomposition, via `partitions`); stall modifiers are a post-pass
+overlay keyed off `stallKind`. Stalls / islands / spines aren't
+editable topology — they're pipeline outputs, held in `baked` as
+geometry.
+
+Region ids are a canonical signature of the region's bounding
+partition edges (outer-boundary segments + drive-line ids),
+recomputed each regen; falls back to polylabel-center proximity when
+topology shifts materially.
+
+### 6.3 When controls appear
+
+- **Object mode (sketch selected)**: sidebar shows `ParkingV2Config`
+  as scrubbable inputs, three action buttons (*Add drive line*, *Add
+  zone divider*, *Add stall modifier*), and `baked.metrics`.
+- **Edit mode**: a layered `ParkingV2ManipulationTool` renders
+  handles on `baked.aisleNetwork` edges/vertices, drive-line
+  endpoints, and region control vectors. `F` cycles direction on a
+  selected edge; `Delete` removes an edge/vertex. Each writes an
+  annotation; regen runs; annotations re-match by grid-space ref
+  against the fresh `aisleNetwork`.
+
+Mirrors the existing `StructuralGridManipulationTool` layering.
+
+### 6.4 Intersecting building geometry
+
+Structured garages have columns, cores, and building footprints
+punching through the lot. The parking sketch owns only the user-drawn
+lot boundary; at regen time the pipeline fetches current projections
+of adjacent building geometry and injects them as holes for the run.
+This requires the geometry engine to support computations whose
+inputs span multiple elements that aren't parented to each other. The
+pipeline itself is unchanged — it already takes `{boundary, holes}`.
