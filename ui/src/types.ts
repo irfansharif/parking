@@ -663,12 +663,125 @@ export function targetWorldPos(
       : { x: mid, y: target.coord };
     return frameForward(frame, abs);
   }
-  // Perimeter: not rendered until the engine resolves perimeter targets.
+  if (target.on === "Perimeter") {
+    const poly = perimeterLoopPolygon(lot.boundary, target.loop);
+    if (!poly || poly.length < 3) return null;
+    return loopArcToWorld(poly, target.arc);
+  }
   return null;
 }
 
 function gridStopCoord(s: GridStop): number | null {
   return s.at === "Lattice" ? s.other : null;
+}
+
+/**
+ * Return the polygon vertices of the named perimeter loop on this lot's
+ * boundary. For `Outer`, returns the raw boundary outer. Hole loops come
+ * from `boundary.holes[index]`.
+ *
+ * Note: the engine uses the INSET outer loop (by `site_offset`) as the
+ * actual grid-bounding perimeter; for the prototype's rendering we accept
+ * that the UI-side arc may drift by up to `site_offset` when the user
+ * clicks on the raw polygon vs. the engine-resolved position. Re-anchor on
+ * the next regen if needed.
+ */
+export function perimeterLoopPolygon(
+  boundary: { outer: Vec2[]; holes: Vec2[][] },
+  loop: PerimeterLoop,
+): Vec2[] | null {
+  if (loop.kind === "Outer") return boundary.outer;
+  return boundary.holes[loop.index] ?? null;
+}
+
+/**
+ * Compute the world position at a normalized arc length along a loop.
+ * `arc ∈ [0, 1]` advances along the polygon in its stored winding.
+ */
+export function loopArcToWorld(poly: Vec2[], arc: number): Vec2 {
+  const n = poly.length;
+  if (n < 2) return poly[0] ?? { x: 0, y: 0 };
+  const cum: number[] = [0];
+  for (let i = 0; i < n; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % n];
+    cum.push(cum[cum.length - 1] + Math.hypot(b.x - a.x, b.y - a.y));
+  }
+  const total = cum[cum.length - 1];
+  if (total < 1e-9) return poly[0];
+  const target = Math.max(0, Math.min(1, arc)) * total;
+  for (let i = 0; i < n; i++) {
+    if (cum[i + 1] >= target) {
+      const segLen = cum[i + 1] - cum[i];
+      const t = segLen > 1e-9 ? (target - cum[i]) / segLen : 0;
+      const a = poly[i];
+      const b = poly[(i + 1) % n];
+      return { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) };
+    }
+  }
+  return poly[0];
+}
+
+/**
+ * Project a world-space point onto the nearest perimeter loop, within the
+ * given world-space tolerance. Returns `(loop, arc)` if successful, null
+ * if the point isn't on any loop. Used by the UI to address grid ×
+ * perimeter crossings (and any other perimeter-adjacent vertex) via a
+ * `Target::Perimeter`.
+ */
+export function worldToPerimeterPos(
+  v: Vec2,
+  boundary: { outer: Vec2[]; holes: Vec2[][] },
+  tol: number = 0.5,
+): { loop: PerimeterLoop; arc: number } | null {
+  const candidates: { loop: PerimeterLoop; poly: Vec2[] }[] = [];
+  if (boundary.outer.length >= 3) {
+    candidates.push({ loop: { kind: "Outer" }, poly: boundary.outer });
+  }
+  for (let i = 0; i < boundary.holes.length; i++) {
+    const h = boundary.holes[i];
+    if (h.length >= 3) candidates.push({ loop: { kind: "Hole", index: i }, poly: h });
+  }
+  let best: { loop: PerimeterLoop; arc: number; dist: number } | null = null;
+  for (const { loop, poly } of candidates) {
+    const arc = projectOntoLoop(v, poly, tol);
+    if (arc == null) continue;
+    const worldAt = loopArcToWorld(poly, arc);
+    const dist = Math.hypot(v.x - worldAt.x, v.y - worldAt.y);
+    if (!best || dist < best.dist) best = { loop, arc, dist };
+  }
+  return best ? { loop: best.loop, arc: best.arc } : null;
+}
+
+function projectOntoLoop(v: Vec2, poly: Vec2[], tol: number): number | null {
+  const n = poly.length;
+  let totalLen = 0;
+  const cum: number[] = [0];
+  for (let i = 0; i < n; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % n];
+    totalLen += Math.hypot(b.x - a.x, b.y - a.y);
+    cum.push(totalLen);
+  }
+  if (totalLen < 1e-9) return null;
+  let best: { arc: number; dist: number } | null = null;
+  for (let i = 0; i < n; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % n];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const segLenSq = dx * dx + dy * dy;
+    if (segLenSq < 1e-12) continue;
+    let t = ((v.x - a.x) * dx + (v.y - a.y) * dy) / segLenSq;
+    t = Math.max(0, Math.min(1, t));
+    const projX = a.x + t * dx;
+    const projY = a.y + t * dy;
+    const dist = Math.hypot(v.x - projX, v.y - projY);
+    if (dist > tol) continue;
+    const arc = (cum[i] + t * (cum[i + 1] - cum[i])) / totalLen;
+    if (!best || dist < best.dist) best = { arc, dist };
+  }
+  return best ? best.arc : null;
 }
 
 export interface GenerateInput {

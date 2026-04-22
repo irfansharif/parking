@@ -92,7 +92,7 @@ delete-edge on=grid region=0x0001000000000000 axis=x coord=-4 range=lattice:0,la
 # and no anchor is emitted (extents == seed).
 edge-select near=200,180 mode=segment
 ----
-edge-select seed=182 mode=segment chain_len=1
+edge-select seed=186 mode=segment chain_len=1
 
 edge-delete
 ----

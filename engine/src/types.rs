@@ -894,7 +894,7 @@ pub enum GridStop {
 /// A perimeter loop on the sketch boundary: the unique outer boundary, or
 /// a specific hole. In the prototype, holes are identified positionally;
 /// the Arcol integration uses a stable member sketch-vertex id instead.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum PerimeterLoop {
     Outer,

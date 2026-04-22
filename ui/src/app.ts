@@ -20,6 +20,7 @@ import {
   evalBoundaryEdge,
   frameInverse,
   annotationWorldPos,
+  worldToPerimeterPos,
   chainExtentsInRegion,
   chainToAbstractLatticeEdge,
   worldToAbstractVertex,
@@ -1007,12 +1008,21 @@ export class App {
     const v = graph.vertices[vertexIndex];
     if (!v) return;
 
-    // Try abstract grid first (regular grid intersections), then
-    // splice (drive-line crossings). Both addressing schemes survive
-    // parameter changes; the splice scheme survives drive-line edits
-    // too. If neither resolves (e.g., a boundary corner that's neither
-    // on the grid nor on a drive line), bail — those vertices have no
-    // stable identity yet.
+    // Three addressing schemes in priority order. Try the MOST stable
+    // first so that parameter changes (aisle angle, stall depth) don't
+    // silently re-target a different vertex:
+    //   1. Abstract grid (region + xi + yi) — for vertices that snap to
+    //      an integer lattice point. Stable under boundary moves AND
+    //      grid-parameter changes.
+    //   2. Drive-line splice (id + t) — for drive × anything crossings.
+    //      Stable under grid changes (drive line doesn't move with
+    //      grid), drifts only when the drive line itself is edited.
+    //   3. Perimeter (loop + arc) — fallback for vertices that sit on
+    //      a boundary loop but aren't at integer lattice (e.g. grid ×
+    //      perimeter crossings at non-lattice positions). Stable under
+    //      boundary-geometry edits but drifts when the grid rotates and
+    //      the crossing sweeps along the loop — acceptable for the
+    //      cases this catches, which the other two don't.
     const abs = lot.layout?.region_debug
       ? worldToAbstractVertex(v, this.state.params, lot.layout.region_debug)
       : null;
@@ -1036,7 +1046,15 @@ export class App {
           target: { on: "DriveLine", id: sp.drive_line_id, t: sp.t },
         });
       } else {
-        return; // no stable anchor for this vertex
+        const perim = worldToPerimeterPos(v, lot.boundary);
+        if (perim) {
+          lot.annotations.push({
+            kind: "DeleteVertex",
+            target: { on: "Perimeter", loop: perim.loop, arc: perim.arc },
+          });
+        } else {
+          return; // no stable anchor for this vertex
+        }
       }
     }
     this.state.selectedVertex = null;
