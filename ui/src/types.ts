@@ -549,188 +549,126 @@ export function computeBoundaryPin(
   return { pos: bestProj, edgeIndex: bestEdge, t: bestT };
 }
 
-export type Annotation =
-  | AbstractDeleteVertexAnnotation
-  | AbstractDeleteEdgeAnnotation
-  | AbstractOneWayAnnotation
-  | AbstractTwoWayOrientedAnnotation
-  | SpliceDeleteVertexAnnotation
-  | SpliceDeleteEdgeAnnotation
-  | SpliceOneWayAnnotation
-  | SpliceTwoWayOrientedAnnotation;
+/**
+ * A spatial intent that survives graph regeneration. The annotation targets
+ * a vertex or one-or-more sub-edges in one substrate's own coord system
+ * (grid, drive-line, or perimeter). Single dormancy rule: any referenced
+ * substrate or stop missing from the current graph → dormant this regen.
+ */
+export type Annotation = {
+  _active?: boolean;
+} & (
+  | { kind: "DeleteVertex"; target: Target }
+  | { kind: "DeleteEdge"; target: Target }
+  | { kind: "Direction"; target: Target; traffic: TrafficDirection }
+);
 
 /**
- * True if the annotation is keyed by abstract grid coordinates, not
- * world coordinates. Abstract annotations have no world-space anchor —
- * the UI can't drag them directly and their position is computed by
- * the engine on each generate.
- *
- * Written as a type predicate so TypeScript narrows `ann` to a
- * world-space variant in the `else` branch.
+ * Traffic direction relative to the target carrier's canonical direction.
+ * Grid line: canonical = +other-axis (low → high). Drive line: canonical =
+ * +t (start → end). Perimeter: canonical = CCW (Outer) / CW (Hole).
  */
-export function isAbstractAnnotation(
+export type TrafficDirection =
+  | "OneWay"
+  | "OneWayReverse"
+  | "TwoWayOriented"
+  | "TwoWayOrientedReverse";
+
+/**
+ * A referenceable region in one substrate's coord system.
+ * - Grid.range = null → whole grid line (edge annotations only).
+ * - Grid.range = [s, s] → a vertex at that stop.
+ * - Grid.range = [s1, s2] (s1 ≠ s2) → a span of sub-edges.
+ * - DriveLine / Perimeter: a single parametric point; resolution finds
+ *   the graph vertex at the point (for vertex annotations) or the
+ *   sub-edge containing the point (for edge annotations).
+ */
+export type Target =
+  | {
+      on: "Grid";
+      region: RegionId;
+      axis: "X" | "Y";
+      coord: number;
+      range: [GridStop, GridStop] | null;
+    }
+  | { on: "DriveLine"; id: number; t: number }
+  | { on: "Perimeter"; loop: PerimeterLoop; arc: number };
+
+export type GridStop =
+  | { at: "Lattice"; other: number }
+  | { at: "CrossesDriveLine"; id: number }
+  | { at: "CrossesPerimeter"; loop: PerimeterLoop };
+
+export type PerimeterLoop =
+  | { kind: "Outer" }
+  | { kind: "Hole"; index: number };
+
+/** True if the annotation is a direction annotation. */
+export function isDirectionAnnotation(
   ann: Annotation,
-): ann is
-  | AbstractDeleteVertexAnnotation
-  | AbstractDeleteEdgeAnnotation
-  | AbstractOneWayAnnotation
-  | AbstractTwoWayOrientedAnnotation {
-  return (
-    ann.kind === "AbstractDeleteVertex" ||
-    ann.kind === "AbstractDeleteEdge" ||
-    ann.kind === "AbstractOneWay" ||
-    ann.kind === "AbstractTwoWayOriented"
-  );
+): ann is Extract<Annotation, { kind: "Direction" }> {
+  return ann.kind === "Direction";
 }
 
 /**
- * Resolve an abstract annotation to its current world-space anchor by
- * forward-transforming its integer (xi, yi) — or the midpoint of
- * (xa, ya) and (xb, yb) for edge variants — through its host region's
- * AbstractFrame. Returns null if the annotation isn't abstract or its
- * region isn't in the current layout (dormant).
+ * Resolve an annotation's target to its current world-space anchor point,
+ * for rendering the marker. Returns null when the target's substrate or
+ * stops don't resolve — i.e. the annotation is dormant / off-screen.
  */
-export function abstractAnnotationWorldPos(
+export function annotationWorldPos(
   ann: Annotation,
-  regionDebug: RegionDebug | undefined,
+  lot: ParkingLot,
   params: ParkingParams,
 ): Vec2 | null {
-  if (!isAbstractAnnotation(ann)) return null;
-  if (!regionDebug) return null;
-  const region = regionDebug.regions.find((r) => r.id === ann.region);
-  if (!region) return null;
-  const frame = computeRegionFrame(
-    params,
-    region.aisle_angle_deg,
-    region.aisle_offset,
-  );
-  if (ann.kind === "AbstractDeleteVertex") {
-    return frameForward(frame, { x: ann.xi, y: ann.yi });
+  return targetWorldPos(ann.target, lot, params);
+}
+
+export function targetWorldPos(
+  target: Target,
+  lot: ParkingLot,
+  params: ParkingParams,
+): Vec2 | null {
+  if (target.on === "DriveLine") {
+    const dl = lot.driveLines.find((d) => d.id === target.id);
+    if (!dl) return null;
+    return {
+      x: dl.start.x + (dl.end.x - dl.start.x) * target.t,
+      y: dl.start.y + (dl.end.y - dl.start.y) * target.t,
+    };
   }
-  // Chain-mode annotations carry an anchor describing the clicked
-  // sub-edge; pin the marker there so the diamond sits where the user
-  // actually clicked rather than at the midpoint of a long row/column.
-  const src = ann.anchor ?? { xa: ann.xa, ya: ann.ya, xb: ann.xb, yb: ann.yb };
-  const a = frameForward(frame, { x: src.xa, y: src.ya });
-  const b = frameForward(frame, { x: src.xb, y: src.yb });
-  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  if (target.on === "Grid") {
+    const rd = lot.layout?.region_debug;
+    if (!rd) return null;
+    const region = rd.regions.find((r) => r.id === target.region);
+    if (!region) return null;
+    const frame = computeRegionFrame(
+      params,
+      region.aisle_angle_deg,
+      region.aisle_offset,
+    );
+    if (target.range == null) {
+      // Whole line — anchor at (coord, 0) on the fixed axis.
+      const abs = target.axis === "X"
+        ? { x: target.coord, y: 0 }
+        : { x: 0, y: target.coord };
+      return frameForward(frame, abs);
+    }
+    const [s1, s2] = target.range;
+    const c1 = gridStopCoord(s1);
+    const c2 = gridStopCoord(s2);
+    if (c1 == null || c2 == null) return null;
+    const mid = (c1 + c2) / 2;
+    const abs = target.axis === "X"
+      ? { x: target.coord, y: mid }
+      : { x: mid, y: target.coord };
+    return frameForward(frame, abs);
+  }
+  // Perimeter: not rendered until the engine resolves perimeter targets.
+  return null;
 }
 
-/**
- * Delete the grid vertex identified by integer abstract coordinates
- * (xi, yi) in the given region's abstract frame. Stable under every
- * parameter change — the same (region, xi, yi) triple always points
- * to the same grid intersection.
- */
-export interface AbstractDeleteVertexAnnotation {
-  kind: "AbstractDeleteVertex";
-  region: RegionId;
-  xi: number;
-  yi: number;
-  _active?: boolean;
-}
-
-/**
- * UI-only marker-position hint for multi-cell abstract-edge annotations
- * (chain-mode selections, where `(xa,ya)→(xb,yb)` spans a whole row or
- * column). When set, the annotation's visual anchor renders at the
- * midpoint of the anchor sub-edge instead of the midpoint of the full
- * extents — i.e. pinned to the sub-edge the user actually clicked. The
- * engine ignores this field (unknown-field-ignoring serde).
- */
-export interface AbstractEdgeAnchor {
-  xa: number;
-  ya: number;
-  xb: number;
-  yb: number;
-}
-
-/**
- * Delete the grid-aligned edge connecting two integer abstract grid
- * points in the same region. One of the two axes must match (it's
- * either a parallel-aisle segment at fixed xi or a cross-aisle
- * segment at fixed yi).
- */
-export interface AbstractDeleteEdgeAnnotation {
-  kind: "AbstractDeleteEdge";
-  region: RegionId;
-  xa: number;
-  ya: number;
-  xb: number;
-  yb: number;
-  anchor?: AbstractEdgeAnchor;
-  _active?: boolean;
-}
-
-/**
- * Mark a grid-aligned edge as one-way, with travel direction from
- * (xa, ya) to (xb, yb) in the region's abstract frame.
- */
-export interface AbstractOneWayAnnotation {
-  kind: "AbstractOneWay";
-  region: RegionId;
-  xa: number;
-  ya: number;
-  xb: number;
-  yb: number;
-  anchor?: AbstractEdgeAnchor;
-  _active?: boolean;
-}
-
-/**
- * Mark a grid-aligned edge as two-way with oriented lanes; the
- * (xa, ya) → (xb, yb) direction determines which side gets which
- * lane direction.
- */
-export interface AbstractTwoWayOrientedAnnotation {
-  kind: "AbstractTwoWayOriented";
-  region: RegionId;
-  xa: number;
-  ya: number;
-  xb: number;
-  yb: number;
-  anchor?: AbstractEdgeAnchor;
-  _active?: boolean;
-}
-
-/**
- * Delete the splice vertex on drive line `drive_line_id` at fractional
- * position `t ∈ [0, 1]`. Resolves to the splice with the closest stored
- * `t`; goes dormant if the drive line is removed.
- */
-export interface SpliceDeleteVertexAnnotation {
-  kind: "SpliceDeleteVertex";
-  drive_line_id: number;
-  t: number;
-  _active?: boolean;
-}
-
-/**
- * Delete the drive-line edge spanning splice positions `(ta, tb)` along
- * the same drive line.
- */
-export interface SpliceDeleteEdgeAnnotation {
-  kind: "SpliceDeleteEdge";
-  drive_line_id: number;
-  ta: number;
-  tb: number;
-  _active?: boolean;
-}
-
-export interface SpliceOneWayAnnotation {
-  kind: "SpliceOneWay";
-  drive_line_id: number;
-  ta: number;
-  tb: number;
-  _active?: boolean;
-}
-
-export interface SpliceTwoWayOrientedAnnotation {
-  kind: "SpliceTwoWayOriented";
-  drive_line_id: number;
-  ta: number;
-  tb: number;
-  _active?: boolean;
+function gridStopCoord(s: GridStop): number | null {
+  return s.at === "Lattice" ? s.other : null;
 }
 
 export interface GenerateInput {

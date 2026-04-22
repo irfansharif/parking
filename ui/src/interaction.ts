@@ -1,6 +1,6 @@
 import { App, VertexRef, EdgeRef } from "./app";
 import { Renderer } from "./renderer";
-import { Vec2, EdgeCurve, DriveAisleGraph, isAbstractAnnotation, abstractAnnotationWorldPos } from "./types";
+import { Vec2, EdgeCurve, DriveAisleGraph, annotationWorldPos } from "./types";
 import { computeSnap, emptySnapState } from "./snap";
 
 export function setupInteraction(
@@ -127,19 +127,8 @@ export function setupInteraction(
             const s = graph.vertices[edge.start];
             const e = graph.vertices[edge.end];
             const mid = { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 };
-            const annIdx = activeLot.annotations.findIndex((a: any) => {
-              let ap: Vec2 | null = null;
-              if (isAbstractAnnotation(a)) {
-                ap = abstractAnnotationWorldPos(
-                  a,
-                  activeLot.layout?.region_debug,
-                  app.state.params,
-                );
-              } else if (a.kind === "DeleteVertex") {
-                ap = a.point;
-              } else if ("midpoint" in a) {
-                ap = a.midpoint;
-              }
+            const annIdx = activeLot.annotations.findIndex((a) => {
+              const ap = annotationWorldPos(a, activeLot, app.state.params);
               if (!ap) return false;
               return Math.sqrt((ap.x - mid.x) ** 2 + (ap.y - mid.y) ** 2) < 5;
             });

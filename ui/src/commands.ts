@@ -1,5 +1,13 @@
 import { App, EdgeRef } from "./app";
-import { Annotation, Vec2, computeBoundaryPin } from "./types";
+import {
+  Annotation,
+  GridStop,
+  PerimeterLoop,
+  Target,
+  TrafficDirection,
+  Vec2,
+  computeBoundaryPin,
+} from "./types";
 import { findCollinearChain } from "./interaction";
 
 export interface CommandAPI {
@@ -350,28 +358,14 @@ export function createCommandAPI(app: App): CommandAPI {
         }
 
         case "annotation": {
-          const subtype = parts[1]; // "one-way", "delete-vertex", "delete-edge"
-          const isAbstract =
-            subtype === "abstract-delete-vertex" ||
-            subtype === "abstract-delete-edge" ||
-            subtype === "abstract-one-way" ||
-            subtype === "abstract-two-way-oriented";
-          // These subtypes carry their payload on the command line,
-          // not in the body, so they don't need a body. The abstract
-          // variants above plus `delete-vertex-at-index` (which wraps
-          // an interactive UI entry point).
-          const bodyless = isAbstract || subtype === "delete-vertex-at-index";
-          if (!bodyless && !body) return "error: annotation requires body";
-          const points = body ? parsePoints(body) : [];
-          const noChain = parts.includes("no-chain");
+          // Two subtype families:
+          //   * `delete-vertex-at-index index=<i>` — test-only UI
+          //     passthrough that exercises deleteAisleVertexByAnnotation.
+          //   * `<delete-vertex|delete-edge|direction> on=<substrate> ...`
+          //     — all other annotations in the new substrate-local model.
+          const subtype = parts[1];
           const lot = app.activeLot();
           if (subtype === "delete-vertex-at-index") {
-            // Usage: annotation delete-vertex-at-index index=<i>
-            // Routes through deleteAisleVertexByAnnotation so it
-            // exercises the UI auto-upgrade path — under the
-            // abstract-stamp flag this produces an
-            // AbstractDeleteVertex, otherwise a world-space
-            // DeleteVertex.
             let idx: number | undefined;
             for (const p of parts.slice(2)) {
               const [k, v] = p.split("=");
@@ -382,86 +376,32 @@ export function createCommandAPI(app: App): CommandAPI {
             }
             app.deleteAisleVertexByAnnotation(idx);
             return `annotation delete-vertex-at-index index=${idx}`;
-          } else if (
-            subtype === "abstract-delete-vertex" ||
-            subtype === "abstract-delete-edge" ||
-            subtype === "abstract-one-way" ||
-            subtype === "abstract-two-way-oriented"
-          ) {
-            // Usage:
-            //   annotation abstract-delete-vertex    region=<id> x=<xi> y=<yi>
-            //   annotation abstract-delete-edge      region=<id> from=<xa>,<ya> to=<xb>,<yb>
-            //   annotation abstract-one-way          region=<id> from=<xa>,<ya> to=<xb>,<yb>
-            //   annotation abstract-two-way-oriented region=<id> from=<xa>,<ya> to=<xb>,<yb>
-            //
-            // <id> is a RegionId, accepted as decimal u64 or "0x..." hex.
-            let regionId: number | undefined;
-            let xi: number | undefined;
-            let yi: number | undefined;
-            let xa: number | undefined;
-            let ya: number | undefined;
-            let xb: number | undefined;
-            let yb: number | undefined;
-            for (const p of parts.slice(2)) {
-              const [k, v] = p.split("=");
-              if (k === "region") {
-                regionId = v.startsWith("0x") ? parseInt(v.slice(2), 16) : Number(v);
-              } else if (k === "x") {
-                xi = Number(v);
-              } else if (k === "y") {
-                yi = Number(v);
-              } else if (k === "from") {
-                const [a, b] = v.split(",");
-                xa = Number(a);
-                ya = Number(b);
-              } else if (k === "to") {
-                const [a, b] = v.split(",");
-                xb = Number(a);
-                yb = Number(b);
-              }
-            }
-            if (regionId === undefined || Number.isNaN(regionId)) {
-              return `error: ${subtype} requires region=<id>`;
-            }
-            if (subtype === "abstract-delete-vertex") {
-              if (xi === undefined || yi === undefined) {
-                return "error: abstract-delete-vertex requires x=<xi> y=<yi>";
-              }
-              lot.annotations.push({
-                kind: "AbstractDeleteVertex",
-                region: regionId,
-                xi,
-                yi,
-              } as any);
-              return `annotation abstract-delete-vertex region=0x${regionId.toString(16).padStart(16, "0")} x=${xi} y=${yi}`;
-            } else {
-              if (
-                xa === undefined ||
-                ya === undefined ||
-                xb === undefined ||
-                yb === undefined
-              ) {
-                return `error: ${subtype} requires from=<xa>,<ya> to=<xb>,<yb>`;
-              }
-              const kind = (
-                subtype === "abstract-delete-edge"
-                  ? "AbstractDeleteEdge"
-                  : subtype === "abstract-one-way"
-                    ? "AbstractOneWay"
-                    : "AbstractTwoWayOriented"
-              ) as Annotation["kind"];
-              lot.annotations.push({
-                kind,
-                region: regionId,
-                xa,
-                ya,
-                xb,
-                yb,
-              } as any);
-              return `annotation ${subtype} region=0x${regionId.toString(16).padStart(16, "0")} from=${xa},${ya} to=${xb},${yb}`;
-            }
           }
-          return `error: unknown annotation type '${subtype}'`;
+          if (
+            subtype !== "delete-vertex" &&
+            subtype !== "delete-edge" &&
+            subtype !== "direction"
+          ) {
+            return `error: unknown annotation type '${subtype}'`;
+          }
+          const parsed = parseAnnotationArgs(parts.slice(2));
+          if (typeof parsed === "string") {
+            return `error: ${subtype}: ${parsed}`;
+          }
+          const { target, traffic } = parsed;
+          let ann: Annotation;
+          if (subtype === "direction") {
+            if (!traffic) {
+              return "error: direction requires traffic=<...>";
+            }
+            ann = { kind: "Direction", target, traffic };
+          } else if (subtype === "delete-vertex") {
+            ann = { kind: "DeleteVertex", target };
+          } else {
+            ann = { kind: "DeleteEdge", target };
+          }
+          lot.annotations.push(ann);
+          return `annotation ${formatAnnotation(ann)}`;
         }
 
         case "region-override": {
@@ -573,29 +513,187 @@ function pointToSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
   return Math.sqrt((p.x - projX) ** 2 + (p.y - projY) ** 2);
 }
 
-function formatAnnotation(a: any): string {
-  const anchor = a.anchor
-    ? ` anchor=${a.anchor.xa},${a.anchor.ya}->${a.anchor.xb},${a.anchor.yb}`
-    : "";
+function formatAnnotation(a: Annotation): string {
+  const targetStr = formatTarget(a.target);
   switch (a.kind) {
-    case "AbstractDeleteVertex":
-      return `abstract-delete-vertex region=0x${a.region.toString(16).padStart(16, "0")} x=${a.xi} y=${a.yi}`;
-    case "AbstractDeleteEdge":
-      return `abstract-delete-edge region=0x${a.region.toString(16).padStart(16, "0")} from=${a.xa},${a.ya} to=${a.xb},${a.yb}${anchor}`;
-    case "AbstractOneWay":
-      return `abstract-one-way region=0x${a.region.toString(16).padStart(16, "0")} from=${a.xa},${a.ya} to=${a.xb},${a.yb}${anchor}`;
-    case "AbstractTwoWayOriented":
-      return `abstract-two-way-oriented region=0x${a.region.toString(16).padStart(16, "0")} from=${a.xa},${a.ya} to=${a.xb},${a.yb}${anchor}`;
-    case "SpliceDeleteVertex":
-      return `splice-delete-vertex line=${a.drive_line_id} t=${a.t}`;
-    case "SpliceDeleteEdge":
-      return `splice-delete-edge line=${a.drive_line_id} from=${a.ta} to=${a.tb}`;
-    case "SpliceOneWay":
-      return `splice-one-way line=${a.drive_line_id} from=${a.ta} to=${a.tb}`;
-    case "SpliceTwoWayOriented":
-      return `splice-two-way-oriented line=${a.drive_line_id} from=${a.ta} to=${a.tb}`;
+    case "DeleteVertex":
+      return `delete-vertex ${targetStr}`;
+    case "DeleteEdge":
+      return `delete-edge ${targetStr}`;
+    case "Direction":
+      return `direction ${targetStr} traffic=${formatTraffic(a.traffic)}`;
+  }
+}
+
+function formatTarget(t: Target): string {
+  if (t.on === "Grid") {
+    const axisStr = t.axis === "X" ? "x" : "y";
+    const regionHex = "0x" + t.region.toString(16).padStart(16, "0");
+    let scope: string;
+    if (t.range == null) {
+      scope = "range=whole";
+    } else if (gridStopsEqual(t.range[0], t.range[1])) {
+      scope = `at=${formatStop(t.range[0])}`;
+    } else {
+      scope = `range=${formatStop(t.range[0])},${formatStop(t.range[1])}`;
+    }
+    return `on=grid region=${regionHex} axis=${axisStr} coord=${t.coord} ${scope}`;
+  }
+  if (t.on === "DriveLine") {
+    return `on=drive-line id=${t.id} t=${fmtNum(t.t)}`;
+  }
+  return `on=perimeter loop=${formatLoop(t.loop)} arc=${fmtNum(t.arc)}`;
+}
+
+function formatStop(s: GridStop): string {
+  if (s.at === "Lattice") return `lattice:${s.other}`;
+  if (s.at === "CrossesDriveLine") return `crosses-drive-line:${s.id}`;
+  return `crosses-perimeter:${formatLoop(s.loop)}`;
+}
+
+function formatLoop(l: PerimeterLoop): string {
+  return l.kind === "Outer" ? "outer" : `hole:${l.index}`;
+}
+
+function formatTraffic(t: TrafficDirection): string {
+  switch (t) {
+    case "OneWay":
+      return "one-way";
+    case "OneWayReverse":
+      return "one-way-reverse";
+    case "TwoWayOriented":
+      return "two-way-oriented";
+    case "TwoWayOrientedReverse":
+      return "two-way-oriented-reverse";
+  }
+}
+
+function gridStopsEqual(a: GridStop, b: GridStop): boolean {
+  if (a.at === "Lattice" && b.at === "Lattice") return a.other === b.other;
+  if (a.at === "CrossesDriveLine" && b.at === "CrossesDriveLine") return a.id === b.id;
+  return false;
+}
+
+function fmtNum(n: number): string {
+  // Match lib.rs fmt_coord: integer if close to round, else 2-decimal.
+  if (Math.abs(n - Math.round(n)) < 1e-6) return `${Math.round(n)}`;
+  return n.toFixed(2);
+}
+
+/**
+ * Parse the `key=value` arg list following an `annotation <kind> ...`
+ * command into a `Target` plus optional `TrafficDirection`. Returns an
+ * error message on malformed input.
+ */
+function parseAnnotationArgs(
+  args: string[],
+): { target: Target; traffic: TrafficDirection | null } | string {
+  const kv: Record<string, string> = {};
+  for (const p of args) {
+    const eq = p.indexOf("=");
+    if (eq < 0) continue;
+    kv[p.slice(0, eq)] = p.slice(eq + 1);
+  }
+  const on = kv["on"];
+  if (!on) return "missing on=<substrate>";
+  let target: Target;
+  if (on === "grid") {
+    const region = parseRegionId(kv["region"]);
+    if (region == null) return "grid requires region=<id>";
+    const axisStr = kv["axis"];
+    if (axisStr !== "x" && axisStr !== "y") return "grid requires axis=x|y";
+    const axis = axisStr === "x" ? "X" : "Y";
+    const coord = Number(kv["coord"]);
+    if (Number.isNaN(coord)) return "grid requires coord=<n>";
+    let range: [GridStop, GridStop] | null;
+    if (kv["range"] === "whole") {
+      range = null;
+    } else if (kv["at"] !== undefined) {
+      const s = parseStop(kv["at"]);
+      if (!s) return `grid: bad stop '${kv["at"]}'`;
+      range = [s, s];
+    } else if (kv["range"] !== undefined) {
+      const parts = kv["range"].split(",");
+      if (parts.length !== 2) return "grid range=<s1>,<s2> requires two stops";
+      const s1 = parseStop(parts[0]);
+      const s2 = parseStop(parts[1]);
+      if (!s1 || !s2) return `grid: bad range '${kv["range"]}'`;
+      range = [s1, s2];
+    } else {
+      return "grid requires range=whole|<s1>,<s2> or at=<stop>";
+    }
+    target = { on: "Grid", region, axis, coord, range };
+  } else if (on === "drive-line") {
+    const id = Number(kv["id"]);
+    const t = Number(kv["t"]);
+    if (Number.isNaN(id) || Number.isNaN(t)) {
+      return "drive-line requires id=<n> t=<t>";
+    }
+    target = { on: "DriveLine", id, t };
+  } else if (on === "perimeter") {
+    const loop = parseLoop(kv["loop"]);
+    const arc = Number(kv["arc"]);
+    if (!loop || Number.isNaN(arc)) {
+      return "perimeter requires loop=<loop> arc=<arc>";
+    }
+    target = { on: "Perimeter", loop, arc };
+  } else {
+    return `unknown substrate 'on=${on}'`;
+  }
+  const trafficStr = kv["traffic"];
+  const traffic: TrafficDirection | null = trafficStr ? parseTraffic(trafficStr) : null;
+  if (trafficStr && !traffic) return `bad traffic '${trafficStr}'`;
+  return { target, traffic };
+}
+
+function parseRegionId(v: string | undefined): number | null {
+  if (!v) return null;
+  const n = v.startsWith("0x") ? parseInt(v.slice(2), 16) : Number(v);
+  return Number.isNaN(n) ? null : n;
+}
+
+function parseStop(s: string): GridStop | null {
+  const colon = s.indexOf(":");
+  if (colon < 0) return null;
+  const head = s.slice(0, colon);
+  const tail = s.slice(colon + 1);
+  if (head === "lattice") {
+    const other = Number(tail);
+    return Number.isNaN(other) ? null : { at: "Lattice", other };
+  }
+  if (head === "crosses-drive-line") {
+    const id = Number(tail);
+    return Number.isNaN(id) ? null : { at: "CrossesDriveLine", id };
+  }
+  if (head === "crosses-perimeter") {
+    const loop = parseLoop(tail);
+    return loop ? { at: "CrossesPerimeter", loop } : null;
+  }
+  return null;
+}
+
+function parseLoop(v: string | undefined): PerimeterLoop | null {
+  if (!v) return null;
+  if (v === "outer") return { kind: "Outer" };
+  if (v.startsWith("hole:")) {
+    const index = Number(v.slice(5));
+    return Number.isNaN(index) ? null : { kind: "Hole", index };
+  }
+  return null;
+}
+
+function parseTraffic(v: string): TrafficDirection | null {
+  switch (v) {
+    case "one-way":
+      return "OneWay";
+    case "one-way-reverse":
+      return "OneWayReverse";
+    case "two-way-oriented":
+      return "TwoWayOriented";
+    case "two-way-oriented-reverse":
+      return "TwoWayOrientedReverse";
     default:
-      return `unknown ${JSON.stringify(a)}`;
+      return null;
   }
 }
 

@@ -26,9 +26,9 @@ generate
 ----
 total_stalls: 162
 
-annotation abstract-one-way region=0x1000000000000 from=-3,2 to=-3,3
+annotation direction on=grid region=0x0001000000000000 axis=x coord=-3 range=lattice:2,lattice:3 traffic=one-way
 ----
-annotation abstract-one-way region=0x0001000000000000 from=-3,2 to=-3,3
+annotation direction on=grid region=0x0001000000000000 axis=x coord=-3 range=lattice:2,lattice:3 traffic=one-way
 
 generate
 ----

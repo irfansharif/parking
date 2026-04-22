@@ -3166,12 +3166,11 @@ mod tests {
             ],
             annotations: vec![
                 // Drive line spans y=-50→y=250 (length 300). The interior
-                // splice spans the inset boundary, ~y=0→y=200, i.e.
-                // t≈0.166→0.833 in normalized coords.
-                Annotation::SpliceTwoWayOriented {
-                    drive_line_id: 1,
-                    ta: 0.166,
-                    tb: 0.833,
+                // splice covers the inset boundary, ~y=0→y=200 (t≈0.166→0.833).
+                // Point at the midpoint picks the sub-edge containing it.
+                Annotation::Direction {
+                    target: Target::DriveLine { id: 1, t: 0.5 },
+                    traffic: TrafficDirection::TwoWayOriented,
                 },
             ],
             params: ParkingParams::default(),

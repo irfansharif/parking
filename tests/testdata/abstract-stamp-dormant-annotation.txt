@@ -24,9 +24,9 @@ debug use_abstract_stamp=true
 # Single-region lot, so the real region id is 0x1000000000000.
 # Intentionally point this annotation at a fake region id so the
 # lookup misses and it ends up dormant.
-annotation abstract-delete-vertex region=0xdeadbeef x=-3 y=3
+annotation delete-vertex on=grid region=0x00000000deadbeef axis=x coord=-3 at=lattice:3
 ----
-annotation abstract-delete-vertex region=0x00000000deadbeef x=-3 y=3
+annotation delete-vertex on=grid region=0x00000000deadbeef axis=x coord=-3 at=lattice:3
 
 generate
 ----
@@ -39,9 +39,9 @@ dormant_annotations: 1 (0)
 
 # Sanity: add another annotation with the real region id so the
 # total count grows but only one is dormant.
-annotation abstract-delete-vertex region=0x1000000000000 x=-3 y=3
+annotation delete-vertex on=grid region=0x0001000000000000 axis=x coord=-3 at=lattice:3
 ----
-annotation abstract-delete-vertex region=0x0001000000000000 x=-3 y=3
+annotation delete-vertex on=grid region=0x0001000000000000 axis=x coord=-3 at=lattice:3
 
 generate
 ----

@@ -33,9 +33,9 @@ generate
 ----
 total_stalls: 162
 
-annotation abstract-delete-edge region=0x1000000000000 from=-3,2 to=-2,2
+annotation delete-edge on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-3,lattice:-2
 ----
-annotation abstract-delete-edge region=0x0001000000000000 from=-3,2 to=-2,2
+annotation delete-edge on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-3,lattice:-2
 
 generate
 ----

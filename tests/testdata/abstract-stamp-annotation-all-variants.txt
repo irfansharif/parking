@@ -30,24 +30,24 @@ generate
 total_stalls: 206
 
 # Delete an interior grid vertex.
-annotation abstract-delete-vertex region=0x1000000000000 x=-4 y=3
+annotation delete-vertex on=grid region=0x0001000000000000 axis=x coord=-4 at=lattice:3
 ----
-annotation abstract-delete-vertex region=0x0001000000000000 x=-4 y=3
+annotation delete-vertex on=grid region=0x0001000000000000 axis=x coord=-4 at=lattice:3
 
 # Delete the cross-aisle segment next to it.
-annotation abstract-delete-edge region=0x1000000000000 from=-5,3 to=-4,3
+annotation delete-edge on=grid region=0x0001000000000000 axis=y coord=3 range=lattice:-5,lattice:-4
 ----
-annotation abstract-delete-edge region=0x0001000000000000 from=-5,3 to=-4,3
+annotation delete-edge on=grid region=0x0001000000000000 axis=y coord=3 range=lattice:-5,lattice:-4
 
 # Mark a parallel-aisle segment one-way.
-annotation abstract-one-way region=0x1000000000000 from=-3,2 to=-3,3
+annotation direction on=grid region=0x0001000000000000 axis=x coord=-3 range=lattice:2,lattice:3 traffic=one-way
 ----
-annotation abstract-one-way region=0x0001000000000000 from=-3,2 to=-3,3
+annotation direction on=grid region=0x0001000000000000 axis=x coord=-3 range=lattice:2,lattice:3 traffic=one-way
 
 # Mark another segment as two-way with oriented lanes.
-annotation abstract-two-way-oriented region=0x1000000000000 from=-2,2 to=-2,3
+annotation direction on=grid region=0x0001000000000000 axis=x coord=-2 range=lattice:2,lattice:3 traffic=two-way-oriented
 ----
-annotation abstract-two-way-oriented region=0x0001000000000000 from=-2,2 to=-2,3
+annotation direction on=grid region=0x0001000000000000 axis=x coord=-2 range=lattice:2,lattice:3 traffic=two-way-oriented
 
 generate
 ----

@@ -10,13 +10,16 @@ import {
   GenerateInput,
   DebugToggles,
   Annotation,
+  GridStop,
+  PerimeterLoop,
+  Target,
+  TrafficDirection,
   RegionId,
   computeBoundaryPin,
   computeRegionFrame,
   evalBoundaryEdge,
   frameInverse,
-  isAbstractAnnotation,
-  abstractAnnotationWorldPos,
+  annotationWorldPos,
   chainExtentsInRegion,
   chainToAbstractLatticeEdge,
   worldToAbstractVertex,
@@ -211,8 +214,26 @@ export class App {
       },
       aisleGraph: null,
       annotations: [
-        { kind: "AbstractDeleteEdge", region: 38732162085172, xa: -2, ya: 0, xb: -2, yb: 1 },
-        { kind: "AbstractDeleteEdge", region: 38732162085172, xa: -2, ya: 1, xb: -2, yb: 2 },
+        {
+          kind: "DeleteEdge",
+          target: {
+            on: "Grid",
+            region: 38732162085172,
+            axis: "X",
+            coord: -2,
+            range: [{ at: "Lattice", other: 0 }, { at: "Lattice", other: 1 }],
+          },
+        },
+        {
+          kind: "DeleteEdge",
+          target: {
+            on: "Grid",
+            region: 38732162085172,
+            axis: "X",
+            coord: -2,
+            range: [{ at: "Lattice", other: 1 }, { at: "Lattice", other: 2 }],
+          },
+        },
       ],
       aisleVector: aisleVectorFromAngle(90, 0, { x: -80, y: 250 }),
       aisleOffsetBaseline: midpointPerpProj(
@@ -465,37 +486,14 @@ export class App {
           });
         }
       }
-      // Annotation anchors. Abstract annotations are integer grid
-      // handles with no world-space anchor; the renderer resolves them
-      // via the engine. Splice annotations live on a drive line, so we
-      // compute their world position from (drive_line_id, t) here.
+      // Annotation anchors: resolve each annotation's target to its
+      // current world position. Dormant annotations (substrate missing)
+      // return null and are skipped.
       lot.annotations.forEach((ann, i) => {
-        if (isAbstractAnnotation(ann)) {
-          // Resolve abstract grid coords to a world anchor via the
-          // host region's AbstractFrame. Dormant annotations (region
-          // gone) return null and are skipped — nothing to click.
-          const pos = abstractAnnotationWorldPos(
-            ann,
-            lot.layout?.region_debug,
-            this.state.params,
-          );
-          if (pos) {
-            result.push({ ref: { type: "annotation", index: i, lotId: lid }, pos });
-          }
-          return;
+        const pos = annotationWorldPos(ann, lot, this.state.params);
+        if (pos) {
+          result.push({ ref: { type: "annotation", index: i, lotId: lid }, pos });
         }
-        // Splice annotation: world pos = midpoint of (ta, tb) along the
-        // line, or just `t` for the vertex variant.
-        const dl = lot.driveLines.find((d) => d.id === ann.drive_line_id);
-        if (!dl) return;
-        const t = ann.kind === "SpliceDeleteVertex"
-          ? ann.t
-          : (ann.ta + ann.tb) / 2;
-        const pos = {
-          x: dl.start.x + (dl.end.x - dl.start.x) * t,
-          y: dl.start.y + (dl.end.y - dl.start.y) * t,
-        };
-        result.push({ ref: { type: "annotation", index: i, lotId: lid }, pos });
       });
       // Drive-line vertices.
       lot.driveLines.forEach((dl, i) => {
@@ -969,72 +967,27 @@ export class App {
     const lot = lotId ? this.lotById(lotId)! : this.activeLot();
     const ann = lot.annotations[index];
     if (!ann) return;
+    if (ann.kind !== "Direction") return;
 
-    // Abstract variants: cycle through
-    //   TwoWayOriented(a→b) → TwoWayOriented(b→a) → OneWay(a→b) →
-    //   OneWay(b→a) → inactive (tombstone) → back to TwoWayOriented(a→b)
-    if (
-      ann.kind === "AbstractTwoWayOriented" ||
-      ann.kind === "AbstractOneWay"
-    ) {
-      const swap = () => {
-        const oxa = ann.xa, oya = ann.ya;
-        ann.xa = ann.xb;
-        ann.ya = ann.yb;
-        ann.xb = oxa;
-        ann.yb = oya;
+    // Cycle: TwoWayOriented → TwoWayOrientedReverse → OneWay →
+    //        OneWayReverse → inactive (tombstone) → TwoWayOriented.
+    if (ann._active === false) {
+      ann.traffic = "TwoWayOriented";
+      ann._active = true;
+    } else {
+      const next: Record<TrafficDirection, { next: TrafficDirection; tombstone: boolean }> = {
+        TwoWayOriented: { next: "TwoWayOrientedReverse", tombstone: false },
+        TwoWayOrientedReverse: { next: "OneWay", tombstone: false },
+        OneWay: { next: "OneWayReverse", tombstone: false },
+        OneWayReverse: { next: "TwoWayOriented", tombstone: true },
       };
-      if (ann._active === false) {
-        (ann as any).kind = "AbstractTwoWayOriented";
-        ann._active = true;
-      } else if (ann.kind === "AbstractTwoWayOriented") {
-        // Flip, then downgrade to OneWay on the second press.
-        // We detect "already flipped once" by a sentinel field? Simpler:
-        // just downgrade every second press. No persistent _origDir
-        // here, since the abstract identity is the (xa,ya)↔(xb,yb)
-        // pair — after one swap we're back to equivalent.
-        (ann as any).kind = "AbstractOneWay";
-      } else {
-        // AbstractOneWay active: swap, then on next press tombstone.
-        // Detect "just swapped" via a simple flag.
-        if ((ann as any)._swapped) {
-          ann._active = false;
-          (ann as any)._swapped = false;
-        } else {
-          swap();
-          (ann as any)._swapped = true;
-        }
+      const step = next[ann.traffic];
+      ann.traffic = step.next;
+      if (step.tombstone) {
+        ann._active = false;
       }
-      this.generate();
-      return;
     }
-
-    // Splice variants: same cycle as abstract, swapping ta/tb.
-    if (ann.kind === "SpliceTwoWayOriented" || ann.kind === "SpliceOneWay") {
-      const swap = () => {
-        const ota = ann.ta;
-        ann.ta = ann.tb;
-        ann.tb = ota;
-      };
-      if (ann._active === false) {
-        (ann as any).kind = "SpliceTwoWayOriented";
-        ann._active = true;
-      } else if (ann.kind === "SpliceTwoWayOriented") {
-        (ann as any).kind = "SpliceOneWay";
-      } else {
-        if ((ann as any)._swapped) {
-          ann._active = false;
-          (ann as any)._swapped = false;
-        } else {
-          swap();
-          (ann as any)._swapped = true;
-        }
-      }
-      this.generate();
-      return;
-    }
-
-    // Anything else (Abstract*Delete or unknown) — no cycle.
+    this.generate();
   }
 
   cleanupTombstones(): void {
@@ -1064,19 +1017,23 @@ export class App {
       ? worldToAbstractVertex(v, this.state.params, lot.layout.region_debug)
       : null;
     if (abs) {
+      const stop: GridStop = { at: "Lattice", other: abs.yi };
       lot.annotations.push({
-        kind: "AbstractDeleteVertex",
-        region: abs.region,
-        xi: abs.xi,
-        yi: abs.yi,
+        kind: "DeleteVertex",
+        target: {
+          on: "Grid",
+          region: abs.region,
+          axis: "X",
+          coord: abs.xi,
+          range: [stop, stop],
+        },
       });
     } else {
       const sp = worldToSpliceVertex(v, lot.driveLines);
       if (sp) {
         lot.annotations.push({
-          kind: "SpliceDeleteVertex",
-          drive_line_id: sp.drive_line_id,
-          t: sp.t,
+          kind: "DeleteVertex",
+          target: { on: "DriveLine", id: sp.drive_line_id, t: sp.t },
         });
       } else {
         return; // no stable anchor for this vertex
@@ -1118,81 +1075,51 @@ export class App {
   }
 
   /**
-   * Resolve an aisle-edge selection to the abstract-grid triple that an
-   * Abstract* annotation needs: region, engine-visible scope, and an
-   * optional visual anchor pinning the marker to the clicked sub-edge.
+   * Resolve an aisle-edge selection to a `Target::Grid` that covers the
+   * selection. Returns null if the selection doesn't live on grid-aligned
+   * lattice vertices.
    *
    * Two strategies in order:
    *   1. Seed sub-edge's endpoints both snap to lattice junctions in
-   *      the same region. Scope = chain extents; anchor = seed's
-   *      lattice edge (only emitted when scope is wider).
-   *   2. Seed is an interior break (endpoints off-grid — a drive-line
-   *      crossing, hole edge, or region boundary split it mid-cell)
-   *      but the chain's outer junctions *are* on-grid. Scope = chain
-   *      extents; anchor = 1-unit lattice segment in the scope
-   *      containing the seed's midpoint.
+   *      the same region. Scope = chain extents.
+   *   2. Seed is an interior break (endpoints off-grid) but the chain's
+   *      outer junctions *are* on-grid. Scope = chain extents.
    */
-  private resolveAbstractAnchor(
+  private resolveGridTarget(
     sel: EdgeRef,
     graph: DriveAisleGraph,
     seed: { start: number; end: number },
     lot: ParkingLot,
-  ): {
-    region: RegionId;
-    scope: { xa: number; ya: number; xb: number; yb: number };
-    anchor?: { xa: number; ya: number; xb: number; yb: number };
-  } | null {
+  ): Target | null {
     const regionDebug = lot.layout?.region_debug;
     if (!regionDebug) return null;
     const s = graph.vertices[seed.start];
     const e = graph.vertices[seed.end];
 
+    let region: RegionId;
+    let scope: { xa: number; ya: number; xb: number; yb: number };
+
     const absA = worldToAbstractVertex(s, this.state.params, regionDebug);
     const absB = worldToAbstractVertex(e, this.state.params, regionDebug);
     if (absA && absB && absA.region === absB.region) {
       const seedScope = { xa: absA.xi, ya: absA.yi, xb: absB.xi, yb: absB.yi };
-      const scope = this.computeChainScope(sel, graph, lot, absA.region, seedScope);
-      const anchor = scopeDiffers(scope, seedScope) ? seedScope : undefined;
-      return { region: absA.region, scope, anchor };
-    }
-
-    // Seed itself is off-grid (or straddles regions); fall back to
-    // the chain's outer junctions.
-    const chainPts: Vec2[] = [];
-    for (const ei of sel.chain) {
-      const ce = graph.edges[ei];
-      if (!ce) continue;
-      chainPts.push(graph.vertices[ce.start]);
-      chainPts.push(graph.vertices[ce.end]);
-    }
-    const chainScope = chainToAbstractLatticeEdge(chainPts, this.state.params, regionDebug);
-    if (!chainScope) return null;
-    const regionData = regionDebug.regions.find((r) => r.id === chainScope.region);
-    if (!regionData) return null;
-    const frame = computeRegionFrame(
-      this.state.params,
-      regionData.aisle_angle_deg,
-      regionData.aisle_offset,
-    );
-    const midAbs = frameInverse(frame, { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 });
-    const scope = {
-      xa: chainScope.xa, ya: chainScope.ya,
-      xb: chainScope.xb, yb: chainScope.yb,
-    };
-    let anchor: { xa: number; ya: number; xb: number; yb: number };
-    if (scope.ya === scope.yb) {
-      // Varying axis is x; anchor is a 1-unit segment on the same row.
-      const lo = Math.max(scope.xa, Math.min(scope.xb - 1, Math.floor(midAbs.x)));
-      anchor = { xa: lo, ya: scope.ya, xb: lo + 1, yb: scope.yb };
+      scope = this.computeChainScope(sel, graph, lot, absA.region, seedScope);
+      region = absA.region;
     } else {
-      const lo = Math.max(scope.ya, Math.min(scope.yb - 1, Math.floor(midAbs.y)));
-      anchor = { xa: scope.xa, ya: lo, xb: scope.xb, yb: lo + 1 };
+      // Seed off-grid; fall back to chain's outer junctions.
+      const chainPts: Vec2[] = [];
+      for (const ei of sel.chain) {
+        const ce = graph.edges[ei];
+        if (!ce) continue;
+        chainPts.push(graph.vertices[ce.start]);
+        chainPts.push(graph.vertices[ce.end]);
+      }
+      const chainScope = chainToAbstractLatticeEdge(chainPts, this.state.params, regionDebug);
+      if (!chainScope) return null;
+      region = chainScope.region;
+      scope = { xa: chainScope.xa, ya: chainScope.ya, xb: chainScope.xb, yb: chainScope.yb };
     }
-    return {
-      region: chainScope.region,
-      scope,
-      anchor: scopeDiffers(scope, anchor) ? anchor : undefined,
-    };
+    return gridTargetFromScope(region, scope);
   }
 
   deleteSelectedEdge(): void {
@@ -1204,16 +1131,9 @@ export class App {
     const seedEdge = graph.edges[sel.index];
     if (!seedEdge) return;
 
-    const resolved = this.resolveAbstractAnchor(sel, graph, seedEdge, lot);
-    if (resolved) {
-      const { region, scope, anchor } = resolved;
-      lot.annotations.push({
-        kind: "AbstractDeleteEdge",
-        region,
-        xa: scope.xa, ya: scope.ya,
-        xb: scope.xb, yb: scope.yb,
-        ...(anchor ? { anchor } : {}),
-      });
+    const target = this.resolveGridTarget(sel, graph, seedEdge, lot);
+    if (target) {
+      lot.annotations.push({ kind: "DeleteEdge", target });
       this.state.selectedEdge = null;
       lot.aisleGraph = null;
       this.generate();
@@ -1221,8 +1141,9 @@ export class App {
     }
 
     // Splice path: chain lies on a single drive line and isn't
-    // grid-addressable. Segment mode deletes just the seed edge;
-    // chain mode spans the whole collinear run's t-range.
+    // grid-addressable. The drive-line edge target is a single point;
+    // we use the midpoint of the (chain-extended) t-range so the post-
+    // pass picks the sub-edge the user clicked.
     const s = graph.vertices[seedEdge.start];
     const e = graph.vertices[seedEdge.end];
     const sa = worldToSpliceVertex(s, lot.driveLines);
@@ -1249,10 +1170,8 @@ export class App {
       }
     }
     lot.annotations.push({
-      kind: "SpliceDeleteEdge",
-      drive_line_id: sa.drive_line_id,
-      ta,
-      tb,
+      kind: "DeleteEdge",
+      target: { on: "DriveLine", id: sa.drive_line_id, t: (ta + tb) / 2 },
     });
     this.state.selectedEdge = null;
     lot.aisleGraph = null;
@@ -1273,35 +1192,17 @@ export class App {
     const seed = graph.edges[sel.index];
     if (!seed) return;
 
-    const resolved = this.resolveAbstractAnchor(sel, graph, seed, lot);
-    if (resolved) {
-      const { region, scope, anchor } = resolved;
-      // Match existing direction annotation by scope (not anchor).
-      // Either orientation matches — cycle flips orientation.
-      const existing = lot.annotations.findIndex((ann) => {
-        if (
-          ann.kind !== "AbstractOneWay" &&
-          ann.kind !== "AbstractTwoWayOriented"
-        ) {
-          return false;
-        }
-        if (ann.region !== region) return false;
-        const matchFwd =
-          ann.xa === scope.xa && ann.ya === scope.ya &&
-          ann.xb === scope.xb && ann.yb === scope.yb;
-        const matchRev =
-          ann.xa === scope.xb && ann.ya === scope.yb &&
-          ann.xb === scope.xa && ann.yb === scope.ya;
-        return matchFwd || matchRev;
-      });
+    const gridTarget = this.resolveGridTarget(sel, graph, seed, lot);
+    if (gridTarget) {
+      const existing = lot.annotations.findIndex(
+        (ann) => ann.kind === "Direction" && targetsEqual(ann.target, gridTarget),
+      );
       if (existing < 0) {
         const annIdx = lot.annotations.length;
         lot.annotations.push({
-          kind: "AbstractTwoWayOriented",
-          region,
-          xa: scope.xa, ya: scope.ya,
-          xb: scope.xb, yb: scope.yb,
-          ...(anchor ? { anchor } : {}),
+          kind: "Direction",
+          target: gridTarget,
+          traffic: "TwoWayOriented",
           _active: true,
         });
         this.state.selectedVertex = { type: "annotation", index: annIdx, lotId: lot.id };
@@ -1322,21 +1223,24 @@ export class App {
       showToast("f: no stable anchor for this sub-edge");
       return;
     }
+    const dlTarget: Target = {
+      on: "DriveLine",
+      id: sa.drive_line_id,
+      t: (sa.t + sb.t) / 2,
+    };
     const sliceTol = 1e-3;
     const existing = lot.annotations.findIndex((ann) => {
-      if (ann.kind !== "SpliceOneWay" && ann.kind !== "SpliceTwoWayOriented") return false;
-      if (ann.drive_line_id !== sa.drive_line_id) return false;
-      const fwd = Math.abs(ann.ta - sa.t) < sliceTol && Math.abs(ann.tb - sb.t) < sliceTol;
-      const rev = Math.abs(ann.ta - sb.t) < sliceTol && Math.abs(ann.tb - sa.t) < sliceTol;
-      return fwd || rev;
+      if (ann.kind !== "Direction") return false;
+      if (ann.target.on !== "DriveLine") return false;
+      if (ann.target.id !== sa.drive_line_id) return false;
+      return Math.abs(ann.target.t - dlTarget.t) < sliceTol;
     });
     if (existing < 0) {
       const annIdx = lot.annotations.length;
       lot.annotations.push({
-        kind: "SpliceTwoWayOriented",
-        drive_line_id: sa.drive_line_id,
-        ta: sa.t,
-        tb: sb.t,
+        kind: "Direction",
+        target: dlTarget,
+        traffic: "TwoWayOriented",
         _active: true,
       });
       this.state.selectedVertex = { type: "annotation", index: annIdx, lotId: lot.id };
@@ -1353,6 +1257,95 @@ function scopeDiffers(
   b: { xa: number; ya: number; xb: number; yb: number },
 ): boolean {
   return a.xa !== b.xa || a.ya !== b.ya || a.xb !== b.xb || a.yb !== b.yb;
+}
+
+/**
+ * Build a Grid target from a lattice-scope (xa, ya) → (xb, yb). Picks the
+ * axis based on which coord is fixed; if both endpoints are the same point
+ * the target is a vertex (range = (s, s)), otherwise a span.
+ */
+function gridTargetFromScope(
+  region: RegionId,
+  scope: { xa: number; ya: number; xb: number; yb: number },
+): Target | null {
+  if (scope.xa === scope.xb && scope.ya === scope.yb) {
+    // A single lattice point — address on the X-axis line by convention.
+    const stop: GridStop = { at: "Lattice", other: scope.ya };
+    return {
+      on: "Grid",
+      region,
+      axis: "X",
+      coord: scope.xa,
+      range: [stop, stop],
+    };
+  }
+  if (scope.xa === scope.xb) {
+    // Varying axis is Y: line fixed at x=xa.
+    const s1: GridStop = { at: "Lattice", other: scope.ya };
+    const s2: GridStop = { at: "Lattice", other: scope.yb };
+    return {
+      on: "Grid",
+      region,
+      axis: "X",
+      coord: scope.xa,
+      range: [s1, s2],
+    };
+  }
+  if (scope.ya === scope.yb) {
+    // Varying axis is X: line fixed at y=ya.
+    const s1: GridStop = { at: "Lattice", other: scope.xa };
+    const s2: GridStop = { at: "Lattice", other: scope.xb };
+    return {
+      on: "Grid",
+      region,
+      axis: "Y",
+      coord: scope.ya,
+      range: [s1, s2],
+    };
+  }
+  return null;
+}
+
+/**
+ * Structural equality for Targets. Used to find an existing direction
+ * annotation whose scope matches the current click (either orientation).
+ */
+function targetsEqual(a: Target, b: Target): boolean {
+  if (a.on !== b.on) return false;
+  if (a.on === "Grid" && b.on === "Grid") {
+    if (a.region !== b.region || a.axis !== b.axis || a.coord !== b.coord) return false;
+    if (a.range == null && b.range == null) return true;
+    if (a.range == null || b.range == null) return false;
+    const matchFwd =
+      gridStopsEqual(a.range[0], b.range[0]) && gridStopsEqual(a.range[1], b.range[1]);
+    const matchRev =
+      gridStopsEqual(a.range[0], b.range[1]) && gridStopsEqual(a.range[1], b.range[0]);
+    return matchFwd || matchRev;
+  }
+  if (a.on === "DriveLine" && b.on === "DriveLine") {
+    return a.id === b.id && Math.abs(a.t - b.t) < 1e-3;
+  }
+  if (a.on === "Perimeter" && b.on === "Perimeter") {
+    return (
+      loopsEqual(a.loop, b.loop) && Math.abs(a.arc - b.arc) < 1e-3
+    );
+  }
+  return false;
+}
+
+function gridStopsEqual(a: GridStop, b: GridStop): boolean {
+  if (a.at !== b.at) return false;
+  if (a.at === "Lattice" && b.at === "Lattice") return a.other === b.other;
+  if (a.at === "CrossesDriveLine" && b.at === "CrossesDriveLine") return a.id === b.id;
+  if (a.at === "CrossesPerimeter" && b.at === "CrossesPerimeter") return loopsEqual(a.loop, b.loop);
+  return false;
+}
+
+function loopsEqual(a: PerimeterLoop, b: PerimeterLoop): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "Outer" && b.kind === "Outer") return true;
+  if (a.kind === "Hole" && b.kind === "Hole") return a.index === b.index;
+  return false;
 }
 
 function aisleVectorFromAngle(angleDeg: number, _offset: number, center: Vec2): { start: Vec2; end: Vec2 } {

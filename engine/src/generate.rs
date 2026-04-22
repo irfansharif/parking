@@ -518,7 +518,7 @@ fn append_graph(
 }
 
 /// One region's abstract frame plus its clip polygon — what
-/// `apply_annotations` needs to resolve AbstractDelete* annotations.
+/// `apply_annotations` needs to resolve Grid-target annotations.
 struct ResolvedRegion {
     id: RegionId,
     clip_poly: Vec<Vec2>,
@@ -631,83 +631,221 @@ fn build_abstract_vertex_lookup(
     lookup
 }
 
-/// Apply an AbstractOneWay / AbstractTwoWayOriented direction to every
-/// graph sub-edge whose midpoint lies on the lattice segment from
-/// `a` to `b` in the given region's abstract frame. Chain-mode
-/// annotations span multiple cells — there's no single graph edge
-/// between the endpoints — so we match geometrically, mirroring
-/// AbstractDeleteEdge. Each touched edge also gets its `start`/`end`
-/// flipped so its stored orientation points from the a-side to the
-/// b-side, matching the user's declared travel direction.
-fn apply_abstract_direction(
-    graph: &mut DriveAisleGraph,
+/// Grid-lattice abstract tolerance (fraction of a cell). Used both for
+/// "edge midpoint on this lattice line" and "endpoint sits on this lattice
+/// line" checks.
+const GRID_ABS_TOL: f64 = 0.05;
+
+/// Resolve the set of graph-edge indices covered by a `Target::Grid`.
+/// Returns `None` if the target addresses a vertex (range = Some((s, s))),
+/// if the range's stops can't be resolved, or if no edges match.
+fn resolve_grid_edges(
+    graph: &DriveAisleGraph,
     regions: &[ResolvedRegion],
     region: RegionId,
-    a: (i32, i32),
-    b: (i32, i32),
-    direction: AisleDirection,
-) -> bool {
-    let Some(region_data) = regions.iter().find(|r| r.id == region) else { return false };
+    axis: Axis,
+    coord: i32,
+    range: &Option<(GridStop, GridStop)>,
+) -> Option<Vec<usize>> {
+    let region_data = regions.iter().find(|r| r.id == region)?;
     let frame = &region_data.frame;
-    let along_x = a.0 != b.0;
-    if along_x && a.1 != b.1 {
-        return false; // not lattice-aligned; shouldn't happen
-    }
-    if !along_x && a.0 != b.0 {
-        return false;
-    }
-    let fixed = if along_x { a.1 } else { a.0 };
-    let lo = if along_x { a.0.min(b.0) } else { a.1.min(b.1) };
-    let hi = if along_x { a.0.max(b.0) } else { a.1.max(b.1) };
-    // The user's forward direction along the lattice: +1 if (b - a) is
-    // positive on the varying axis, -1 otherwise. Sub-edges already
-    // aligned with this sign stay as stored; the others get flipped.
-    let forward_sign: f64 = if along_x {
-        (b.0 - a.0).signum() as f64
-    } else {
-        (b.1 - a.1).signum() as f64
+    // axis=X → line fixed at x=coord, runs along Y (varying axis = y).
+    // axis=Y → line fixed at y=coord, runs along X (varying axis = x).
+    let along_x = axis == Axis::Y;
+    let fixed = coord;
+
+    let (lo, hi) = match range {
+        None => (i32::MIN, i32::MAX), // whole line
+        Some((a, b)) => {
+            let pa = grid_stop_to_other_axis(a)?;
+            let pb = grid_stop_to_other_axis(b)?;
+            if pa == pb {
+                return None; // point (vertex), not an edge target
+            }
+            (pa.min(pb), pa.max(pb))
+        }
     };
-    const TOL: f64 = 0.05;
-    let mut touched = false;
-    for i in 0..graph.edges.len() {
-        let s = graph.vertices[graph.edges[i].start];
-        let e = graph.vertices[graph.edges[i].end];
+
+    let mut hits = Vec::new();
+    for (i, edge) in graph.edges.iter().enumerate() {
+        let s = graph.vertices[edge.start];
+        let e = graph.vertices[edge.end];
         let abs_s = frame.inverse(s);
         let abs_e = frame.inverse(e);
         let edge_along_x = (abs_e.x - abs_s.x).abs() > (abs_e.y - abs_s.y).abs();
         if edge_along_x != along_x {
             continue;
         }
-        let (s_fixed, s_var) = if along_x { (abs_s.y, abs_s.x) } else { (abs_s.x, abs_s.y) };
-        let (e_fixed, e_var) = if along_x { (abs_e.y, abs_e.x) } else { (abs_e.x, abs_e.y) };
-        // Both endpoints must sit on the lattice line at `fixed`.
-        if (s_fixed - fixed as f64).abs() > TOL || (e_fixed - fixed as f64).abs() > TOL {
+        let (mid_fixed, mid_var) = if along_x {
+            ((abs_s.y + abs_e.y) * 0.5, (abs_s.x + abs_e.x) * 0.5)
+        } else {
+            ((abs_s.x + abs_e.x) * 0.5, (abs_s.y + abs_e.y) * 0.5)
+        };
+        if (mid_fixed - fixed as f64).abs() > GRID_ABS_TOL {
             continue;
         }
-        let mid_var = (s_var + e_var) * 0.5;
-        if mid_var < lo as f64 - TOL || mid_var > hi as f64 + TOL {
+        // Span filter (open-ended for whole-line targets).
+        if lo != i32::MIN && mid_var < lo as f64 - GRID_ABS_TOL {
             continue;
         }
-        graph.edges[i].direction = direction.clone();
-        // Flip orientation if the stored start→end points against the
-        // user's a→b intent.
-        let edge_sign = (e_var - s_var).signum();
-        if edge_sign * forward_sign < 0.0 {
+        if hi != i32::MAX && mid_var > hi as f64 + GRID_ABS_TOL {
+            continue;
+        }
+        hits.push(i);
+    }
+    if hits.is_empty() { None } else { Some(hits) }
+}
+
+/// Convert a GridStop to its coordinate along the grid line's varying axis.
+/// Only `Lattice` is supported in this prototype; `CrossesDriveLine` and
+/// `CrossesPerimeter` stops return `None` (dormant) until their resolution
+/// is implemented.
+fn grid_stop_to_other_axis(s: &GridStop) -> Option<i32> {
+    match s {
+        GridStop::Lattice { other } => Some(*other),
+        _ => None, // Cross* stops not yet implemented; annotation goes dormant.
+    }
+}
+
+/// Apply a direction to every edge index in `hits`, flipping `start`/`end`
+/// so the stored orientation matches the carrier's canonical direction
+/// (or its reverse, per `traffic`).
+fn apply_direction_to_edges(
+    graph: &mut DriveAisleGraph,
+    hits: &[usize],
+    canonical_sign_along_axis: f64, // +1 if edge's other-axis coord should increase start→end to match canonical
+    along_x: bool,
+    frame_opt: Option<&AbstractFrame>,
+    traffic: TrafficDirection,
+) {
+    let want_canonical = matches!(
+        traffic,
+        TrafficDirection::OneWay | TrafficDirection::TwoWayOriented
+    );
+    let aisle_dir = match traffic {
+        TrafficDirection::OneWay | TrafficDirection::OneWayReverse => AisleDirection::OneWay,
+        TrafficDirection::TwoWayOriented | TrafficDirection::TwoWayOrientedReverse => {
+            AisleDirection::TwoWayOriented
+        }
+    };
+    for &i in hits {
+        let s = graph.vertices[graph.edges[i].start];
+        let e = graph.vertices[graph.edges[i].end];
+        let edge_var_sign = if let Some(frame) = frame_opt {
+            let abs_s = frame.inverse(s);
+            let abs_e = frame.inverse(e);
+            let d = if along_x { abs_e.x - abs_s.x } else { abs_e.y - abs_s.y };
+            d.signum()
+        } else {
+            // No frame → fall back to world-axis comparison (used for
+            // DriveLine carrier where canonical_sign_along_axis is
+            // encoded via pre-aligned direction vector; caller handles).
+            1.0
+        };
+        let edge_aligned_with_canonical = edge_var_sign * canonical_sign_along_axis > 0.0;
+        if edge_aligned_with_canonical != want_canonical {
             let t = graph.edges[i].start;
             graph.edges[i].start = graph.edges[i].end;
             graph.edges[i].end = t;
         }
-        touched = true;
+        graph.edges[i].direction = aisle_dir.clone();
     }
-    touched
 }
 
-/// Apply spatial annotations to a resolved graph. Each annotation is matched
-/// to the edge that passes closest to the annotation point (point-to-segment
-/// distance), with a tight threshold so annotations only bind to edges that
-/// geometrically pass through them. Returns the indices (into the
-/// `annotations` slice) of annotations whose abstract handle didn't
-/// resolve to any graph feature — the UI surfaces these as "dormant."
+/// Apply a direction on a drive-line sub-edge identified by parametric
+/// point `t`. Uses the splice_lookup to find the sub-edge whose t-range
+/// contains `t`, then flips/sets direction according to `traffic` relative
+/// to the drive line's canonical direction (+t, start → end).
+fn apply_drive_line_direction(
+    graph: &mut DriveAisleGraph,
+    splice_lookup: &std::collections::HashMap<u32, Vec<(f64, usize)>>,
+    line_lengths: &std::collections::HashMap<u32, f64>,
+    drive_line_id: u32,
+    t: f64,
+    pitch: f64,
+    traffic: TrafficDirection,
+) -> bool {
+    let Some(hits) = resolve_drive_line_edges_containing(graph, splice_lookup, line_lengths, drive_line_id, t, pitch) else {
+        return false;
+    };
+    if hits.is_empty() {
+        return false;
+    }
+    let want_canonical = matches!(
+        traffic,
+        TrafficDirection::OneWay | TrafficDirection::TwoWayOriented
+    );
+    let aisle_dir = match traffic {
+        TrafficDirection::OneWay | TrafficDirection::OneWayReverse => AisleDirection::OneWay,
+        TrafficDirection::TwoWayOriented | TrafficDirection::TwoWayOrientedReverse => {
+            AisleDirection::TwoWayOriented
+        }
+    };
+    // For drive-line edges we orient using the splice-anchored t of each endpoint.
+    let Some(entries) = splice_lookup.get(&drive_line_id) else { return false };
+    let mut v_to_t: std::collections::HashMap<usize, f64> =
+        std::collections::HashMap::with_capacity(entries.len());
+    for &(et, vi) in entries {
+        v_to_t.insert(vi, et);
+    }
+    for i in hits {
+        let (Some(&ts), Some(&te)) = (
+            v_to_t.get(&graph.edges[i].start),
+            v_to_t.get(&graph.edges[i].end),
+        ) else {
+            continue;
+        };
+        let edge_aligned_with_canonical = te > ts;
+        if edge_aligned_with_canonical != want_canonical {
+            let tmp = graph.edges[i].start;
+            graph.edges[i].start = graph.edges[i].end;
+            graph.edges[i].end = tmp;
+        }
+        graph.edges[i].direction = aisle_dir.clone();
+    }
+    true
+}
+
+/// Find the drive-line sub-edges whose stored t-range contains the given
+/// `t` value, using `splice_lookup`. Returns graph edge indices.
+fn resolve_drive_line_edges_containing(
+    graph: &DriveAisleGraph,
+    splice_lookup: &std::collections::HashMap<u32, Vec<(f64, usize)>>,
+    line_lengths: &std::collections::HashMap<u32, f64>,
+    drive_line_id: u32,
+    t: f64,
+    pitch: f64,
+) -> Option<Vec<usize>> {
+    let line_len = line_lengths.get(&drive_line_id).copied()?;
+    if line_len < 1e-9 {
+        return None;
+    }
+    let entries = splice_lookup.get(&drive_line_id)?;
+    let tol_t = pitch / line_len;
+    let mut v_to_t: std::collections::HashMap<usize, f64> =
+        std::collections::HashMap::with_capacity(entries.len());
+    for &(et, vi) in entries {
+        v_to_t.insert(vi, et);
+    }
+    let mut hits = Vec::new();
+    for (i, ei) in graph.edges.iter().enumerate() {
+        let (Some(&ts), Some(&te)) = (v_to_t.get(&ei.start), v_to_t.get(&ei.end)) else {
+            continue;
+        };
+        let lo = ts.min(te);
+        let hi_ = ts.max(te);
+        if lo - tol_t <= t && t <= hi_ + tol_t {
+            hits.push(i);
+        }
+    }
+    if hits.is_empty() { None } else { Some(hits) }
+}
+
+/// Apply spatial annotations to a resolved graph. Each annotation carries a
+/// target in one substrate's own coord system (grid / drive-line / perimeter)
+/// plus an intent (delete-vertex / delete-edge / direction). Resolution is
+/// substrate-local; single dormancy rule — any referenced substrate or stop
+/// missing from the current graph makes the annotation dormant this regen.
 fn apply_annotations(
     graph: &mut DriveAisleGraph,
     annotations: &[Annotation],
@@ -720,205 +858,54 @@ fn apply_annotations(
         return Vec::new();
     }
 
-    // Pre-compute the abstract-grid vertex lookup lazily — we only
-    // need it if there's at least one abstract annotation in the list.
-    let has_abstract = annotations.iter().any(|a| {
-        matches!(
-            a,
-            Annotation::AbstractDeleteVertex { .. }
-                | Annotation::AbstractDeleteEdge { .. }
-                | Annotation::AbstractOneWay { .. }
-                | Annotation::AbstractTwoWayOriented { .. }
-        )
-    });
-    let abstract_lookup = if has_abstract {
-        build_abstract_vertex_lookup(graph, regions)
-    } else {
-        std::collections::HashMap::new()
-    };
-
-    // Splice lookup: drive_line_id -> sorted Vec<(t, vertex_idx)>. Built
-    // only if there's a splice annotation in the list.
-    let has_splice = annotations.iter().any(|a| {
-        matches!(
-            a,
-            Annotation::SpliceDeleteVertex { .. }
-                | Annotation::SpliceDeleteEdge { .. }
-                | Annotation::SpliceOneWay { .. }
-                | Annotation::SpliceTwoWayOriented { .. }
-        )
-    });
-    let splice_lookup: std::collections::HashMap<u32, Vec<(f64, usize)>> = if has_splice {
-        build_splice_lookup(splice_anchors)
-    } else {
-        std::collections::HashMap::new()
-    };
-    // Drive-line length by id, used to convert the world-space tolerance
-    // (stall_pitch) into a normalized-t tolerance per line.
+    let abstract_lookup = build_abstract_vertex_lookup(graph, regions);
+    let splice_lookup = build_splice_lookup(splice_anchors);
     let line_lengths: std::collections::HashMap<u32, f64> = drive_lines
         .iter()
         .map(|dl| (dl.id, (dl.end - dl.start).length()))
         .collect();
     let pitch = params.stall_pitch();
 
-    // Indices of annotations whose handle didn't resolve this pass.
-    // Populated by the two match blocks below and returned at the
-    // bottom so the caller can surface them as dormant.
     let mut dormant: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
 
+    // First pass: directions.
     for (ann_idx, ann) in annotations.iter().enumerate() {
-        match ann {
-            Annotation::AbstractOneWay { region, xa, ya, xb, yb } => {
-                let touched = apply_abstract_direction(
-                    graph,
-                    regions,
-                    *region,
-                    (*xa, *ya),
-                    (*xb, *yb),
-                    AisleDirection::OneWay,
-                );
-                if !touched {
-                    dormant.insert(ann_idx);
-                }
-            }
-            Annotation::AbstractTwoWayOriented { region, xa, ya, xb, yb } => {
-                let touched = apply_abstract_direction(
-                    graph,
-                    regions,
-                    *region,
-                    (*xa, *ya),
-                    (*xb, *yb),
-                    AisleDirection::TwoWayOriented,
-                );
-                if !touched {
-                    dormant.insert(ann_idx);
-                }
-            }
-            _ => {} // DeleteVertex/DeleteEdge/AbstractDelete* handled in second pass
+        let Annotation::Direction { target, traffic } = ann else { continue };
+        let ok = apply_direction_target(
+            graph, target, *traffic, regions, &splice_lookup, &line_lengths, pitch,
+        );
+        if !ok {
+            dormant.insert(ann_idx);
         }
     }
 
-    // Second pass: collect vertices and edges to delete.
+    // Second pass: collect deletions.
     let mut vertices_to_remove = std::collections::HashSet::new();
     let mut edges_to_remove = std::collections::HashSet::new();
 
     for (ann_idx, ann) in annotations.iter().enumerate() {
         match ann {
-            Annotation::AbstractDeleteVertex { region, xi, yi } => {
-                if let Some(&vi) = abstract_lookup.get(&(*region, *xi, *yi)) {
-                    vertices_to_remove.insert(vi);
-                } else {
-                    dormant.insert(ann_idx);
-                }
-            }
-            Annotation::AbstractDeleteEdge { region, xa, ya, xb, yb } => {
-                // Geometric filter: the annotation names a lattice line
-                // segment in the region's abstract frame. Any sub-edge
-                // whose midpoint lies on that segment (axis-aligned in
-                // abstract coords, within the integer extents) is part
-                // of the lattice edge and gets deleted. Drive-line and
-                // boundary intersections that split the lattice into
-                // sub-segments are handled implicitly — each sub-segment
-                // also has its midpoint on the segment.
-                let Some(region_data) = regions.iter().find(|r| r.id == *region) else {
-                    dormant.insert(ann_idx);
-                    continue;
-                };
-                let frame = &region_data.frame;
-                // Determine axis (the lattice this segment runs along).
-                let along_x = xa != xb;
-                let fixed = if along_x { *ya } else { *xa };
-                let lo = if along_x { (*xa).min(*xb) } else { (*ya).min(*yb) };
-                let hi = if along_x { (*xa).max(*xb) } else { (*ya).max(*yb) };
-                const TOL: f64 = 0.05; // abstract-coord tolerance (fraction of a cell)
-                let mut touched = false;
-                for (i, edge) in graph.edges.iter().enumerate() {
-                    let a = graph.vertices[edge.start];
-                    let b = graph.vertices[edge.end];
-                    let mid = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
-                    let abs_mid = frame.inverse(mid);
-                    let abs_a = frame.inverse(a);
-                    let abs_b = frame.inverse(b);
-                    let edge_along_x = (abs_b.x - abs_a.x).abs()
-                        > (abs_b.y - abs_a.y).abs();
-                    if edge_along_x != along_x {
-                        continue;
-                    }
-                    let (mid_fixed, mid_var) = if along_x {
-                        (abs_mid.y, abs_mid.x)
-                    } else {
-                        (abs_mid.x, abs_mid.y)
-                    };
-                    if (mid_fixed - fixed as f64).abs() > TOL {
-                        continue;
-                    }
-                    if mid_var < lo as f64 - TOL || mid_var > hi as f64 + TOL {
-                        continue;
-                    }
-                    edges_to_remove.insert(i);
-                    touched = true;
-                }
-                if !touched {
-                    dormant.insert(ann_idx);
-                }
-            }
-            Annotation::SpliceDeleteVertex { drive_line_id, t } => {
-                match resolve_splice_vertex(&splice_lookup, &line_lengths, *drive_line_id, *t, pitch) {
-                    Some(vi) => { vertices_to_remove.insert(vi); }
+            Annotation::DeleteVertex { target } => {
+                let vi = resolve_target_vertex(
+                    target, &abstract_lookup, &splice_lookup, &line_lengths, pitch,
+                );
+                match vi {
+                    Some(v) => { vertices_to_remove.insert(v); }
                     None => { dormant.insert(ann_idx); }
                 }
             }
-            Annotation::SpliceDeleteEdge { drive_line_id, ta, tb } => {
-                // Delete every sub-edge of this drive line whose t-range
-                // lies within [ta, tb]. Matching on a single direct edge
-                // is too brittle: when the user nudges the drive line's
-                // endpoints, new intersections can split the originally-
-                // deleted region into multiple sub-edges, and the exact
-                // (via, vib) pair stops existing.
-                let line_len = line_lengths.get(drive_line_id).copied().unwrap_or(0.0);
-                let entries = splice_lookup.get(drive_line_id);
-                let (Some(entries), true) = (entries, line_len > 1e-9) else {
-                    dormant.insert(ann_idx);
-                    continue;
-                };
-                // The annotation is anchored to a single point on the
-                // drive line (the midpoint of the stored range, which
-                // is also where the marker renders). Delete whichever
-                // sub-edge of the drive line that point sits on.
-                let tol_t = pitch / line_len;
-                let t_mid = 0.5 * (ta + tb);
-                let mut v_to_t: std::collections::HashMap<usize, f64> =
-                    std::collections::HashMap::with_capacity(entries.len());
-                for &(et, vi) in entries {
-                    v_to_t.insert(vi, et);
-                }
-                let mut touched = false;
-                for (i, ei) in graph.edges.iter().enumerate() {
-                    let (Some(&ts), Some(&te)) = (v_to_t.get(&ei.start), v_to_t.get(&ei.end)) else {
-                        continue;
-                    };
-                    let lo = ts.min(te);
-                    let hi = ts.max(te);
-                    if lo - tol_t <= t_mid && t_mid <= hi + tol_t {
-                        edges_to_remove.insert(i);
-                        touched = true;
+            Annotation::DeleteEdge { target } => {
+                let hits = resolve_target_edges(
+                    target, graph, regions, &splice_lookup, &line_lengths, pitch,
+                );
+                match hits {
+                    Some(hs) if !hs.is_empty() => {
+                        for h in hs { edges_to_remove.insert(h); }
                     }
-                }
-                if !touched {
-                    dormant.insert(ann_idx);
+                    _ => { dormant.insert(ann_idx); }
                 }
             }
-            Annotation::SpliceOneWay { drive_line_id, ta, tb } => {
-                if !apply_splice_direction(graph, &splice_lookup, &line_lengths, *drive_line_id, *ta, *tb, pitch, AisleDirection::OneWay) {
-                    dormant.insert(ann_idx);
-                }
-            }
-            Annotation::SpliceTwoWayOriented { drive_line_id, ta, tb } => {
-                if !apply_splice_direction(graph, &splice_lookup, &line_lengths, *drive_line_id, *ta, *tb, pitch, AisleDirection::TwoWayOriented) {
-                    dormant.insert(ann_idx);
-                }
-            }
-            _ => {}
+            Annotation::Direction { .. } => {} // handled in first pass
         }
     }
 
@@ -1076,35 +1063,87 @@ fn resolve_splice_vertex(
     best.map(|(_, vi)| vi)
 }
 
-/// Apply a one-way / two-way-oriented direction to the graph edge between
-/// the two splice vertices identified by (id, ta) and (id, tb). Flips edge
-/// start/end so the stored ordering matches ta→tb. Returns true on hit.
-fn apply_splice_direction(
-    graph: &mut DriveAisleGraph,
+/// Resolve a single-vertex `Target` to a graph vertex index.
+fn resolve_target_vertex(
+    target: &Target,
+    abstract_lookup: &std::collections::HashMap<(RegionId, i32, i32), usize>,
     splice_lookup: &std::collections::HashMap<u32, Vec<(f64, usize)>>,
     line_lengths: &std::collections::HashMap<u32, f64>,
-    drive_line_id: u32,
-    ta: f64,
-    tb: f64,
     pitch: f64,
-    direction: AisleDirection,
-) -> bool {
-    let Some(via) = resolve_splice_vertex(splice_lookup, line_lengths, drive_line_id, ta, pitch) else { return false };
-    let Some(vib) = resolve_splice_vertex(splice_lookup, line_lengths, drive_line_id, tb, pitch) else { return false };
-    let mut touched = false;
-    for i in 0..graph.edges.len() {
-        let ei = &graph.edges[i];
-        let is_forward = ei.start == via && ei.end == vib;
-        let is_reverse = ei.start == vib && ei.end == via;
-        if !is_forward && !is_reverse { continue; }
-        graph.edges[i].direction = direction.clone();
-        if is_reverse {
-            graph.edges[i].start = via;
-            graph.edges[i].end = vib;
+) -> Option<usize> {
+    match target {
+        Target::Grid { region, axis, coord, range } => {
+            let (s1, s2) = range.as_ref()?;
+            let p1 = grid_stop_to_other_axis(s1)?;
+            let p2 = grid_stop_to_other_axis(s2)?;
+            if p1 != p2 {
+                return None; // span, not a point
+            }
+            // axis=X: line x=coord, varying y → (xi=coord, yi=p1).
+            // axis=Y: line y=coord, varying x → (xi=p1, yi=coord).
+            let (xi, yi) = if *axis == Axis::X { (*coord, p1) } else { (p1, *coord) };
+            abstract_lookup.get(&(*region, xi, yi)).copied()
         }
-        touched = true;
+        Target::DriveLine { id, t } => {
+            resolve_splice_vertex(splice_lookup, line_lengths, *id, *t, pitch)
+        }
+        Target::Perimeter { .. } => None, // not yet implemented
     }
-    touched
+}
+
+/// Resolve a `Target` to a set of graph edge indices.
+fn resolve_target_edges(
+    target: &Target,
+    graph: &DriveAisleGraph,
+    regions: &[ResolvedRegion],
+    splice_lookup: &std::collections::HashMap<u32, Vec<(f64, usize)>>,
+    line_lengths: &std::collections::HashMap<u32, f64>,
+    pitch: f64,
+) -> Option<Vec<usize>> {
+    match target {
+        Target::Grid { region, axis, coord, range } => {
+            resolve_grid_edges(graph, regions, *region, *axis, *coord, range)
+        }
+        Target::DriveLine { id, t } => {
+            resolve_drive_line_edges_containing(graph, splice_lookup, line_lengths, *id, *t, pitch)
+        }
+        Target::Perimeter { .. } => None,
+    }
+}
+
+/// Apply a `TrafficDirection` to every edge the target resolves to.
+fn apply_direction_target(
+    graph: &mut DriveAisleGraph,
+    target: &Target,
+    traffic: TrafficDirection,
+    regions: &[ResolvedRegion],
+    splice_lookup: &std::collections::HashMap<u32, Vec<(f64, usize)>>,
+    line_lengths: &std::collections::HashMap<u32, f64>,
+    pitch: f64,
+) -> bool {
+    match target {
+        Target::Grid { region, axis, coord, range } => {
+            let Some(hits) = resolve_grid_edges(graph, regions, *region, *axis, *coord, range) else {
+                return false;
+            };
+            let Some(region_data) = regions.iter().find(|r| r.id == *region) else {
+                return false;
+            };
+            let along_x = *axis == Axis::Y;
+            apply_direction_to_edges(graph, &hits, 1.0, along_x, Some(&region_data.frame), traffic);
+            true
+        }
+        Target::DriveLine { id, t } => apply_drive_line_direction(
+            graph,
+            splice_lookup,
+            line_lengths,
+            *id,
+            *t,
+            pitch,
+            traffic,
+        ),
+        Target::Perimeter { .. } => false,
+    }
 }
 
 #[cfg(test)]

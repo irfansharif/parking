@@ -1,0 +1,84 @@
+# Regression test for chain-mode 'f' (direction) and 'd' (delete) in a
+# lot split by a partition drive line. Exercises the user-reported bug
+# where:
+#
+#   * chain-mode 'd' silently collapsed to a single sub-edge delete
+#     (chainToAbstractLatticeEdge rejected the chain because the
+#     midpoint was near the partition boundary), and
+#   * chain-mode 'f' stored a multi-cell direction annotation but the
+#     engine couldn't apply it (apply_abstract_direction required a
+#     direct graph edge between the endpoints, which only exists for
+#     adjacent single-cell annotations).
+#
+# Both fixes let chain-mode annotations cover the whole row/column in
+# a region and apply to every sub-edge along it.
+
+polygon outer
+0,0
+400,0
+400,300
+0,300
+----
+polygon outer: 4 vertices
+
+set stalls_per_face=4
+----
+set stalls_per_face=4
+
+# Vertical partition drive line — splits the lot into left + right
+# regions with independent aisle frames.
+drive-line partitions
+200,0
+200,300
+----
+drive-line: 200,0 -> 200,300 partitions
+
+generate
+----
+total_stalls: 162
+
+# Chain-mode delete inside the left region. The click at (100, 120)
+# lands on a vertical column aisle; chain expansion walks the whole
+# column (constant x, varying y over 6 cells).
+edge-select near=100,120 mode=chain
+----
+edge-select seed=72 mode=chain chain_len=6
+
+edge-delete
+----
+edge-delete
+
+annotations
+----
+delete-edge on=grid region=0x00003c159bc36ac7 axis=x coord=-2 range=lattice:0,lattice:6
+
+# The annotation must actually apply — stall count should change
+# relative to baseline because a full column of aisle sub-edges is
+# removed, which frees space the generator now fills with stalls.
+generate
+----
+total_stalls: 180
+
+# Chain-mode direction on a horizontal row in the right region.
+edge-select near=300,120 mode=chain
+----
+edge-select seed=154 mode=chain chain_len=8
+
+edge-cycle
+----
+edge-cycle
+
+annotations
+----
+delete-edge on=grid region=0x00003c159bc36ac7 axis=x coord=-2 range=lattice:0,lattice:6
+direction on=grid region=0x0000354ed55eccc5 axis=y coord=2 range=lattice:-8,lattice:1 traffic=two-way-oriented
+
+# Annotation must resolve (non-dormant) — apply_abstract_direction
+# should touch every sub-edge in the chain, not just the adjacent pair.
+generate
+----
+total_stalls: 180
+
+dormant
+----
+dormant_annotations: 0

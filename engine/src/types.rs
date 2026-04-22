@@ -802,80 +802,114 @@ pub struct HolePin {
 // ---------------------------------------------------------------------------
 // Annotations (spatial intents that survive graph regeneration)
 // ---------------------------------------------------------------------------
+//
+// An annotation targets a vertex or one-or-more sub-edges by addressing a
+// point (or, for grid lines, a span) in one substrate's own coordinate
+// system. The three substrates — abstract grid (per region), drive lines,
+// and the perimeter — each carry stable coordinates and a canonical
+// direction. Constraint: no collinear stretches between any two substrates,
+// so every pair crosses the other at most once per traversal and
+// CrossesDriveLine / CrossesPerimeter stops resolve unambiguously.
+//
+// Single dormancy rule: any referenced substrate or stop missing from the
+// current graph => annotation dormant this regen.
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Annotation {
-    /// Delete a vertex identified by its position in a region's abstract
-    /// grid. Stable under parameter changes because (region, xi, yi) is
-    /// an integer triple that doesn't move when the frame rotates or
-    /// stretches.
-    AbstractDeleteVertex {
-        region: RegionId,
-        xi: i32,
-        yi: i32,
+    DeleteVertex {
+        target: Target,
     },
-    /// Delete a grid-aligned edge between two integer grid points in
-    /// the same region's abstract frame. One of the two axes must match
-    /// (it's either a parallel-aisle segment at fixed xi or a
-    /// cross-aisle segment at fixed yi).
-    AbstractDeleteEdge {
-        region: RegionId,
-        xa: i32,
-        ya: i32,
-        xb: i32,
-        yb: i32,
+    DeleteEdge {
+        target: Target,
     },
-    /// Mark a grid-aligned edge as one-way, with travel direction from
-    /// (xa, ya) to (xb, yb). Same stability story as AbstractDeleteEdge —
-    /// the endpoint pair is an integer 4-tuple in the region's frame, so
-    /// the annotation re-resolves to the same grid edge under any
-    /// parameter change.
-    AbstractOneWay {
-        region: RegionId,
-        xa: i32,
-        ya: i32,
-        xb: i32,
-        yb: i32,
+    Direction {
+        target: Target,
+        traffic: TrafficDirection,
     },
-    /// Mark a grid-aligned edge as two-way with oriented lanes. The
-    /// from→to ordering determines which side gets which lane direction,
-    /// identical to the (world-space) TwoWayOriented variant.
-    AbstractTwoWayOriented {
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum TrafficDirection {
+    /// Traffic flows along the carrier's canonical direction (one lane).
+    OneWay,
+    /// Traffic flows against canonical.
+    OneWayReverse,
+    /// Two-way with oriented lanes, canonical orientation.
+    TwoWayOriented,
+    /// Two-way with oriented lanes, opposite side.
+    TwoWayOrientedReverse,
+}
+
+/// A referenceable region in one substrate's own coord system.
+/// - Grid.range = None     → whole grid line (edge annotations only).
+/// - Grid.range = Some((s, s)) → a vertex.
+/// - Grid.range = Some((s1, s2)), s1 != s2 → a span of sub-edges.
+/// - DriveLine / Perimeter: a single parametric point. Vertex annotations
+///   resolve to the graph vertex at the point (if one exists); edge
+///   annotations resolve to the sub-edge containing the point.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "on")]
+pub enum Target {
+    Grid {
         region: RegionId,
-        xa: i32,
-        ya: i32,
-        xb: i32,
-        yb: i32,
+        axis: Axis,
+        coord: i32,
+        /// None = whole grid line; Some((s, s)) = vertex; Some((s1, s2)) = span.
+        range: Option<(GridStop, GridStop)>,
     },
-    /// Delete a drive-line splice vertex by its parametric position
-    /// `t ∈ [0, 1]` along the line identified by `drive_line_id`.
-    /// Resolves to the splice vertex with the closest `t` within
-    /// tolerance `stall_pitch / line_length`. Goes dormant if the drive
-    /// line is removed.
-    SpliceDeleteVertex {
-        drive_line_id: u32,
+    DriveLine {
+        id: u32,
+        /// Parametric t ∈ [0, 1] from drive_line.start → drive_line.end.
         t: f64,
     },
-    /// Delete the drive-line edge spanning `(t_a, t_b)`.
-    SpliceDeleteEdge {
-        drive_line_id: u32,
-        ta: f64,
-        tb: f64,
+    Perimeter {
+        #[serde(rename = "loop")]
+        loop_: PerimeterLoop,
+        /// Normalized arc length ∈ [0, 1] along the loop.
+        arc: f64,
     },
-    /// Mark a drive-line edge as one-way, travel direction from t_a to t_b.
-    SpliceOneWay {
-        drive_line_id: u32,
-        ta: f64,
-        tb: f64,
+}
+
+/// A stop along a grid line — either an integer lattice coord or a crossing
+/// with another substrate. For crossings, resolution picks the first
+/// crossing along the carrier's canonical direction from the other stop
+/// (well-defined under the no-collinear-stretches constraint).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "at")]
+pub enum GridStop {
+    Lattice {
+        /// Integer coord on the axis the line runs along.
+        other: i32,
     },
-    /// Mark a drive-line edge as two-way with oriented lanes; from→to
-    /// ordering picks which side gets which lane direction.
-    SpliceTwoWayOriented {
-        drive_line_id: u32,
-        ta: f64,
-        tb: f64,
+    CrossesDriveLine {
+        id: u32,
     },
+    CrossesPerimeter {
+        #[serde(rename = "loop")]
+        loop_: PerimeterLoop,
+    },
+}
+
+/// A perimeter loop on the sketch boundary: the unique outer boundary, or
+/// a specific hole. In the prototype, holes are identified positionally;
+/// the Arcol integration uses a stable member sketch-vertex id instead.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum PerimeterLoop {
+    Outer,
+    Hole {
+        index: usize,
+    },
+}
+
+/// Which axis the grid line's fixed coordinate is on. `axis=X, coord=c` is
+/// the line x=c (fixed x; runs along Y). Canonical direction is +along the
+/// "run axis" (low → high) — i.e. +Y for axis=X, +X for axis=Y.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Axis {
+    X,
+    Y,
 }
 
 // ---------------------------------------------------------------------------

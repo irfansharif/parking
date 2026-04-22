@@ -10,56 +10,11 @@ import {
   AisleDirection,
   ParkingParams,
   Annotation,
-  isAbstractAnnotation,
-  abstractAnnotationWorldPos,
+  Target,
+  annotationWorldPos,
   computeRegionFrame,
   frameForward,
 } from "./types";
-
-/**
- * Find an AbstractOneWay / AbstractTwoWayOriented annotation whose
- * resolved world-space midpoint is near `mid`, and return the unit
- * travel direction implied by its (xa, ya) → (xb, yb) ordering. Used
- * by the edge arrow renderer so abstract direction annotations get
- * arrows just like legacy OneWay / TwoWayOriented do.
- */
-function findAbstractDirectionAnnotation(
-  lot: ParkingLot | null,
-  params: ParkingParams,
-  mid: Vec2,
-): { tx: number; ty: number } | null {
-  if (!lot) return null;
-  const rd = lot.layout?.region_debug;
-  if (!rd) return null;
-  const tol = 5.0;
-  for (const ann of lot.annotations) {
-    if (
-      ann.kind !== "AbstractOneWay" &&
-      ann.kind !== "AbstractTwoWayOriented"
-    ) {
-      continue;
-    }
-    if (ann._active === false) continue;
-    const region = rd.regions.find((r) => r.id === ann.region);
-    if (!region) continue;
-    const frame = computeRegionFrame(
-      params,
-      region.aisle_angle_deg,
-      region.aisle_offset,
-    );
-    const a = frameForward(frame, { x: ann.xa, y: ann.ya });
-    const b = frameForward(frame, { x: ann.xb, y: ann.yb });
-    const worldMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-    const d = Math.sqrt((worldMid.x - mid.x) ** 2 + (worldMid.y - mid.y) ** 2);
-    if (d > tol) continue;
-    const tx = b.x - a.x;
-    const ty = b.y - a.y;
-    const len = Math.sqrt(tx * tx + ty * ty);
-    if (len < 1e-9) continue;
-    return { tx: tx / len, ty: ty / len };
-  }
-  return null;
-}
 import { SnapGuide } from "./snap";
 
 export class Renderer {
@@ -963,41 +918,24 @@ export class Renderer {
     const annotationVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
     for (const lot of state.lots) {
       lot.annotations.forEach((ann, i) => {
-        let pos: Vec2 | null;
-        let isDelete: boolean;
-        let isTwoWayOri: boolean;
-
-        if (isAbstractAnnotation(ann)) {
-          // Abstract annotations are keyed by integer grid indices.
-          // Compute their current world position through the hosting
-          // region's AbstractFrame so the marker follows the grid as
-          // parameters change.
-          pos = abstractAnnotationWorldPos(ann, lot.layout?.region_debug, state.params);
-          if (!pos) return;
-          isDelete =
-            ann.kind === "AbstractDeleteVertex" ||
-            ann.kind === "AbstractDeleteEdge";
-          isTwoWayOri = ann.kind === "AbstractTwoWayOriented";
-        } else {
-          // Splice annotation: anchored to (drive_line_id, t).
-          // Position = midpoint of (ta, tb), or just `t` for the
-          // vertex variant. If the drive line is gone, skip.
-          const dl = lot.driveLines.find((d) => d.id === ann.drive_line_id);
-          if (!dl) return;
-          const t = ann.kind === "SpliceDeleteVertex"
-            ? ann.t
-            : (ann.ta + ann.tb) / 2;
-          pos = {
-            x: dl.start.x + (dl.end.x - dl.start.x) * t,
-            y: dl.start.y + (dl.end.y - dl.start.y) * t,
-          };
-          isDelete =
-            ann.kind === "SpliceDeleteVertex" ||
-            ann.kind === "SpliceDeleteEdge";
-          isTwoWayOri = ann.kind === "SpliceTwoWayOriented";
-        }
-        const activeColor = isDelete ? "rgba(255, 80, 80, 0.95)" : isTwoWayOri ? "rgba(100, 200, 255, 0.95)" : "rgba(255, 180, 50, 0.95)";
-        const inactiveColor = isDelete ? "rgba(255, 80, 80, 0.3)" : isTwoWayOri ? "rgba(100, 200, 255, 0.3)" : "rgba(255, 180, 50, 0.3)";
+        const pos = annotationWorldPos(ann, lot, state.params);
+        if (!pos) return;
+        const isDelete =
+          ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
+        const isTwoWayOri =
+          ann.kind === "Direction" &&
+          (ann.traffic === "TwoWayOriented" ||
+            ann.traffic === "TwoWayOrientedReverse");
+        const activeColor = isDelete
+          ? "rgba(255, 80, 80, 0.95)"
+          : isTwoWayOri
+            ? "rgba(100, 200, 255, 0.95)"
+            : "rgba(255, 180, 50, 0.95)";
+        const inactiveColor = isDelete
+          ? "rgba(255, 80, 80, 0.3)"
+          : isTwoWayOri
+            ? "rgba(100, 200, 255, 0.3)"
+            : "rgba(255, 180, 50, 0.3)";
         annotationVerts.push({
           pos,
           ref: { type: "annotation", index: i, lotId: lot.id },

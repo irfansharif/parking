@@ -41,8 +41,6 @@ fn fmt_coord(v: f64) -> String {
 }
 
 fn format_fixture(input: &GenerateInput) -> String {
-    use crate::types::Annotation;
-
     let mut out = String::new();
 
     // Boundary outer polygon.
@@ -131,61 +129,12 @@ fn format_fixture(input: &GenerateInput) -> String {
         ));
     }
 
-    // Annotations.
+    // Annotations. One line per annotation, round-tripping through
+    // `commands.ts` → engine → fixture. Same text form on input and
+    // expected output.
     for ann in &input.annotations {
-        match ann {
-            Annotation::AbstractDeleteVertex { region, xi, yi } => {
-                out.push_str(&format!(
-                    "\nannotation abstract-delete-vertex region=0x{:016x} x={} y={}\n----\nannotation abstract-delete-vertex region=0x{:016x} x={} y={}\n",
-                    region.0, xi, yi, region.0, xi, yi,
-                ));
-            }
-            Annotation::AbstractDeleteEdge { region, xa, ya, xb, yb } => {
-                out.push_str(&format!(
-                    "\nannotation abstract-delete-edge region=0x{:016x} from={},{} to={},{}\n----\nannotation abstract-delete-edge region=0x{:016x} from={},{} to={},{}\n",
-                    region.0, xa, ya, xb, yb, region.0, xa, ya, xb, yb,
-                ));
-            }
-            Annotation::AbstractOneWay { region, xa, ya, xb, yb } => {
-                out.push_str(&format!(
-                    "\nannotation abstract-one-way region=0x{:016x} from={},{} to={},{}\n----\nannotation abstract-one-way region=0x{:016x} from={},{} to={},{}\n",
-                    region.0, xa, ya, xb, yb, region.0, xa, ya, xb, yb,
-                ));
-            }
-            Annotation::AbstractTwoWayOriented { region, xa, ya, xb, yb } => {
-                out.push_str(&format!(
-                    "\nannotation abstract-two-way-oriented region=0x{:016x} from={},{} to={},{}\n----\nannotation abstract-two-way-oriented region=0x{:016x} from={},{} to={},{}\n",
-                    region.0, xa, ya, xb, yb, region.0, xa, ya, xb, yb,
-                ));
-            }
-            Annotation::SpliceDeleteVertex { drive_line_id, t } => {
-                out.push_str(&format!(
-                    "\nannotation splice-delete-vertex line={} t={}\n----\nannotation splice-delete-vertex line={} t={}\n",
-                    drive_line_id, fmt_coord(*t), drive_line_id, fmt_coord(*t),
-                ));
-            }
-            Annotation::SpliceDeleteEdge { drive_line_id, ta, tb } => {
-                out.push_str(&format!(
-                    "\nannotation splice-delete-edge line={} from={} to={}\n----\nannotation splice-delete-edge line={} from={} to={}\n",
-                    drive_line_id, fmt_coord(*ta), fmt_coord(*tb),
-                    drive_line_id, fmt_coord(*ta), fmt_coord(*tb),
-                ));
-            }
-            Annotation::SpliceOneWay { drive_line_id, ta, tb } => {
-                out.push_str(&format!(
-                    "\nannotation splice-one-way line={} from={} to={}\n----\nannotation splice-one-way line={} from={} to={}\n",
-                    drive_line_id, fmt_coord(*ta), fmt_coord(*tb),
-                    drive_line_id, fmt_coord(*ta), fmt_coord(*tb),
-                ));
-            }
-            Annotation::SpliceTwoWayOriented { drive_line_id, ta, tb } => {
-                out.push_str(&format!(
-                    "\nannotation splice-two-way-oriented line={} from={} to={}\n----\nannotation splice-two-way-oriented line={} from={} to={}\n",
-                    drive_line_id, fmt_coord(*ta), fmt_coord(*tb),
-                    drive_line_id, fmt_coord(*ta), fmt_coord(*tb),
-                ));
-            }
-        }
+        let line = format_annotation_line(ann);
+        out.push_str(&format!("\nannotation {}\n----\nannotation {}\n", line, line));
     }
 
     // Aisle graph vertices and edges.
@@ -229,4 +178,93 @@ fn format_fixture(input: &GenerateInput) -> String {
     out.push_str("\nscreenshot\n----\n");
 
     out
+}
+
+/// Stable text form of an annotation for fixture round-tripping.
+/// Format:
+///   delete-vertex   on=<substrate-spec>
+///   delete-edge     on=<substrate-spec>
+///   direction       on=<substrate-spec> traffic=<traffic>
+/// where substrate-spec is:
+///   grid region=0x... axis=<x|y> coord=<n> [range=whole | at=<stop> | range=<s1>,<s2>]
+///   drive-line id=<n> t=<t>
+///   perimeter loop=<loop> arc=<arc>
+/// and <stop> is lattice:<n> | crosses-drive-line:<id> | crosses-perimeter:<loop>
+/// and <loop> is outer | hole:<n>
+pub(crate) fn format_annotation_line(ann: &crate::types::Annotation) -> String {
+    use crate::types::Annotation;
+    match ann {
+        Annotation::DeleteVertex { target } => format!("delete-vertex {}", format_target(target)),
+        Annotation::DeleteEdge { target } => format!("delete-edge {}", format_target(target)),
+        Annotation::Direction { target, traffic } => format!(
+            "direction {} traffic={}",
+            format_target(target),
+            format_traffic(*traffic),
+        ),
+    }
+}
+
+fn format_target(t: &crate::types::Target) -> String {
+    use crate::types::Target;
+    match t {
+        Target::Grid { region, axis, coord, range } => {
+            let axis_s = match axis {
+                crate::types::Axis::X => "x",
+                crate::types::Axis::Y => "y",
+            };
+            let scope = match range {
+                None => "range=whole".to_string(),
+                Some((s1, s2)) if stops_eq(s1, s2) => format!("at={}", format_stop(s1)),
+                Some((s1, s2)) => format!("range={},{}", format_stop(s1), format_stop(s2)),
+            };
+            format!(
+                "on=grid region=0x{:016x} axis={} coord={} {}",
+                region.0, axis_s, coord, scope,
+            )
+        }
+        Target::DriveLine { id, t } => {
+            format!("on=drive-line id={} t={}", id, fmt_coord(*t))
+        }
+        Target::Perimeter { loop_, arc } => {
+            format!("on=perimeter loop={} arc={}", format_loop(loop_), fmt_coord(*arc))
+        }
+    }
+}
+
+fn format_stop(s: &crate::types::GridStop) -> String {
+    use crate::types::GridStop;
+    match s {
+        GridStop::Lattice { other } => format!("lattice:{}", other),
+        GridStop::CrossesDriveLine { id } => format!("crosses-drive-line:{}", id),
+        GridStop::CrossesPerimeter { loop_ } => {
+            format!("crosses-perimeter:{}", format_loop(loop_))
+        }
+    }
+}
+
+fn format_loop(l: &crate::types::PerimeterLoop) -> String {
+    use crate::types::PerimeterLoop;
+    match l {
+        PerimeterLoop::Outer => "outer".to_string(),
+        PerimeterLoop::Hole { index } => format!("hole:{}", index),
+    }
+}
+
+fn format_traffic(t: crate::types::TrafficDirection) -> &'static str {
+    use crate::types::TrafficDirection;
+    match t {
+        TrafficDirection::OneWay => "one-way",
+        TrafficDirection::OneWayReverse => "one-way-reverse",
+        TrafficDirection::TwoWayOriented => "two-way-oriented",
+        TrafficDirection::TwoWayOrientedReverse => "two-way-oriented-reverse",
+    }
+}
+
+fn stops_eq(a: &crate::types::GridStop, b: &crate::types::GridStop) -> bool {
+    use crate::types::GridStop;
+    match (a, b) {
+        (GridStop::Lattice { other: x }, GridStop::Lattice { other: y }) => x == y,
+        (GridStop::CrossesDriveLine { id: x }, GridStop::CrossesDriveLine { id: y }) => x == y,
+        _ => false,
+    }
 }

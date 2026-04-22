@@ -34,9 +34,9 @@ total_stalls: 162
 # specific cross aisle. The canvas-anchored frame pins this to one world
 # position; under any stretching parameter change the world position
 # moves but the abstract index stays put.
-annotation abstract-delete-vertex region=0x1000000000000 x=-3 y=3
+annotation delete-vertex on=grid region=0x0001000000000000 axis=x coord=-3 at=lattice:3
 ----
-annotation abstract-delete-vertex region=0x0001000000000000 x=-3 y=3
+annotation delete-vertex on=grid region=0x0001000000000000 axis=x coord=-3 at=lattice:3
 
 generate
 ----
