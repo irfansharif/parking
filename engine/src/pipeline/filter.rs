@@ -170,10 +170,11 @@ pub(crate) fn quad_contained_in_boundary(
 /// A zero-length polyline (single point) is treated as a point
 /// modifier: every stall within `radius` of that point gets retyped.
 ///
-/// The function preserves `Island` and `Extension` markings by only
-/// retyping `Standard`/`Compact`/`Ev` stalls and, for suppression,
-/// any stall regardless of kind (so fire lanes clear even the
-/// extension stalls).
+/// The function preserves `Island` markings (those are coupled to the
+/// already-carved landscape island polygons, so retyping them would
+/// create a geometric conflict). Standard, Compact, Ev, and Extension
+/// stalls are all retypeable. Suppression applies regardless of kind,
+/// so fire lanes clear extension and island stalls alike.
 pub(crate) fn apply_stall_modifiers(
     stalls: &mut [StallQuad],
     modifiers: &[StallModifier],

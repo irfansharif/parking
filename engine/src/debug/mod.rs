@@ -112,6 +112,18 @@ pub fn format_fixture(input: &GenerateInput) -> String {
         out.push_str(&format!("\nannotation {}\n----\nannotation {}\n", line, line));
     }
 
+    // Stall modifiers. Emitted as a single `stall-modifier-json` block
+    // whose body is the serde-JSON array the harness directive parses.
+    if !input.stall_modifiers.is_empty() {
+        if let Ok(body) = serde_json::to_string(&input.stall_modifiers) {
+            out.push_str(&format!(
+                "\nstall-modifier-json\n{}\n----\nstall-modifier-json: +{}\n",
+                body,
+                input.stall_modifiers.len(),
+            ));
+        }
+    }
+
     // Aisle graph vertices and edges.
     if let Some(ref graph) = input.aisle_graph {
         out.push('\n');
@@ -240,6 +252,9 @@ fn stops_eq(a: &crate::types::GridStop, b: &crate::types::GridStop) -> bool {
     match (a, b) {
         (GridStop::Lattice { other: x }, GridStop::Lattice { other: y }) => x == y,
         (GridStop::CrossesDriveLine { id: x }, GridStop::CrossesDriveLine { id: y }) => x == y,
+        (GridStop::CrossesPerimeter { loop_: x }, GridStop::CrossesPerimeter { loop_: y }) => {
+            x == y
+        }
         _ => false,
     }
 }

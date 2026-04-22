@@ -191,10 +191,8 @@ pub struct GenerateInput {
     #[serde(default, rename = "regionOverrides")]
     pub region_overrides: Vec<RegionOverride>,
     /// User-drawn post-pass modifiers that retype or suppress overlapping
-    /// stalls (DESIGN §1.4). Empty = no-op. Wiring into the pipeline's
-    /// filter stage is intentionally scoped out of this foundational
-    /// modularization; today the field is accepted (for schema
-    /// forward-compat) but not acted upon.
+    /// stalls (DESIGN §1.4). Empty = no-op. Applied after placement by
+    /// `pipeline::filter::apply_stall_modifiers`.
     #[serde(default)]
     pub stall_modifiers: Vec<StallModifier>,
 }

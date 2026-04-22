@@ -1,11 +1,15 @@
 //! The nine-stage parking generation pipeline (DESIGN.md §2, §3).
 //!
-//! Each stage lives in its own submodule. Today this module only hosts
-//! `corridors` (§3.2 aisle polygon construction). Subsequent phases
-//! add `bays` (§3.3), `provenance` (§3.4), `spines` (§3.5),
-//! `placement` (§3.6), `filter` (§3.7), and `islands` (§3.8); the
-//! final phase collapses `generate.rs` into a thin orchestrator living
-//! here.
+//! Each stage lives in its own submodule:
+//!
+//!   corridors — §3.2 aisle polygon construction
+//!   bays      — §3.3 positive-space face extraction
+//!   tagging   — §3.4 edge provenance (wall vs corridor source)
+//!   spines    — §3.5 spine generation via straight skeleton
+//!   placement — §3.6 stall placement along spines
+//!   filter    — §3.7 post-placement stall filtering (incl. §1.4 modifiers)
+//!   islands   — §3.8 residual gap extraction
+//!   generate  — top-level orchestrator tying the stages together
 
 pub mod bays;
 pub mod corridors;

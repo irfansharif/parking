@@ -571,6 +571,11 @@ function formatTraffic(t: TrafficDirection): string {
 function gridStopsEqual(a: GridStop, b: GridStop): boolean {
   if (a.at === "Lattice" && b.at === "Lattice") return a.other === b.other;
   if (a.at === "CrossesDriveLine" && b.at === "CrossesDriveLine") return a.id === b.id;
+  if (a.at === "CrossesPerimeter" && b.at === "CrossesPerimeter") {
+    if (a.loop.kind !== b.loop.kind) return false;
+    if (a.loop.kind === "Outer") return true;
+    return a.loop.kind === "Hole" && b.loop.kind === "Hole" && a.loop.index === b.loop.index;
+  }
   return false;
 }
 
