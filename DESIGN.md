@@ -130,27 +130,32 @@ nudges aisle-angle.
 
 ### 1.5 Annotations
 
-Annotations are spatial intents that survive graph regeneration. They’re tied to
-the underlying grid itself (i.e. specific edges and vertices), and they remain
-valid when the graph topology changes. Edge-targeted annotations carry a `chain`
-flag based on selection scope (single-click = collinear chain, double-click =
-single segment). Three core kinds:
+Annotations are spatial intents that survive graph regeneration. Each targets
+a vertex or sub-edge(s) by addressing a point (or, on grid lines, a span) in
+one substrate's own coordinate system. The three substrates — **abstract grid**
+(per region; integer lattice, plus crossings with drive-lines or perimeter as
+substrate-keyed stops), **drive lines** (parametric `t ∈ [0, 1]` from start to
+end), and the **perimeter** (normalized arc ∈ [0, 1] per loop) — each carry a
+canonical direction: grid lines run low→high along their free axis, drive
+lines run +t, the outer perimeter is CCW, holes are CW.
 
-- **Direction** — (edge-targeted) sets the `AisleDirection` on matched edge(s).
-  The annotation carries a travel direction vector and the desired direction
-  kind; application resolves `Forward`/`Reverse` relative to each edge's
-  start→end and writes the result to edge metadata. Suppresses stalls on the
-  left side of travel for `OneWay`; controls stall angle lean for both `OneWay`
-  and `TwoWay`.
-- **DeleteVertex** — removes a vertex and all incident edges.
-- **DeleteEdge** — (edge-targeted) removes an edge or collinear chain. Combined
-  with DeleteVertex, these let the user carve custom face shapes.
+Three annotation kinds: **delete-vertex** (cascades to incident sub-edges),
+**delete-edge**, and **direction** (`oneWay` / `oneWayReverse` /
+`twoWayOriented` / `twoWayOrientedReverse`, relative to the carrier's
+canonical direction). User-drawn polygon corners are edited via the sketch,
+not via annotation.
 
-The grid lines seen below, those that form the driving aisles, are a
-transformation of a unit grid in an infinite space, rotated/stretched/translated
-back out to our 2D canvas, with a fixed coordinate being the reference point
-across the two. The annotations are stored referring to that fixed unit grid, so
-our annotations “follow” the transformations.
+The grid lines seen below are a transformation of a unit grid in an infinite
+space, rotated/stretched/translated onto the 2D canvas; annotations stored in
+that unit grid's coordinates follow transformations for free.
+
+**Constraint.** No collinear stretches between any two substrates. Every
+substrate pair crosses the other at most once per traversal, so
+`crossesDriveLine` / `crossesPerimeter` stops resolve unambiguously to the
+first crossing along the carrier's canonical direction.
+
+**Dormancy (single rule).** Any referenced substrate or stop not present in
+the current graph → the annotation is dormant this regen. Types in §6.1.
 
 ![Some annotations shown, like driving directions, deletion of a vertex, and also on specific edges (in this example just individual segments, not collinear stretches).](attachment:b27c618f-bbc9-4f25-b78e-68b744c61d46:image.png)
 
@@ -590,15 +595,28 @@ type ParkingV2Config = {
 type ParkingV2RegionOverride = { regionId: string; aisleAngle?: number; aisleOffset?: number };
 
 type ParkingV2Annotation =
-  | { kind: "direction";    target: GridEdgeRef;   chain: boolean;
-      direction: "TwoWayForward" | "TwoWayReverse" | "OneWayForward" | "OneWayReverse" }
-  | { kind: "deleteEdge";   target: GridEdgeRef;   chain: boolean }
-  | { kind: "deleteVertex"; target: GridVertexRef };
+  | { kind: "deleteVertex"; target: Target }
+  | { kind: "deleteEdge";   target: Target }
+  | { kind: "direction";    target: Target; traffic: TrafficDirection };
 
-// Annotations key off abstract (u,v) grid coords; the pipeline computes
-// the grid→world transform fresh each regen and re-matches by (u,v).
-type GridVertexRef = { u: number; v: number };
-type GridEdgeRef   = { a: GridVertexRef; b: GridVertexRef };
+type TrafficDirection =
+  | "oneWay" | "oneWayReverse"
+  | "twoWayOriented" | "twoWayOrientedReverse";
+
+// A referenceable region in one substrate's own coord system (§1.5).
+// range=null → whole grid line; [s, s] → vertex; [s1, s2] with s1 ≠ s2 → span.
+type Target =
+  | { on: "grid"; region: RegionId; axis: "x" | "y"; coord: number;
+      range: [GridStop, GridStop] | null }
+  | { on: "driveLine"; id: number; t: number }              // t ∈ [0, 1]
+  | { on: "perimeter"; loop: PerimeterLoop; arc: number };  // arc ∈ [0, 1]
+
+type GridStop =
+  | { at: "lattice"; other: number }
+  | { at: "crossesDriveLine"; id: number }
+  | { at: "crossesPerimeter"; loop: PerimeterLoop };
+
+type PerimeterLoop = "outer" | { hole: SketchVertexId };   // hole keyed by any member sketch vertex
 ```
 
 All the user-drawn lines — boundary, holes, drive lines, **and stall
@@ -642,16 +660,26 @@ type ParkingV2Baked = {
 };
 ```
 
-Persisting `baked` locks doc appearance to whatever was baked at last
-edit, independent of algorithm churn: a doc saved at generator version
-N opened at N+1 keeps its look until an input changes. The code
-surface responsible for doc appearance shrinks to the `baked` → scene
-renderer. The pattern is generator-agnostic — the `baked<T>` field +
-`Execution.ts` skip-on-hash-match path should be parameterised so
-other procedural sketch functions can reuse it. Invariants: (1) the
-renderer reads `baked` only; (2) regen is input-driven — skip if
-`inputHash` matches and `generatorVersion === current`, else replace
-`baked` atomically; (3) `baked` is never edited in place.
+Persisting `baked` does two things. It locks doc appearance to the
+last bake — a doc saved at generator version N opened at N+1 keeps
+its look until an input changes. And because Liveblocks swaps
+`inputs` and `baked` together during undo/redo, history ops display
+correctly without waiting on a regen round-trip; no post-undo flash
+of stale or empty geometry. The pattern is generator-agnostic — the
+`baked<T>` field + `Execution.ts` skip-on-hash-match path should be
+parameterised so other procedural sketch functions can reuse it.
+
+Invariants:
+
+1. The renderer reads `baked` only; `inputs` are inputs, never drawn.
+2. Regen runs on a worker. The render tick compares
+   `inputHash(current inputs)` against `baked.inputHash`; on mismatch,
+   enqueue regen. Until it returns, render current `baked`. This makes
+   invalidation indifferent to the write path — user edits, config
+   changes, and undo/redo all route through the same check.
+3. When regen completes, replace `baked` atomically. Skip the write
+   if `inputHash` matches and `generatorVersion === current`. `baked`
+   is never edited in place.
 
 ### 6.2 PlanarNetwork reuse — where things live
 
