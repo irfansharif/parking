@@ -5,12 +5,10 @@
 //! plus miter fills produces the merged driveable surface, with cleanup
 //! passes for spikes, simplification, and small junction holes.
 
-use crate::inset::signed_area;
+use crate::geom::boolean::{self, FillRule};
+use crate::geom::inset::signed_area;
 use crate::types::*;
 use geo::{Coord, LineString, Simplify};
-use i_overlay::core::fill_rule::FillRule;
-use i_overlay::core::overlay_rule::OverlayRule;
-use i_overlay::float::single::SingleFloatOverlay;
 
 /// Build the corridor rectangle for a single aisle edge.
 pub(crate) fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2> {
@@ -166,7 +164,7 @@ pub(crate) fn merge_corridor_shapes(
 
     let miter_fills = generate_miter_fills(graph, debug);
 
-    let subj: Vec<Vec<[f64; 2]>> = corridors
+    let subj: Vec<Vec<Vec2>> = corridors
         .iter()
         .chain(miter_fills.iter())
         .map(|c| {
@@ -174,7 +172,7 @@ pub(crate) fn merge_corridor_shapes(
             if signed_area(&pts) < 0.0 {
                 pts.reverse();
             }
-            pts.iter().map(|v| [v.x, v.y]).collect()
+            pts
         })
         .collect();
 
@@ -182,8 +180,7 @@ pub(crate) fn merge_corridor_shapes(
         return vec![];
     }
 
-    let empty_clip: Vec<Vec<[f64; 2]>> = vec![];
-    let result = subj.overlay(&empty_clip, OverlayRule::Union, FillRule::NonZero);
+    let result = boolean::union(&subj, &[], FillRule::NonZero);
 
     let max_width = graph.edges.iter().map(|e| e.width).fold(0.0f64, f64::max);
     let min_hole_area = max_width * max_width;
@@ -195,8 +192,7 @@ pub(crate) fn merge_corridor_shapes(
             shape
                 .into_iter()
                 .enumerate()
-                .filter_map(|(i, contour)| {
-                    let pts: Vec<Vec2> = contour.into_iter().map(|p| Vec2::new(p[0], p[1])).collect();
+                .filter_map(|(i, pts)| {
                     let pts = if debug.spike_removal {
                         remove_contour_spikes(pts, 2.0)
                     } else {

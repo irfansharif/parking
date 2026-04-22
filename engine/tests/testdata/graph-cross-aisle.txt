@@ -1,0 +1,32 @@
+# Phase 3 — rectangle long enough to force a cross-aisle. Exercises:
+#   - graph auto-generation with both interior and cross aisles
+#   - graph directive (summary, vertices, edges)
+#   - graph SVG layer (blue=interior, brown=perimeter)
+
+polygon outer
+0,0
+400,0
+400,160
+0,160
+----
+polygon outer: 4 vertices
+
+set stall-angle=90
+----
+set stall_angle_deg=90
+
+set stalls_per_face=10
+----
+set stalls_per_face=10
+
+generate
+----
+total_stalls: 180
+
+graph summary
+----
+vertices: 24, edges: 74, perim_vertex_count: 4
+  perimeter: 36, interior: 38
+
+snapshot
+----

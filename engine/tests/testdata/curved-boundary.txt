@@ -1,0 +1,28 @@
+# Phase 1 — boundary with one curved edge. Exercises:
+#   - curve directive inside a polygon body
+#   - bezier discretization during pipeline run
+#   - polygon-info assertion against the pre-discretized sketch
+
+polygon outer
+0,0
+200,0
+curve 240,50 240,110
+200,160
+0,160
+----
+polygon outer: 4 vertices
+
+polygon-info
+----
+outer: 4 vertices, ccw, bbox (0,0)-(200,160), area 32000
+
+set stall-angle=90
+----
+set stall_angle_deg=90
+
+generate
+----
+total_stalls: 54
+
+snapshot
+----

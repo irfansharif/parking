@@ -1,4 +1,4 @@
-use crate::inset::signed_area;
+use crate::geom::inset::signed_area;
 use crate::types::Vec2;
 
 // ---------------------------------------------------------------------------

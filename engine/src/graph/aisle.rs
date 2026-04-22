@@ -1,10 +1,8 @@
-use crate::clip::polygons_overlap;
-use crate::aisle_polygon::corridor_polygon;
-use crate::inset::{inset_polygon, raw_inset_polygon, signed_area};
+use crate::geom::boolean::{self, FillRule};
+use crate::geom::clip::polygons_overlap;
+use crate::pipeline::corridors::corridor_polygon;
+use crate::geom::inset::{inset_polygon, raw_inset_polygon, signed_area};
 use crate::types::*;
-use i_overlay::core::fill_rule::FillRule;
-use i_overlay::core::overlay_rule::OverlayRule;
-use i_overlay::float::single::SingleFloatOverlay;
 
 /// Compute the inset distance for a given set of parking parameters.
 /// This is the offset from the aisle-edge ring to the raw building boundary,
@@ -53,24 +51,14 @@ pub fn derive_raw_holes(holes: &[Vec<Vec2>], inset_d: f64) -> Vec<Vec<Vec2>> {
             // Boolean-intersect the raw miter polygon with the original
             // ring. This resolves self-intersections and clips any miter
             // spikes that extend beyond the ring boundary.
-            let miter_path: Vec<[f64; 2]> = raw.iter().map(|v| [v.x, v.y]).collect();
-            let ring_path: Vec<[f64; 2]> = ring.iter().map(|v| [v.x, v.y]).collect();
-            let result = vec![miter_path]
-                .overlay(&vec![ring_path], OverlayRule::Intersect, FillRule::EvenOdd);
+            let result = boolean::intersect(&[raw], &[ring.clone()], FillRule::EvenOdd);
             // Take the largest contour (by area) as the hole polygon.
             result
                 .into_iter()
                 .flat_map(|shape| shape.into_iter())
                 .max_by(|a, b| {
-                    let area_a: f64 = a.iter().zip(a.iter().cycle().skip(1))
-                        .map(|(p, q)| p[0] * q[1] - q[0] * p[1])
-                        .sum::<f64>().abs();
-                    let area_b: f64 = b.iter().zip(b.iter().cycle().skip(1))
-                        .map(|(p, q)| p[0] * q[1] - q[0] * p[1])
-                        .sum::<f64>().abs();
-                    area_a.partial_cmp(&area_b).unwrap()
+                    signed_area(a).abs().partial_cmp(&signed_area(b).abs()).unwrap()
                 })
-                .map(|pts| pts.into_iter().map(|p| Vec2::new(p[0], p[1])).collect())
         })
         .collect()
 }
@@ -103,7 +91,7 @@ pub fn decompose_regions(
     default_angle_deg: f64,
     default_offset: f64,
 ) -> Vec<Region> {
-    use crate::regions::{enumerate_regions, PartitionedRegion};
+    use crate::graph::regions::{enumerate_regions, PartitionedRegion};
 
     let hole_slices: Vec<&[Vec2]> = hole_loops.iter().map(|h| h.as_slice()).collect();
     let parts: Vec<PartitionedRegion> =
@@ -147,7 +135,7 @@ pub fn decompose_regions(
 
 fn derive_region_frame(
     clip_poly: &[Vec2],
-    _boundary_kinds: &[crate::regions::EdgeKind],
+    _boundary_kinds: &[crate::graph::regions::EdgeKind],
     default_angle_deg: f64,
     default_offset: f64,
 ) -> (f64, f64) {

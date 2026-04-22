@@ -2,3 +2,6 @@ engine/target/
 ui/dist/assets/
 test-results/
 ui/.vite/
+
+# Override global *.txt ignore for engine-local test fixtures.
+!engine/tests/testdata/*.txt

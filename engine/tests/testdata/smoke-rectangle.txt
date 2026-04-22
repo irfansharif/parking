@@ -1,0 +1,32 @@
+# Phase 0 smoke fixture — simplest rectangle + one hole. Exercises:
+#   - polygon outer / polygon hole directives
+#   - set <k>=<v> with alias normalization
+#   - generate producing a total_stalls line
+#   - snapshot producing a deterministic SVG golden
+
+polygon outer
+0,0
+240,0
+240,160
+0,160
+----
+polygon outer: 4 vertices
+
+polygon hole
+90,60
+150,60
+150,100
+90,100
+----
+hole: 4 vertices
+
+set stall-angle=90
+----
+set stall_angle_deg=90
+
+generate
+----
+total_stalls: 132
+
+snapshot
+----

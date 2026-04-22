@@ -1,102 +1,27 @@
-use crate::aisle_graph::{compute_inset_d, derive_raw_holes, derive_raw_outer};
-use crate::clip::{clip_stalls_to_boundary, remove_conflicting_stalls};
-use crate::inset::signed_area;
-use crate::segment::fill_strip;
+use crate::graph::{compute_inset_d, derive_raw_holes, derive_raw_outer};
+use crate::geom::boolean::{self, FillRule};
+use crate::geom::clip::{clip_stalls_to_boundary, remove_conflicting_stalls};
+use crate::geom::inset::signed_area;
+use crate::pipeline::placement::fill_strip;
 use crate::skeleton;
 use crate::types::*;
-use i_overlay::core::fill_rule::FillRule;
-use i_overlay::core::overlay_rule::OverlayRule;
-use i_overlay::float::single::SingleFloatOverlay;
 
 /// Minimum number of stalls a spine (including extensions) must have
 /// to survive the short-segment filter.
 const MIN_STALLS_PER_SPINE: usize = 3;
 
-use crate::aisle_polygon::{
+use crate::pipeline::corridors::{
     deduplicate_corridors, generate_miter_fills, merge_corridor_shapes,
 };
 #[cfg(test)]
-use crate::aisle_polygon::corridor_polygon;
+use crate::pipeline::corridors::corridor_polygon;
+use crate::pipeline::spines::{dedup_overlapping_spines, merge_collinear_spines};
 
 // ---------------------------------------------------------------------------
 // Face extraction via boolean overlay
 // ---------------------------------------------------------------------------
 
-/// Compute signed area of a path in [f64; 2] form.
-pub(crate) fn signed_area_f64(path: &[[f64; 2]]) -> f64 {
-    let n = path.len();
-    let mut area = 0.0;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        area += path[i][0] * path[j][1] - path[j][0] * path[i][1];
-    }
-    area * 0.5
-}
-
-/// Normalize a path to CCW winding (positive signed area).
-fn ensure_ccw(path: &mut Vec<[f64; 2]>) {
-    if signed_area_f64(path) < 0.0 {
-        path.reverse();
-    }
-}
-
-/// Extract positive-space face polygons by subtracting corridors and holes
-/// from the boundary. Returns Vec<Shape> where each shape is Vec<Vec<Vec2>>
-/// with shape[0] = outer contour, shape[1..] = holes within that face.
-///
-/// Done in two steps so that corridor contours (which have consistent
-/// relative winding from the union output) never share a clip set with
-/// boundary hole contours (which have user-determined winding). Mixing
-/// them in a single NonZero operation causes winding interference.
-fn extract_faces(
-    raw_outer: &[Vec2],
-    merged_corridors: &[Vec<Vec<Vec2>>],
-    raw_holes: &[Vec<Vec2>],
-) -> Vec<Vec<Vec<Vec2>>> {
-    let to_path = |pts: &[Vec2]| -> Vec<[f64; 2]> {
-        pts.iter().map(|v| [v.x, v.y]).collect()
-    };
-    let to_vec2 = |shape: Vec<Vec<[f64; 2]>>| -> Vec<Vec<Vec2>> {
-        shape
-            .into_iter()
-            .map(|contour| contour.into_iter().map(|p| Vec2::new(p[0], p[1])).collect())
-            .collect()
-    };
-
-    // Step 1: boundary MINUS corridors. Corridor outers and holes have
-    // consistent relative winding from the boolean union output, so
-    // NonZero handles them correctly in isolation.
-    let subj = to_path(raw_outer);
-    let mut corridor_paths: Vec<Vec<[f64; 2]>> = Vec::new();
-    for shape in merged_corridors {
-        for contour in shape {
-            corridor_paths.push(to_path(contour));
-        }
-    }
-    let after_corridors = subj.overlay(&corridor_paths, OverlayRule::Difference, FillRule::NonZero);
-
-    // Step 2: subtract raw building holes (derived from aisle-edge rings).
-    // Kept separate so that hole winding can't interfere with corridor winding.
-    if raw_holes.is_empty() {
-        return after_corridors.into_iter().map(to_vec2).collect();
-    }
-
-    let mut hole_paths: Vec<Vec<[f64; 2]>> = Vec::new();
-    for hole in raw_holes {
-        let mut path = to_path(hole);
-        ensure_ccw(&mut path);
-        hole_paths.push(path);
-    }
-
-    // Feed step 1 output as subject paths for the second subtraction.
-    let subj2: Vec<Vec<[f64; 2]>> = after_corridors
-        .into_iter()
-        .flat_map(|shape| shape.into_iter())
-        .collect();
-    let result = subj2.overlay(&hole_paths, OverlayRule::Difference, FillRule::NonZero);
-
-    result.into_iter().map(to_vec2).collect()
-}
+use crate::pipeline::bays::extract_faces;
 
 // ---------------------------------------------------------------------------
 // Straight skeleton spine generation
@@ -880,132 +805,6 @@ fn compute_face_spines(
 
 
 // ---------------------------------------------------------------------------
-// Spine merging
-// ---------------------------------------------------------------------------
-
-/// Merge collinear spine segments that share an endpoint (within tolerance)
-/// and have the same outward normal direction. This eliminates gaps between
-/// stall strips that span multiple faces along the same aisle edge.
-fn merge_collinear_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<SpineSegment> {
-    if spines.is_empty() {
-        return spines;
-    }
-
-    let mut merged = spines;
-    let mut changed = true;
-
-    while changed {
-        changed = false;
-        let mut result: Vec<SpineSegment> = Vec::new();
-        let mut used = vec![false; merged.len()];
-
-        for i in 0..merged.len() {
-            if used[i] {
-                continue;
-            }
-
-            let mut seg = merged[i].clone();
-            used[i] = true;
-
-            // Repeatedly try to extend this segment by merging with others.
-            let mut extended = true;
-            while extended {
-                extended = false;
-                for j in 0..merged.len() {
-                    if used[j] {
-                        continue;
-                    }
-
-                    if let Some(m) = try_merge_spines(&seg, &merged[j], tolerance) {
-                        seg = m;
-                        used[j] = true;
-                        extended = true;
-                        changed = true;
-                    }
-                }
-            }
-
-            result.push(seg);
-        }
-
-        merged = result;
-    }
-
-    merged
-}
-
-/// Try to merge two spine segments. Returns the merged segment if they are
-/// collinear (directions within tolerance), have similar outward normals,
-/// and share an endpoint.
-fn try_merge_spines(a: &SpineSegment, b: &SpineSegment, tolerance: f64) -> Option<SpineSegment> {
-    // Only merge spines of the same type (interior/perimeter).
-    if a.is_interior != b.is_interior {
-        return None;
-    }
-
-    // Only merge spines with compatible travel directions.
-    match (&a.travel_dir, &b.travel_dir) {
-        (None, None) => {}
-        (Some(d1), Some(d2)) if d1.dot(*d2) > 0.99 => {}
-        _ => return None,
-    }
-
-    let dir_a = (a.end - a.start).normalize();
-    let dir_b = (b.end - b.start).normalize();
-
-    // Must be collinear: directions parallel (dot ≈ ±1).
-    if dir_a.dot(dir_b).abs() < 0.99 {
-        return None;
-    }
-
-    // Must have (nearly) identical outward normals. Spines from the same
-    // corridor edge have exactly equal normals; spines from different edges
-    // at the same boundary corner differ by the angle between the edges.
-    // A tight threshold (0.9999 ≈ 0.8°) prevents cross-edge merging that
-    // would extend one edge's normal over another edge's territory.
-    if a.outward_normal.dot(b.outward_normal) < 0.9999 {
-        return None;
-    }
-
-    // Must share an endpoint (within tolerance).
-    let pairs = [
-        (a.end, b.start),  // a→b chain
-        (a.start, b.end),  // b→a chain
-        (a.end, b.end),    // both point away from junction
-        (a.start, b.start), // both point toward junction
-    ];
-
-    for (p1, p2) in &pairs {
-        if (*p1 - *p2).length() > tolerance {
-            continue;
-        }
-
-        // Project all four endpoints onto the shared line direction
-        // and take the full extent.
-        let origin = a.start;
-        let dots = [
-            dir_a.dot(a.start - origin),
-            dir_a.dot(a.end - origin),
-            dir_a.dot(b.start - origin),
-            dir_a.dot(b.end - origin),
-        ];
-        let min_t = dots.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max_t = dots.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-
-        return Some(SpineSegment {
-            start: origin + dir_a * min_t,
-            end: origin + dir_a * max_t,
-            outward_normal: a.outward_normal,
-            face_idx: a.face_idx,
-            is_interior: a.is_interior,
-            travel_dir: a.travel_dir,
-        });
-    }
-
-    None
-}
-
-// ---------------------------------------------------------------------------
 // Top-level orchestration
 // ---------------------------------------------------------------------------
 
@@ -1241,115 +1040,10 @@ fn compute_extension_shift(ext: &SpineSegment, src: &SpineSegment, src_shift: f6
     }
 }
 
-use crate::island::{compute_islands, mark_island_stalls, stall_key};
+use crate::pipeline::islands::{compute_islands, mark_island_stalls, stall_key};
 #[cfg(test)]
-use crate::island::stall_center;
+use crate::pipeline::islands::stall_center;
 
-/// Deduplicate overlapping collinear spines. When two spines have the same
-/// direction and outward normal and overlap along their length, trim the
-/// shorter one to only its non-overlapping portion. This prevents
-/// miter-fill spines from extending into regions already covered by the
-/// main corridor spine, while preserving the unique tail of each spine.
-fn dedup_overlapping_spines(spines: Vec<SpineSegment>, tolerance: f64) -> Vec<SpineSegment> {
-    let mut result = spines;
-
-    // For each pair of collinear, overlapping spines: trim the shorter one.
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let n = result.len();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let dir_i = (result[i].end - result[i].start).normalize();
-                let dir_j = (result[j].end - result[j].start).normalize();
-
-                // Must be collinear and same normal.
-                if dir_i.dot(dir_j).abs() < 0.99 {
-                    continue;
-                }
-                if result[i].outward_normal.dot(result[j].outward_normal) < 0.99 {
-                    continue;
-                }
-                let travel_compat = match (&result[i].travel_dir, &result[j].travel_dir) {
-                    (None, None) => true,
-                    (Some(d1), Some(d2)) => d1.dot(*d2) > 0.99,
-                    _ => false,
-                };
-                if !travel_compat {
-                    continue;
-                }
-
-                // Must be on the same line (close perpendicularly).
-                let perp = Vec2::new(-dir_i.y, dir_i.x);
-                if perp.dot(result[j].start - result[i].start).abs() > tolerance {
-                    continue;
-                }
-
-                // Project both onto the shared direction.
-                let origin = result[i].start;
-                let ti_s = dir_i.dot(result[i].start - origin);
-                let ti_e = dir_i.dot(result[i].end - origin);
-                let tj_s = dir_i.dot(result[j].start - origin);
-                let tj_e = dir_i.dot(result[j].end - origin);
-
-                let (i_min, i_max) = (ti_s.min(ti_e), ti_s.max(ti_e));
-                let (j_min, j_max) = (tj_s.min(tj_e), tj_s.max(tj_e));
-
-                // Check for overlap.
-                let overlap_start = i_min.max(j_min);
-                let overlap_end = i_max.min(j_max);
-                if overlap_end - overlap_start < 1.0 {
-                    continue; // No significant overlap.
-                }
-
-                // Trim the shorter spine to its non-overlapping portion.
-                let len_i = i_max - i_min;
-                let len_j = j_max - j_min;
-                let (shorter, longer_min, longer_max) = if len_i <= len_j {
-                    (i, j_min, j_max)
-                } else {
-                    (j, i_min, i_max)
-                };
-
-                let s_min = if shorter == i { i_min } else { j_min };
-                let s_max = if shorter == i { i_max } else { j_max };
-
-                // The non-overlapping portion is [s_min, longer_min) or
-                // (longer_max, s_max]. Keep the longer tail.
-                let tail_left = (longer_min - s_min).max(0.0);
-                let tail_right = (s_max - longer_max).max(0.0);
-
-                if tail_left > tail_right && tail_left > 1.0 {
-                    // Keep the left tail.
-                    result[shorter].start = origin + dir_i * s_min;
-                    result[shorter].end = origin + dir_i * longer_min;
-                    changed = true;
-                } else if tail_right > 1.0 {
-                    // Keep the right tail.
-                    result[shorter].start = origin + dir_i * longer_max;
-                    result[shorter].end = origin + dir_i * s_max;
-                    changed = true;
-                } else {
-                    // Entirely covered: mark for removal (zero length).
-                    result[shorter].end = result[shorter].start;
-                    changed = true;
-                }
-
-                if changed {
-                    break;
-                }
-            }
-            if changed {
-                break;
-            }
-        }
-
-        // Remove zero-length spines.
-        result.retain(|s| (s.end - s.start).length() > 1.0);
-    }
-
-    result
-}
 
 /// Extend each spine colinearly in both directions until it hits the face
 /// boundary. Returns (extension SpineSegment, source spine index) pairs.
@@ -1511,39 +1205,36 @@ fn quad_contained_in_face(
     face_shape: &[Vec<Vec2>],
     min_frac: f64,
 ) -> bool {
-    use crate::inset::signed_area;
+    use crate::geom::inset::signed_area;
 
     let stall_area = signed_area(corners).abs();
     if stall_area < 1e-6 {
         return false;
     }
 
-    let to_path = |pts: &[Vec2]| -> Vec<[f64; 2]> {
-        pts.iter().map(|v| [v.x, v.y]).collect()
-    };
-
-    let stall_path = to_path(corners);
+    let stall_subj = vec![corners.to_vec()];
 
     // Build face as multi-contour (outer CCW + holes CW).
-    let mut face_paths: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut face_paths: Vec<Vec<Vec2>> = Vec::new();
     for (i, contour) in face_shape.iter().enumerate() {
-        let mut p = to_path(contour);
-        if i == 0 {
+        let p = if i == 0 {
             // Outer must be CCW.
-            if signed_area_f64(&p) < 0.0 { p.reverse(); }
+            if signed_area(contour) < 0.0 { contour.iter().rev().copied().collect() }
+            else { contour.clone() }
         } else {
             // Holes must be CW.
-            if signed_area_f64(&p) > 0.0 { p.reverse(); }
-        }
+            if signed_area(contour) > 0.0 { contour.iter().rev().copied().collect() }
+            else { contour.clone() }
+        };
         face_paths.push(p);
     }
 
-    let intersection = stall_path.overlay(&face_paths, OverlayRule::Intersect, FillRule::NonZero);
+    let intersection = boolean::intersect(&stall_subj, &face_paths, FillRule::NonZero);
 
     let mut isect_area = 0.0;
     for shape in &intersection {
         for contour in shape {
-            isect_area += signed_area_f64(contour).abs();
+            isect_area += signed_area(contour).abs();
         }
     }
 
@@ -1558,11 +1249,11 @@ fn quad_contained_in_boundary(corners: &[Vec2; 4], raw_outer: &[Vec2], raw_holes
     let cy = (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4.0;
     let centroid = Vec2::new(cx, cy);
 
-    if !crate::clip::point_in_polygon(&centroid, raw_outer) {
+    if !crate::geom::clip::point_in_polygon(&centroid, raw_outer) {
         return false;
     }
     for hole in raw_holes {
-        if crate::clip::point_in_polygon(&centroid, hole) {
+        if crate::geom::clip::point_in_polygon(&centroid, hole) {
             return false;
         }
     }
@@ -1578,7 +1269,7 @@ fn quad_contained_in_boundary(corners: &[Vec2; 4], raw_outer: &[Vec2], raw_holes
             for j in 0..n {
                 let c = contour[j];
                 let d = contour[(j + 1) % n];
-                if crate::clip::segments_intersect(a, b, c, d) {
+                if crate::geom::clip::segments_intersect(a, b, c, d) {
                     return false;
                 }
             }
@@ -1605,7 +1296,7 @@ fn place_extension_stalls_greedy(
     debug: &DebugToggles,
     tagged_faces: &[TaggedFace],
 ) -> Vec<(StallQuad, usize, usize)> {
-    use crate::clip::polygons_overlap;
+    use crate::geom::clip::polygons_overlap;
 
     // Sort by source primary spine length (longest first), breaking ties
     // by extension spine length.
@@ -2119,7 +1810,7 @@ pub fn generate_from_spines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aisle_graph::auto_generate;
+    use crate::graph::auto_generate;
 
     /// Test helper: create a corridor rectangle with one side along a→b.
     /// The face edge midpoint will lie exactly on this corridor edge.
@@ -2264,7 +1955,7 @@ mod tests {
 
         let (stalls, _, _, faces_out, _, _, islands) =
             generate_from_spines(
-                &crate::aisle_graph::auto_generate(&boundary, &params, &[], &[]),
+                &crate::graph::auto_generate(&boundary, &params, &[], &[]),
                 &boundary, &params, &debug,
             );
 
@@ -2765,7 +2456,7 @@ mod tests {
     /// trace why the rightmost face has no stalls.
     #[test]
     fn test_attempt_boundary_debug() {
-        use crate::generate::generate;
+        use crate::pipeline::generate::generate;
         use crate::types::GenerateInput;
 
         let input = GenerateInput {
@@ -2784,6 +2475,7 @@ mod tests {
             annotations: vec![],
             params: ParkingParams::default(),
             debug: DebugToggles::default(), region_overrides: vec![],
+            stall_modifiers: Vec::new(),
         };
 
         let layout = generate(input.clone());
@@ -2801,7 +2493,7 @@ mod tests {
 
         for (fi, face) in layout.faces.iter().enumerate() {
             let contour = &face.contour;
-            let area = crate::inset::signed_area(contour).abs();
+            let area = crate::geom::inset::signed_area(contour).abs();
             let perimeter: f64 = contour.iter().enumerate().map(|(i, v)| {
                 let next = &contour[(i + 1) % contour.len()];
                 (*next - *v).length()
@@ -2858,7 +2550,7 @@ mod tests {
 
     #[test]
     fn test_slanted_boundary_debug() {
-        use crate::generate::generate;
+        use crate::pipeline::generate::generate;
         use crate::types::GenerateInput;
 
         let input = GenerateInput {
@@ -2877,6 +2569,7 @@ mod tests {
             annotations: vec![],
             params: ParkingParams::default(),
             debug: DebugToggles::default(), region_overrides: vec![],
+            stall_modifiers: Vec::new(),
         };
 
         let layout = generate(input.clone());
@@ -2895,7 +2588,7 @@ mod tests {
         // Examine each face.
         for (fi, face) in layout.faces.iter().enumerate() {
             let contour = &face.contour;
-            let area = crate::inset::signed_area(contour).abs();
+            let area = crate::geom::inset::signed_area(contour).abs();
             eprintln!("\n  face {}: {} vertices, area={:.1}", fi, contour.len(), area);
             for (vi, v) in contour.iter().enumerate() {
                 eprintln!("    v{}: ({:.1}, {:.1})", vi, v.x, v.y);
@@ -2946,7 +2639,7 @@ mod tests {
 
     #[test]
     fn test_drive_line_horizontal_with_hole() {
-        use crate::generate::generate;
+        use crate::pipeline::generate::generate;
         use crate::types::{GenerateInput, DriveLine};
 
         let input = GenerateInput {
@@ -2974,6 +2667,7 @@ mod tests {
             annotations: vec![],
             params: ParkingParams::default(),
             debug: DebugToggles::default(), region_overrides: vec![],
+            stall_modifiers: Vec::new(),
         };
 
         let layout = generate(input);
@@ -3143,7 +2837,7 @@ mod tests {
     /// annotation on an auto-generated graph (simulating the UI flow).
     #[test]
     fn test_two_way_oriented_annotation_e2e() {
-        use crate::generate::generate;
+        use crate::pipeline::generate::generate;
         use crate::types::{GenerateInput, DriveLine};
 
         let input = GenerateInput {
@@ -3175,6 +2869,7 @@ mod tests {
             ],
             params: ParkingParams::default(),
             debug: DebugToggles::default(), region_overrides: vec![],
+            stall_modifiers: Vec::new(),
         };
 
         let layout = generate(input);

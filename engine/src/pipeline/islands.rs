@@ -6,12 +6,9 @@
 //! stalls from each face polygon; the residual gaps become landscape
 //! island contours.
 
-use crate::face::signed_area_f64;
-use crate::inset::signed_area;
+use crate::geom::boolean::{self, FillRule};
+use crate::geom::inset::signed_area;
 use crate::types::*;
-use i_overlay::core::fill_rule::FillRule;
-use i_overlay::core::overlay_rule::OverlayRule;
-use i_overlay::float::single::SingleFloatOverlay;
 
 pub(crate) fn stall_key(s: &StallQuad) -> [u64; 8] {
     [
@@ -96,20 +93,18 @@ pub(crate) fn compute_islands(
     all_stalls: &[StallQuad],
     min_area: f64,
 ) -> Vec<Island> {
-    let to_path = |pts: &[Vec2]| -> Vec<[f64; 2]> {
-        pts.iter().map(|v| [v.x, v.y]).collect()
-    };
     let ensure_ccw = |pts: &[Vec2]| -> Vec<Vec2> {
         if signed_area(pts) >= 0.0 { pts.to_vec() }
         else { pts.iter().rev().copied().collect() }
     };
-    let to_vec2 = |c: &Vec<[f64; 2]>| -> Vec<Vec2> {
-        c.iter().map(|p| Vec2::new(p[0], p[1])).collect()
+    let ensure_cw = |pts: &[Vec2]| -> Vec<Vec2> {
+        if signed_area(pts) <= 0.0 { pts.to_vec() }
+        else { pts.iter().rev().copied().collect() }
     };
 
-    let all_stall_paths: Vec<Vec<[f64; 2]>> = all_stalls.iter()
+    let all_stall_paths: Vec<Vec<Vec2>> = all_stalls.iter()
         .filter(|s| s.kind != StallKind::Island)
-        .map(|s| to_path(&s.corners))
+        .map(|s| s.corners.to_vec())
         .collect();
 
     let mut islands = Vec::new();
@@ -117,11 +112,9 @@ pub(crate) fn compute_islands(
     for (face_idx, shape) in faces.iter().enumerate() {
         if shape.is_empty() || shape[0].len() < 3 { continue; }
 
-        let mut subj: Vec<Vec<[f64; 2]>> = vec![to_path(&ensure_ccw(&shape[0]))];
+        let mut subj: Vec<Vec<Vec2>> = vec![ensure_ccw(&shape[0])];
         for hole in shape.iter().skip(1) {
-            let mut h = to_path(hole);
-            if signed_area_f64(&h) > 0.0 { h.reverse(); }
-            subj.push(h);
+            subj.push(ensure_cw(hole));
         }
 
         if all_stall_paths.is_empty() {
@@ -132,12 +125,12 @@ pub(crate) fn compute_islands(
             continue;
         }
 
-        let raw = subj.overlay(&all_stall_paths, OverlayRule::Difference, FillRule::NonZero);
+        let raw = boolean::difference(&subj, &all_stall_paths, FillRule::NonZero);
 
         for sc in raw {
             if sc.is_empty() { continue; }
-            let contour = ensure_ccw(&to_vec2(&sc[0]));
-            let holes: Vec<Vec<Vec2>> = sc[1..].iter().map(|h| to_vec2(h)).collect();
+            let contour = ensure_ccw(&sc[0]);
+            let holes: Vec<Vec<Vec2>> = sc[1..].iter().cloned().collect();
             let net = signed_area(&contour).abs()
                 - holes.iter().map(|h| signed_area(h).abs()).sum::<f64>();
             if net < min_area { continue; }
