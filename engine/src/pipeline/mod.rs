@@ -13,6 +13,8 @@ pub mod filter;
 pub mod generate;
 pub mod islands;
 pub mod placement;
-pub mod provenance;
 pub mod spines;
 pub mod tagging;
+
+#[cfg(test)]
+mod integration_tests;

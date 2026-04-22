@@ -1,19 +1,23 @@
-//! Legacy scratchpad of face-pipeline integration tests. All of the
-//! production code that used to live here has been extracted into
-//! `pipeline::{bays, tagging, spines, placement, filter, islands,
-//! generate}`; this file is now test-only and `#[cfg(test)]`-gated at
-//! the `mod face` declaration in `lib.rs`. New coverage should go into
-//! its module's own `#[cfg(test)] mod tests` block (or into the native
-//! data-driven harness under `engine/tests/`) rather than here.
+//! Cross-module integration tests for the pipeline. Each test
+//! exercises a multi-stage path — typically `auto_generate` feeding
+//! `generate_from_spines`, or a hand-assembled boundary feeding
+//! `extract_faces` + `compute_face_spines` — and asserts on emergent
+//! properties (stall counts, spine counts, face winding) that no
+//! single pipeline stage would catch in isolation.
+//!
+//! Lives under `pipeline/` so it can call `pub(crate)` helpers from
+//! any sibling stage directly. Gated at the `mod integration_tests`
+//! declaration in `pipeline/mod.rs`; the whole file only compiles
+//! under `cargo test`.
 
 use crate::geom::clip::{clip_stalls_to_boundary, remove_conflicting_stalls};
 use crate::geom::inset::signed_area;
 use crate::geom::poly::{point_in_face, point_to_segment_dist};
+use crate::graph::auto_generate;
 use crate::pipeline::bays::extract_faces;
 use crate::pipeline::corridors::{
-    deduplicate_corridors, generate_miter_fills, merge_corridor_shapes,
+    corridor_polygon, deduplicate_corridors, generate_miter_fills, merge_corridor_shapes,
 };
-use crate::pipeline::corridors::corridor_polygon;
 use crate::pipeline::filter::clip_stalls_to_faces;
 use crate::pipeline::generate::generate_from_spines;
 use crate::pipeline::islands::{compute_islands, mark_island_stalls, stall_center, stall_key};
@@ -24,11 +28,8 @@ use crate::pipeline::spines::{
 use crate::pipeline::tagging::{classify_face_edges, is_boundary_face};
 use crate::types::*;
 
-
-#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::auto_generate;
 
     /// Test helper: create a corridor rectangle with one side along a→b.
     /// The face edge midpoint will lie exactly on this corridor edge.

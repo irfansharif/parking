@@ -6,20 +6,16 @@
 //!   geom        — polygon primitives, boolean ops, inset, bezier
 //!   graph       — drive-aisle graph auto-gen + region decomposition
 //!   annotations — substrate-keyed edits that survive regen
-//!   pipeline    — the nine-stage pipeline itself (corridors, bays,
-//!                 provenance, spines, placement, islands) and the
-//!                 `generate` orchestrator
+//!   pipeline    — the nine-stage pipeline itself (bays, corridors,
+//!                 filter, islands, placement, spines, tagging) and
+//!                 the `generate` orchestrator
 //!   skeleton    — weighted straight skeleton
-//!   face        — legacy face-computation module, partially migrated
-//!                 into `pipeline/*`; slated for dissolution.
 //!   debug       — human-readable dumps for the wasm debug route and
 //!                 the native test harness
 //!   wasm        — `#[wasm_bindgen]` entry points
 
 pub mod annotations;
 pub mod debug;
-#[cfg(test)]
-mod face;
 pub mod geom;
 pub mod graph;
 pub mod pipeline;

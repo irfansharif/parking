@@ -7,9 +7,7 @@
 //!   - Aisle { corridor_idx, interior, travel_dir, is_two_way_oriented }
 //!
 //! Works by point-sampling each face edge against the merged aisle
-//! polygons and against each per-edge corridor rectangle. See
-//! `pipeline::provenance` for a pre-split alternative using
-//! `EdgeTagIndex`; that approach is not yet wired.
+//! polygons and against each per-edge corridor rectangle.
 
 use crate::geom::poly::point_to_segment_dist;
 use crate::types::*;
