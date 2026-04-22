@@ -73,6 +73,7 @@ pub fn execute(ctx: &mut FixtureCtx, command: &str, body: &str) -> Result<Outcom
         "faces" => faces_cmd(ctx, rest),
         "annotation-json" => annotation_json(ctx, body),
         "annotations" => annotations_cmd(ctx),
+        "stall-modifier-json" => stall_modifier_json(ctx, body),
         "snapshot" => snapshot(ctx, rest),
         _ => Err(format!("unknown directive: {}", verb)),
     }
@@ -340,6 +341,25 @@ fn annotation_json(ctx: &mut FixtureCtx, body: &str) -> Result<Outcome, String> 
     ctx.input.annotations.extend(added);
     Ok(Outcome {
         output: format!("annotation-json: +{}", count),
+        ..Default::default()
+    })
+}
+
+fn stall_modifier_json(ctx: &mut FixtureCtx, body: &str) -> Result<Outcome, String> {
+    // Body is a JSON array of StallModifier:
+    //   [{"polyline":[{"x":50,"y":60},{"x":150,"y":60}],"kind":"Suppressed"}]
+    // Single-point modifiers (suppress at a location) use a one-element
+    // polyline.
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Err("stall-modifier-json body is empty".to_string());
+    }
+    let added: Vec<parking_lot_engine::types::StallModifier> =
+        serde_json::from_str(trimmed).map_err(|e| format!("stall-modifier-json parse: {}", e))?;
+    let count = added.len();
+    ctx.input.stall_modifiers.extend(added);
+    Ok(Outcome {
+        output: format!("stall-modifier-json: +{}", count),
         ..Default::default()
     })
 }

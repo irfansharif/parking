@@ -150,3 +150,8 @@ fn graph_cross_aisle() {
 fn annotation_perimeter_direction() {
     run_fixture(&testdata_dir().join("annotation-perimeter-direction.txt"));
 }
+
+#[test]
+fn stall_modifier_suppress() {
+    run_fixture(&testdata_dir().join("stall-modifier-suppress.txt"));
+}

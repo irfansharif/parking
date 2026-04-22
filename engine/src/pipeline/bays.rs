@@ -51,3 +51,27 @@ fn ensure_ccw(pts: &[Vec2]) -> Vec<Vec2> {
         pts.iter().rev().copied().collect()
     }
 }
+
+/// Normalize winding for multi-contour skeleton input. Outer contour
+/// (index 0) → CCW (positive signed area); hole contours (index 1+)
+/// → CW (negative signed area). Skips contours with fewer than 3
+/// vertices. Used by spine generation before feeding a face to the
+/// weighted straight-skeleton solver.
+pub(crate) fn normalize_face_winding(shape: &[Vec<Vec2>]) -> Vec<Vec<Vec2>> {
+    shape
+        .iter()
+        .enumerate()
+        .filter_map(|(ci, c)| {
+            if c.len() < 3 {
+                return None;
+            }
+            let sa = signed_area(c);
+            let needs_reverse = (ci == 0 && sa < 0.0) || (ci > 0 && sa > 0.0);
+            Some(if needs_reverse {
+                c.iter().rev().copied().collect()
+            } else {
+                c.clone()
+            })
+        })
+        .collect()
+}

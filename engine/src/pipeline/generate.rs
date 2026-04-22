@@ -1,10 +1,29 @@
 use crate::annotations::{apply_annotations, resolve_regions_for_frames, ResolvedRegion};
-use crate::graph::{auto_generate, compute_inset_d, decompose_regions, derive_raw_holes, derive_raw_outer, intersect_line_polygon, merge_with_auto, subtract_intervals, Region};
-use crate::geom::clip::point_in_polygon;
-use crate::face::generate_from_spines;
+use crate::geom::clip::{clip_stalls_to_boundary, point_in_polygon, remove_conflicting_stalls};
 use crate::geom::inset::{inset_polygon, signed_area};
+use crate::geom::poly::{point_in_or_on_face, simplify_contour};
+use crate::graph::{auto_generate, compute_inset_d, decompose_regions, derive_raw_holes, derive_raw_outer, intersect_line_polygon, merge_with_auto, subtract_intervals, Region};
+use crate::pipeline::bays::{extract_faces, normalize_face_winding};
+use crate::pipeline::corridors::{
+    deduplicate_corridors, generate_miter_fills, merge_corridor_shapes,
+};
+use crate::pipeline::filter::clip_stalls_to_faces;
+use crate::pipeline::islands::{compute_islands, mark_island_stalls, stall_key};
+use crate::pipeline::placement::{
+    place_extension_stalls_greedy, place_stalls_on_spines,
+};
+use crate::pipeline::spines::{
+    compute_face_spines, dedup_overlapping_spines, extend_spines_to_faces,
+    merge_collinear_spines,
+};
+use crate::pipeline::tagging::{classify_face_edges, tag_face_edges};
+use crate::skeleton;
 use crate::types::*;
 use geo::{Coord, LineString};
+
+/// Minimum number of stalls a spine (including extensions) must have
+/// to survive the short-segment filter.
+const MIN_STALLS_PER_SPINE: usize = 3;
 
 fn region_pole(poly: &[Vec2], holes: &[Vec<Vec2>]) -> Vec2 {
     if poly.len() < 3 {
@@ -93,7 +112,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     // corridors extend from the user-specified endpoints (which lie outside
     // the boundary) through the perimeter aisle to the interior, so they
     // cover the boundary-face stalls at each entrance point.
-    let stalls = if !input.drive_lines.is_empty() {
+    let mut stalls = if !input.drive_lines.is_empty() {
         let hw = input.params.aisle_width;
         let drive_corridors: Vec<Vec<Vec2>> = input.drive_lines.iter()
             .filter_map(|dl| {
@@ -121,7 +140,18 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         stalls
     };
 
-    let total = stalls.len();
+    // §1.4 stall modifiers post-pass: retype overlapping stalls. The
+    // match radius scales with stall footprint so a polyline drawn over
+    // a row of stalls reliably catches them without forcing users to
+    // draw pixel-perfect lines.
+    if !input.stall_modifiers.is_empty() {
+        let radius = input.params.stall_depth * 0.5;
+        crate::pipeline::filter::apply_stall_modifiers(&mut stalls, &input.stall_modifiers, radius);
+    }
+
+    // Suppressed stalls stay in the layout (so downstream tools can see
+    // where suppression occurred) but don't count toward total_stalls.
+    let total = stalls.iter().filter(|s| s.kind != StallKind::Suppressed).count();
 
     // Always compute region debug info. When no separators exist, the
     // entire lot is a single region with the global aisle angle/offset.
@@ -605,4 +635,380 @@ mod tests {
         assert!(!point_in_polygon(&center, &hole),
             "pole ({}, {}) must NOT be inside building hole", center.x, center.y);
     }
+}
+
+
+
+/// Generate stalls from positive-space face extraction + per-edge spine shifting.
+/// Returns (stalls, corridor_polygons, spine_lines, faces, miter_fills, skeleton_debugs, islands).
+pub fn generate_from_spines(
+    graph: &DriveAisleGraph,
+    boundary: &Polygon,
+    params: &ParkingParams,
+    debug: &DebugToggles,
+) -> (Vec<StallQuad>, Vec<Vec<Vec2>>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>, Vec<SkeletonDebug>, Vec<crate::types::Island>) {
+    let stall_angle_rad = params.stall_angle_deg.to_radians();
+    let effective_depth = params.stall_depth * stall_angle_rad.sin()
+        + stall_angle_rad.cos() * params.stall_width / 2.0;
+    let inset_d = compute_inset_d(params);
+    let raw_outer = derive_raw_outer(&boundary.outer, inset_d, params.site_offset);
+    let raw_holes = derive_raw_holes(&boundary.holes, inset_d);
+
+    // Build deduplicated corridor rectangles + miter wedge fills, then
+    // boolean-union them into merged shapes (preserving holes for loops).
+    let dedup_corridors_with_flags = deduplicate_corridors(graph);
+    let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors_with_flags.iter().map(|(p, _, _)| p.clone()).collect();
+    let two_way_oriented_dirs: Vec<Option<Vec2>> = {
+        let mut seen = std::collections::HashSet::new();
+        let mut dirs = Vec::new();
+        for edge in &graph.edges {
+            let key = if edge.start < edge.end {
+                (edge.start, edge.end)
+            } else {
+                (edge.end, edge.start)
+            };
+            if !seen.insert(key) {
+                continue;
+            }
+            if edge.direction == AisleDirection::TwoWayOriented {
+                dirs.push(Some((graph.vertices[edge.end] - graph.vertices[edge.start]).normalize()));
+            } else {
+                dirs.push(None);
+            }
+        }
+        dirs
+    };
+    let miter_fills = generate_miter_fills(graph, debug);
+    let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, graph, debug);
+
+    // Flatten outer contours for rendering (aisle polygon overlay).
+    let aisle_polygons: Vec<Vec<Vec2>> = merged_corridors
+        .iter()
+        .filter(|shape| !shape.is_empty())
+        .map(|shape| shape[0].clone())
+        .collect();
+
+    // Extract faces by subtracting the merged corridor union from the
+    // boundary. Since the union resolves all internal seams between
+    // corridor rects and miter fills, no sliver artifacts remain.
+    let faces = extract_faces(&raw_outer, &merged_corridors, &raw_holes);
+
+    // Tag each face edge with its source corridor/wall for provenance.
+    // Indexed by face_idx (parallel to `faces`); empty/small faces get a
+    // default empty TaggedFace.
+    let tagged_faces: Vec<TaggedFace> = faces.iter()
+        .map(|shape| {
+            if !shape.is_empty() && shape[0].len() >= 3 {
+                tag_face_edges(shape, &merged_corridors, &dedup_corridors_with_flags, &two_way_oriented_dirs)
+            } else {
+                TaggedFace { edges: vec![], hole_edges: vec![], is_boundary: true, wall_edge_indices: vec![] }
+            }
+        })
+        .collect();
+
+    // Collect spines from all faces, then merge collinear segments across
+    // face boundaries so stalls flow continuously along shared aisle edges.
+    let mut raw_spines = Vec::new();
+    let mut skeleton_debugs = Vec::new();
+    // Track which faces produced any spine candidates (before filtering).
+    // Faces with spine candidates were wide enough for stalls; faces without
+    // are genuinely too narrow and should become islands if they have no stalls.
+    let mut faces_with_spines = std::collections::HashSet::new();
+    for (face_idx, shape) in faces.iter().enumerate() {
+        // Optionally collect skeleton debug data for visualization.
+        // Use multi-contour skeleton so arcs stay within the face.
+        if debug.skeleton_debug && !shape.is_empty() && shape[0].len() >= 3 {
+            let mut normalized = normalize_face_winding(shape);
+            if debug.face_simplification {
+                normalized = normalized.into_iter()
+                    .map(|c| simplify_contour(&c, 0.035))
+                    .filter(|c| c.len() >= 3)
+                    .collect();
+            }
+            // Build edge weights matching the spine computation: aisle-facing
+            // edges shrink (1.0), boundary edges stay fixed (0.0).
+            let debug_weights: Vec<f64> = if face_idx < tagged_faces.len() && !debug.face_simplification {
+                let tf = &tagged_faces[face_idx];
+                // Match each normalized contour edge to its closest tagged edge.
+                let mut weights = Vec::new();
+                let classify_weights = |contour: &[Vec2], tagged_edges: &[FaceEdge]| -> Vec<f64> {
+                    let n = contour.len();
+                    (0..n).map(|i| {
+                        let j = (i + 1) % n;
+                        let mid = (contour[i] + contour[j]) * 0.5;
+                        let mut best_dist = f64::INFINITY;
+                        let mut best_aisle = false;
+                        for te in tagged_edges {
+                            let te_mid = (te.start + te.end) * 0.5;
+                            let d = (te_mid - mid).length();
+                            if d < best_dist {
+                                best_dist = d;
+                                best_aisle = matches!(te.source, EdgeSource::Aisle { .. });
+                            }
+                        }
+                        if best_aisle { 1.0 } else { 0.0 }
+                    }).collect()
+                };
+                if !normalized.is_empty() {
+                    weights.extend(classify_weights(&normalized[0], &tf.edges));
+                }
+                for (ci, contour) in normalized.iter().enumerate().skip(1) {
+                    let hi = ci - 1;
+                    if hi < tf.hole_edges.len() {
+                        weights.extend(classify_weights(contour, &tf.hole_edges[hi]));
+                    } else {
+                        weights.extend(vec![0.0; contour.len()]);
+                    }
+                }
+                weights
+            } else {
+                normalized.iter().flat_map(|contour| {
+                    let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors_with_flags, debug.edge_classification);
+                    classified.into_iter().map(|(facing, _, _)| {
+                        if facing { 1.0 } else { 0.0 }
+                    })
+                }).collect()
+            };
+            let sk = skeleton::compute_skeleton_multi(&normalized, &debug_weights);
+            let sources: Vec<Vec2> = normalized.iter().flat_map(|c| c.iter().copied()).collect();
+            skeleton_debugs.push(SkeletonDebug {
+                arcs: sk.arcs.iter()
+                    .filter(|&&(a, b)| {
+                        point_in_or_on_face(a, shape, 0.5)
+                            && point_in_or_on_face(b, shape, 0.5)
+                    })
+                    .map(|&(a, b)| [a, b])
+                    .collect(),
+                nodes: sk.nodes.iter().copied()
+                    .filter(|n| point_in_or_on_face(*n, shape, 0.5))
+                    .collect(),
+                split_nodes: sk.split_nodes.iter().copied()
+                    .filter(|n| point_in_or_on_face(*n, shape, 0.5))
+                    .collect(),
+                sources,
+            });
+        }
+        let face_is_boundary = tagged_faces[face_idx].is_boundary;
+        let tagged_ref = Some(&tagged_faces[face_idx]);
+        let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors_with_flags, face_is_boundary, params, debug, &two_way_oriented_dirs, tagged_ref);
+        if !face_spines.is_empty() {
+            faces_with_spines.insert(face_idx);
+        }
+        for s in &mut face_spines {
+            s.face_idx = face_idx;
+        }
+        let face_spines = if debug.spine_dedup {
+            dedup_overlapping_spines(face_spines, 2.0)
+        } else {
+            face_spines
+        };
+        raw_spines.extend(face_spines);
+    }
+    let all_spines = if debug.spine_merging {
+        merge_collinear_spines(raw_spines, 1.0)
+    } else {
+        raw_spines
+    };
+
+    let all_spines: Vec<SpineSegment> = if debug.short_spine_filter {
+        let min_spine_len = effective_depth;
+        all_spines
+            .into_iter()
+            .filter(|s| (s.end - s.start).length() >= min_spine_len)
+            .collect()
+    } else {
+        all_spines
+    };
+
+    // Compute extension spines early so we know the full extended length
+    // of each primary spine for centering. The extensions themselves will
+    // be used later for greedy stall placement.
+    let ext_spines_with_src = if debug.spine_extensions {
+        extend_spines_to_faces(&all_spines, &faces, effective_depth, params)
+    } else {
+        vec![]
+    };
+
+    // Place stalls on merged spines (tagged with face_idx + spine_idx).
+    // Pass extension spines so centering uses the full projected range.
+    let ext_ref = if ext_spines_with_src.is_empty() { None } else { Some(ext_spines_with_src.as_slice()) };
+    let (tagged_stalls_3, spine_shifts) = place_stalls_on_spines(
+        &all_spines, params, debug.stall_centering, ext_ref,
+    );
+
+    // Convert to (StallQuad, usize) for clipping, preserving spine_idx.
+    let tagged_stalls: Vec<(StallQuad, usize)> = tagged_stalls_3.iter()
+        .map(|(s, fi, _)| (s.clone(), *fi))
+        .collect();
+
+    // Clip stalls to face interiors. A stall that protrudes past the face
+    // boundary into a corridor (at miter-fill corners) is removed.
+    let tagged_stalls = if debug.stall_face_clipping {
+        clip_stalls_to_faces(tagged_stalls, &faces)
+    } else {
+        tagged_stalls
+    };
+
+    // Apply boundary clipping and conflict removal before island computation
+    // so that corner gaps from removed conflicting stalls appear as islands.
+    let tagged_stalls = if debug.boundary_clipping {
+        clip_stalls_to_boundary(tagged_stalls, &raw_outer, &raw_holes)
+    } else {
+        tagged_stalls
+    };
+    let tagged_stalls = if debug.conflict_removal {
+        // Build per-stall spine lengths by matching surviving stalls back
+        // to their spine_idx via corner identity.
+        let stall_spine_lengths: Vec<f64> = {
+            let key_to_spine_len: std::collections::HashMap<[u64; 8], f64> = tagged_stalls_3
+                .iter()
+                .map(|(s, _, si)| {
+                    let spine = &all_spines[*si];
+                    (stall_key(s), (spine.end - spine.start).length())
+                })
+                .collect();
+            tagged_stalls
+                .iter()
+                .map(|(s, _)| *key_to_spine_len.get(&stall_key(s)).unwrap_or(&0.0))
+                .collect()
+        };
+        // Build per-face boundary flags.
+        let face_boundary: Vec<bool> = tagged_faces.iter().map(|tf| tf.is_boundary).collect();
+        remove_conflicting_stalls(tagged_stalls, &stall_spine_lengths, &face_boundary)
+    } else {
+        tagged_stalls
+    };
+
+    // Rebuild the 3-tuple list from surviving stalls to compute envelopes.
+    // Match surviving stalls back to their spine_idx by corner identity.
+    let surviving: std::collections::HashSet<[u64; 8]> = tagged_stalls.iter()
+        .map(|(s, _)| stall_key(s))
+        .collect();
+    let surviving_3: Vec<(StallQuad, usize, usize)> = tagged_stalls_3.into_iter()
+        .filter(|(s, _, _)| surviving.contains(&stall_key(s)))
+        .collect();
+
+    // --- Spine extension phase ---
+    // Extend each spine colinearly to the face boundary and place additional
+    // stalls on the extensions. Stalls are placed greedily in longest-spine-
+    // first order: each candidate is checked against all already-placed stalls
+    // (primary + earlier extensions) and silently skipped on conflict.
+    let (ext_stalls_tagged, ext_spines, ext_spine_src_indices) = if debug.spine_extensions {
+        let ext_tagged = place_extension_stalls_greedy(
+            &ext_spines_with_src, &all_spines, &tagged_stalls, &spine_shifts, &faces, &raw_outer, &raw_holes, &merged_corridors, params, debug, &tagged_faces,
+        );
+        let (ext_spines, ext_spine_src_indices): (Vec<SpineSegment>, Vec<usize>) =
+            ext_spines_with_src.into_iter().unzip();
+        (ext_tagged, ext_spines, ext_spine_src_indices)
+    } else {
+        (vec![], vec![], vec![])
+    };
+
+    // Merge primary and extension stalls. Extension stalls carry their
+    // source primary spine_idx so they join the same strip envelope.
+    let ext_stalls_tagged_2: Vec<(StallQuad, usize)> = ext_stalls_tagged
+        .iter()
+        .map(|(s, fi, _)| (s.clone(), *fi))
+        .collect();
+    let mut all_tagged = tagged_stalls;
+    all_tagged.extend(ext_stalls_tagged_2);
+
+    // Build strip envelopes from primary + extension stalls grouped by spine.
+    let mut all_surviving_3 = surviving_3;
+    all_surviving_3.extend(ext_stalls_tagged);
+
+    // --- Short segment filter ---
+    // Remove all stalls belonging to spines with fewer than
+    // MIN_STALLS_PER_SPINE stalls total (primary + extension combined).
+    if debug.short_segment_filter {
+        let mut counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for (_, _, spine_idx) in &all_surviving_3 {
+            *counts.entry(*spine_idx).or_insert(0) += 1;
+        }
+        let keep_spines: std::collections::HashSet<usize> = counts
+            .into_iter()
+            .filter(|(_, count)| *count >= MIN_STALLS_PER_SPINE)
+            .map(|(idx, _)| idx)
+            .collect();
+        all_surviving_3.retain(|(_, _, spine_idx)| keep_spines.contains(spine_idx));
+        let surviving_keys: std::collections::HashSet<[u64; 8]> = all_surviving_3
+            .iter()
+            .map(|(s, _, _)| stall_key(s))
+            .collect();
+        all_tagged.retain(|(s, _)| surviving_keys.contains(&stall_key(s)));
+    }
+
+    // --- Island stall marking ---
+    if params.island_stall_interval > 0 {
+        mark_island_stalls(
+            &mut all_surviving_3, &mut all_tagged,
+            &all_spines, params,
+        );
+    }
+
+    let all_stalls: Vec<StallQuad> = all_tagged.iter().map(|(s, _)| s.clone()).collect();
+    let islands = compute_islands(&faces, &all_stalls, 10.0);
+
+    // Build spine lines for visualization: primary + extension.
+    // If the short-segment filter is active, only include spines that
+    // still have stalls.
+    let kept_spines: std::collections::HashSet<usize> = if debug.short_segment_filter {
+        all_surviving_3.iter().map(|(_, _, si)| *si).collect()
+    } else {
+        (0..all_spines.len()).collect()
+    };
+    let mut spine_lines: Vec<SpineLine> = all_spines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| kept_spines.contains(i))
+        .map(|(_, s)| SpineLine {
+            start: s.start,
+            end: s.end,
+            normal: s.outward_normal,
+            is_extension: false,
+        })
+        .collect();
+    spine_lines.extend(
+        ext_spines.iter().zip(ext_spine_src_indices.iter())
+            .filter(|(_, src_idx)| kept_spines.contains(src_idx))
+            .map(|(s, _)| SpineLine {
+                start: s.start,
+                end: s.end,
+                normal: s.outward_normal,
+                is_extension: true,
+            })
+    );
+
+    let face_list: Vec<Face> = faces
+        .iter()
+        .enumerate()
+        .filter(|(_, shape)| !shape.is_empty() && shape[0].len() >= 3)
+        .map(|(face_idx, _shape)| {
+            let tf = &tagged_faces[face_idx];
+            let source_label = |e: &FaceEdge| -> String {
+                match &e.source {
+                    EdgeSource::Wall => "wall".to_string(),
+                    EdgeSource::Aisle { interior: true, .. } => "interior".to_string(),
+                    EdgeSource::Aisle { interior: false, .. } => "perimeter".to_string(),
+                }
+            };
+            let contour: Vec<Vec2> = tf.edges.iter().map(|e| e.start).collect();
+            let edge_sources: Vec<String> = tf.edges.iter().map(&source_label).collect();
+            let holes: Vec<Vec<Vec2>> = tf.hole_edges.iter()
+                .map(|hole| hole.iter().map(|e| e.start).collect())
+                .collect();
+            let hole_edge_sources: Vec<Vec<String>> = tf.hole_edges.iter()
+                .map(|hole| hole.iter().map(&source_label).collect())
+                .collect();
+            Face {
+                contour,
+                holes,
+                is_boundary: tf.is_boundary,
+                edge_sources,
+                hole_edge_sources,
+            }
+        })
+        .collect();
+
+    (all_stalls, aisle_polygons, spine_lines, face_list, miter_fills, skeleton_debugs, islands)
 }

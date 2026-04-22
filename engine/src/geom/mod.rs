@@ -9,3 +9,4 @@ pub mod bezier;
 pub mod boolean;
 pub mod clip;
 pub mod inset;
+pub mod poly;

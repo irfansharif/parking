@@ -18,7 +18,8 @@
 
 pub mod annotations;
 pub mod debug;
-pub mod face;
+#[cfg(test)]
+mod face;
 pub mod geom;
 pub mod graph;
 pub mod pipeline;
