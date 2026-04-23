@@ -1,0 +1,63 @@
+# Reproduces the default layout the app ships with: an irregular
+# quadrilateral boundary with a rectangular hole and three drive lines.
+# Prior to the entrance-on-face filter, corners where the face edge
+# bends away from the spine produced stalls whose entrances dangled
+# past the face boundary into an adjacent bay (see the first-quadrant
+# corner of the outer boundary).
+
+polygon outer
+76.30,0
+692.14,0
+782.80,654.85
+168.78,654.85
+----
+polygon outer: 4 vertices
+
+polygon hole
+394.53,251.80
+611.14,251.80
+613.91,512.33
+394.53,512.33
+----
+hole: 4 vertices
+
+drive-line
+930.76,381.06
+-42.60,512.33
+----
+drive-line: 930.76,381.06 -> -42.60,512.33
+
+drive-line partitions
+198.60,-53.66
+475.79,349.25
+----
+drive-line: 198.60,-53.66 -> 475.79,349.25 partitions
+
+drive-line partitions
+446.56,335.61
+930.76,135.52
+----
+drive-line: 446.56,335.61 -> 930.76,135.52 partitions
+
+set stall_angle_deg=45
+----
+set stall_angle_deg=45
+
+set stalls_per_face=29
+----
+set stalls_per_face=29
+
+set use_regions=true
+----
+set use_regions=true
+
+set min_stalls_per_spine=3
+----
+set min_stalls_per_spine=3
+
+generate
+----
+total_stalls: 859
+
+snapshot
+----

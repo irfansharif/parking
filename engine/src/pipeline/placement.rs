@@ -7,7 +7,7 @@
 
 use crate::geom::poly::ray_hit_face_edge;
 use crate::pipeline::filter::{
-    quad_contained_in_boundary, quad_contained_in_face, shrink_toward_centroid,
+    quad_fully_in_face, shrink_toward_centroid,
 };
 use crate::types::*;
 
@@ -324,8 +324,6 @@ pub(crate) fn place_extension_stalls_greedy(
     primary_stalls: &[(StallQuad, usize)],
     primary_shifts: &[f64],
     faces: &[Vec<Vec<Vec2>>],
-    raw_outer: &[Vec2],
-    raw_holes: &[Vec<Vec2>],
     _merged_corridors: &[Vec<Vec<Vec2>>],
     params: &ParkingParams,
     debug: &DebugToggles,
@@ -369,21 +367,12 @@ pub(crate) fn place_extension_stalls_greedy(
         for (mut quad, face_idx, _) in candidates {
             quad.kind = StallKind::Extension;
 
-            // Face containment: boolean intersect stall with its face.
-            // Reject if less than 85% of the stall area is inside.
             if debug.stall_face_clipping && face_idx < faces.len() && !faces[face_idx].is_empty() {
-                if !quad_contained_in_face(&quad.corners, &faces[face_idx], 0.85) {
+                if !quad_fully_in_face(&quad.corners, &faces[face_idx]) {
                     continue;
                 }
             }
 
-            // Boundary containment: centroid inside outer, no stall edge
-            // crosses outer or hole edges.
-            if debug.boundary_clipping {
-                if !quad_contained_in_boundary(&quad.corners, raw_outer, raw_holes) {
-                    continue;
-                }
-            }
             //
             // Corner check: rays from p2 (dir p1→p2) and p3 (dir p0→p3).
             // Both must hit the same face boundary edge. Origins are

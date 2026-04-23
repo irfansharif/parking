@@ -1,4 +1,4 @@
-.PHONY: build-engine bindings dev test test-engine test-ui test-update tsc clean
+.PHONY: build-engine bindings dev test test-engine tsc clean
 
 # Regenerate the TS type bindings (ts-rs-derived) consumed by the UI.
 # Kept as its own target so `cargo test` isn't serialized behind the
@@ -22,19 +22,7 @@ test-engine:
 tsc: bindings
 	cd ui && npx tsc --noEmit
 
-# Full UI test run: browser-side Playwright fixtures (the one
-# remaining fixture covers render-layer toggles that engine tests
-# can't).
-test-ui: build-engine
-	cd ui && npx vite build
-	npx playwright test
-
-# Belt-and-suspenders: run every check in the repo.
-test: test-engine tsc test-ui
-
-test-update: build-engine
-	cd ui && npx vite build
-	UPDATE_SNAPSHOTS=1 npx playwright test --update-snapshots $(if $(GREP),--grep "$(GREP)",)
+test: test-engine tsc
 
 clean:
 	rm -rf engine/target ui/src/wasm ui/dist ui/node_modules

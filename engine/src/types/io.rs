@@ -43,6 +43,15 @@ pub struct ParkingParams {
     pub use_regions: bool,
     #[serde(default)]
     pub island_stall_interval: u32,
+    /// Minimum stall count for a spine (primary + extensions combined)
+    /// to survive the short-segment filter. 1 is an effective no-op —
+    /// every spine with any stall meets the threshold.
+    #[serde(default = "default_min_stalls_per_spine")]
+    pub min_stalls_per_spine: u32,
+}
+
+fn default_min_stalls_per_spine() -> u32 {
+    3
 }
 
 impl ParkingParams {
@@ -75,6 +84,7 @@ impl Default for ParkingParams {
             stalls_per_face: 15,
             use_regions: false,
             island_stall_interval: 8,
+            min_stalls_per_spine: 3,
         }
     }
 }
@@ -99,7 +109,7 @@ pub struct DebugToggles {
     pub spike_removal: bool,
     #[serde(default)]
     pub contour_simplification: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub hole_filtering: bool,
 
     // Spine generation
@@ -111,10 +121,12 @@ pub struct DebugToggles {
     pub spine_clipping: bool,
 
     // Spine post-processing
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub spine_dedup: bool,
     #[serde(default = "default_true")]
     pub spine_merging: bool,
+    #[serde(default = "default_true")]
+    pub paired_spine_normalization: bool,
     #[serde(default)]
     pub short_spine_filter: bool,
 
@@ -123,27 +135,22 @@ pub struct DebugToggles {
     pub spine_extensions: bool,
 
     // Stall placement
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub stall_centering: bool,
     #[serde(default = "default_true")]
     pub stall_face_clipping: bool,
-
-    // Boundary
+    /// When `stall_face_clipping` is on, only check the back half of each
+    /// stall (spine-side) against the face. The entrance half is allowed
+    /// to overhang the face boundary, which is fine for stalls whose
+    /// entrances naturally sit on or just past the aisle-side face edge.
     #[serde(default)]
-    pub boundary_clipping: bool,
+    pub back_half_face_clipping: bool,
+    #[serde(default = "default_true")]
+    pub entrance_on_face_filter: bool,
 
     // Conflict removal
     #[serde(default = "default_true")]
     pub conflict_removal: bool,
-
-    // Short segment filter (remove spines with too few stalls after merge)
-    #[serde(default = "default_true")]
-    pub short_segment_filter: bool,
-    // (kept default_true to match UI's app.ts initial value)
-
-    // Edge provenance (tag face edges with source corridor/wall)
-    #[serde(default = "default_true")]
-    pub edge_provenance: bool,
 
     // Island stall dilation (close sliver gaps in face-minus-stalls subtraction)
     #[serde(default = "default_true")]
@@ -161,20 +168,20 @@ impl Default for DebugToggles {
             boundary_only_miters: true,
             spike_removal: true,
             contour_simplification: true,
-            hole_filtering: false,
+            hole_filtering: true,
             face_simplification: false,
             edge_classification: true,
             spine_clipping: true,
-            spine_dedup: true,
+            spine_dedup: false,
             spine_merging: true,
+            paired_spine_normalization: true,
             short_spine_filter: false,
             spine_extensions: true,
-            stall_centering: true,
+            stall_centering: false,
             stall_face_clipping: true,
-            boundary_clipping: false,
+            back_half_face_clipping: false,
+            entrance_on_face_filter: true,
             conflict_removal: true,
-            short_segment_filter: true,
-            edge_provenance: true,
             island_stall_dilation: true,
             skeleton_debug: false,
         }
@@ -238,7 +245,6 @@ pub struct RegionOverride {
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ParkingLayout {
-    pub aisle_polygons: Vec<Vec<Vec2>>,
     pub stalls: Vec<StallQuad>,
     pub metrics: Metrics,
     pub resolved_graph: DriveAisleGraph,

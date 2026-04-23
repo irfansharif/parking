@@ -1,53 +1,5 @@
 use crate::types::*;
 
-/// Remove stalls that extend outside the outer boundary or into any hole.
-/// A stall is removed if any of its corners falls outside the outer boundary,
-/// inside a hole, or if any stall edge crosses the boundary/hole edges.
-/// The face-index tag on each stall is preserved unchanged.
-pub fn clip_stalls_to_boundary(
-    stalls: Vec<(StallQuad, usize)>,
-    raw_outer: &[Vec2],
-    raw_holes: &[Vec<Vec2>],
-) -> Vec<(StallQuad, usize)> {
-    stalls
-        .into_iter()
-        .filter(|(stall, _)| {
-            // Shrink 30% toward centroid before testing. Rectangular stalls
-            // at non-90° angles have corners that extend past the face into
-            // the corridor and boundary areas. A proportional shrink handles
-            // all angles without rejecting stalls whose body is inside.
-            let shrunk = shrink_polygon_pct(&stall.corners, 0.3);
-            // Every corner must be inside the raw outer boundary.
-            for c in &shrunk {
-                if !point_in_polygon(c, raw_outer) {
-                    return false;
-                }
-            }
-            // No corner may be inside any raw building hole.
-            for hole in raw_holes {
-                for c in &shrunk {
-                    if point_in_polygon(c, hole) {
-                        return false;
-                    }
-                }
-            }
-            true
-        })
-        .collect()
-}
-
-/// Shrink a polygon by moving each vertex `pct` (0..1) of the way toward the centroid.
-fn shrink_polygon_pct(corners: &[Vec2], pct: f64) -> Vec<Vec2> {
-    let n = corners.len() as f64;
-    let cx = corners.iter().map(|c| c.x).sum::<f64>() / n;
-    let cy = corners.iter().map(|c| c.y).sum::<f64>() / n;
-    let centroid = Vec2::new(cx, cy);
-    corners
-        .iter()
-        .map(|c| *c + (centroid - *c) * pct)
-        .collect()
-}
-
 /// Shrink a polygon inward by moving each vertex toward the centroid by `amount`.
 fn shrink_polygon(corners: &[Vec2], amount: f64) -> Vec<Vec2> {
     let n = corners.len() as f64;

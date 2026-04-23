@@ -75,6 +75,15 @@ const PARAM_DEFS: ParamDef[] = [
     unit: "stalls",
     type: "range",
   },
+  {
+    key: "min_stalls_per_spine",
+    label: "Min Stalls / Spine",
+    min: 1,
+    max: 10,
+    step: 1,
+    unit: "stalls",
+    type: "range",
+  },
 ];
 
 export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () => void): void {
@@ -152,7 +161,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
 
   const LAYER_DEFS: { key: keyof LayerVisibility; label: string }[] = [
     { key: "stalls", label: "Stalls" },
-    { key: "aisles", label: "Drive Aisles" },
     { key: "vertices", label: "Vertices" },
     { key: "driveLines", label: "Drive Lines" },
     { key: "spines", label: "Spines" },
@@ -161,7 +169,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     { key: "miterFills", label: "Miter Fills" },
     { key: "skeletonDebug", label: "Skeleton" },
     { key: "islands", label: "Islands" },
-    { key: "extensionStalls", label: "Extension Stalls" },
     { key: "regions", label: "Regions" },
     { key: "paintLines", label: "Paint Lines" },
   ];
@@ -211,12 +218,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       ],
     },
     {
-      label: "Face Extraction",
-      toggles: [
-        { key: "edge_provenance", label: "Edge Provenance" },
-      ],
-    },
-    {
       label: "Spine Generation",
       toggles: [
         { key: "face_simplification", label: "Face Simplification" },
@@ -229,6 +230,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       toggles: [
         { key: "spine_dedup", label: "Spine Dedup" },
         { key: "spine_merging", label: "Spine Merging" },
+        { key: "paired_spine_normalization", label: "Paired Spine Normalization" },
         { key: "short_spine_filter", label: "Short Spine Filter" },
         { key: "spine_extensions", label: "Spine Extensions" },
       ],
@@ -238,15 +240,15 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       toggles: [
         { key: "stall_centering", label: "Stall Centering" },
         { key: "stall_face_clipping", label: "Stall-to-Face Clipping" },
+        { key: "back_half_face_clipping", label: "Back-Half Only Clipping" },
+        { key: "entrance_on_face_filter", label: "Entrance-on-Face Filter" },
         { key: "island_stall_dilation", label: "Island Stall Dilation" },
       ],
     },
     {
-      label: "Boundary",
+      label: "Conflict Removal",
       toggles: [
-        { key: "boundary_clipping", label: "Boundary Clipping" },
         { key: "conflict_removal", label: "Conflict Removal" },
-        { key: "short_segment_filter", label: "Short Segment Filter" },
       ],
     },
   ];

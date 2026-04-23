@@ -8,4 +8,10 @@ export type ParkingParams = { stall_width: number, stall_depth: number, aisle_wi
  * stall_pitch. Was `cross_aisle_max_run` (a float in stall-pitch
  * units); now an integer count.
  */
-stalls_per_face: number, use_regions: boolean, island_stall_interval: number, };
+stalls_per_face: number, use_regions: boolean, island_stall_interval: number, 
+/**
+ * Minimum stall count for a spine (primary + extensions combined)
+ * to survive the short-segment filter. 1 is an effective no-op —
+ * every spine with any stall meets the threshold.
+ */
+min_stalls_per_spine: number, };

@@ -171,12 +171,6 @@ export class Renderer {
         }
       }
 
-      if (state.layers.aisles) {
-        for (const poly of layout.aisle_polygons) {
-          this.drawPolygon(poly, "rgba(80, 80, 100, 0.6)", "rgba(60, 60, 80, 0.8)", 0.5);
-        }
-      }
-
       if (state.layers.islands && layout.islands) {
         for (const island of layout.islands) {
           let fillR: number, fillG: number, fillB: number;
@@ -209,9 +203,8 @@ export class Renderer {
       }
 
       if (state.layers.stalls) {
-        const highlightExt = state.layers.extensionStalls;
         for (const stall of layout.stalls) {
-          this.drawStall(stall, highlightExt);
+          this.drawStall(stall);
         }
       }
 
@@ -515,7 +508,7 @@ export class Renderer {
     }
   }
 
-  private drawStall(stall: StallQuad, highlightExtensions = true): void {
+  private drawStall(stall: StallQuad): void {
     const { ctx } = this;
     const colors: Record<string, { fill: string; stroke: string }> = {
       Standard: {
@@ -531,16 +524,15 @@ export class Renderer {
         stroke: "rgba(80, 180, 80, 0.7)",
       },
       Extension: {
-        fill: "rgba(255, 160, 80, 0.35)",
-        stroke: "rgba(230, 120, 50, 0.65)",
+        fill: "rgba(200, 200, 220, 0.4)",
+        stroke: "rgba(180, 180, 200, 0.7)",
       },
       Island: {
         fill: "rgba(75, 140, 60, 0.5)",
         stroke: "rgba(60, 120, 45, 0.7)",
       },
     };
-    const effectiveKind = (stall.kind === "Extension" && !highlightExtensions) ? "Standard" : stall.kind;
-    const c = colors[effectiveKind] || colors.Standard;
+    const c = colors[stall.kind] || colors.Standard;
     ctx.beginPath();
     ctx.moveTo(stall.corners[0].x, stall.corners[0].y);
     for (let i = 1; i < 4; i++) {

@@ -65,7 +65,6 @@ export type EditMode =
 
 export interface LayerVisibility {
   stalls: boolean;
-  aisles: boolean;
   vertices: boolean;
   driveLines: boolean;
   spines: boolean;
@@ -74,7 +73,6 @@ export interface LayerVisibility {
   miterFills: boolean;
   skeletonDebug: boolean;
   islands: boolean;
-  extensionStalls: boolean;
   regions: boolean;
   paintLines: boolean;
 }
@@ -197,26 +195,27 @@ export class App {
         stalls_per_face: 29,
         use_regions: true,
         island_stall_interval: 12,
+        min_stalls_per_spine: 3,
       },
       debug: {
         miter_fills: true,
         boundary_only_miters: true,
         spike_removal: true,
         contour_simplification: true,
-        hole_filtering: false,
-        edge_provenance: true,
+        hole_filtering: true,
         face_simplification: false,
         edge_classification: true,
         spine_clipping: true,
-        spine_dedup: true,
+        spine_dedup: false,
         spine_merging: true,
+        paired_spine_normalization: true,
         short_spine_filter: false,
         spine_extensions: true,
-        stall_centering: true,
+        stall_centering: false,
         stall_face_clipping: true,
-        boundary_clipping: false,
+        back_half_face_clipping: false,
+        entrance_on_face_filter: true,
         conflict_removal: true,
-        short_segment_filter: true,
         island_stall_dilation: true,
         skeleton_debug: false,
       },
@@ -234,16 +233,14 @@ export class App {
       snapState: emptySnapState(),
       layers: {
         stalls: false,
-        aisles: false,
         vertices: false,
-        driveLines: false,
+        driveLines: true,
         spines: false,
         faces: false,
         faceColors: false,
         miterFills: false,
         skeletonDebug: false,
         islands: true,
-        extensionStalls: false,
         regions: false,
         paintLines: true,
       },

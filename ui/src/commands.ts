@@ -393,7 +393,7 @@ export function createCommandAPI(app: App): CommandAPI {
         }
 
         case "layers": {
-          // Toggle layer visibility. Usage: layers stalls=on aisles=off spines=on
+          // Toggle layer visibility. Usage: layers stalls=on spines=on
           const rest = parts.slice(1).join(" ");
           for (const pair of rest.split(/\s+/)) {
             const [key, val] = pair.split("=");

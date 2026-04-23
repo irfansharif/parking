@@ -1,0 +1,26 @@
+# Regression: rectangular site with rectangular hole. Both the outer
+# boundary face AND the hole-perimeter face should get stalls along
+# every aisle-facing edge (not just some sides).
+
+polygon outer
+0,0
+800,0
+800,800
+0,800
+----
+polygon outer: 4 vertices
+
+polygon hole
+300,300
+500,300
+500,500
+300,500
+----
+hole: 4 vertices
+
+generate
+----
+total_stalls: 1312
+
+snapshot
+----

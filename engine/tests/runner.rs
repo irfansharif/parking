@@ -181,6 +181,11 @@ fn hole_stalls() {
 }
 
 #[test]
+fn rect_rect_hole() {
+    run_fixture(&testdata_dir().join("rect-rect-hole.txt"));
+}
+
+#[test]
 fn drive_line_long() {
     run_fixture(&testdata_dir().join("drive-line-long.txt"));
 }
@@ -218,4 +223,9 @@ fn annotation_multi_region_chain() {
 #[test]
 fn annotation_chain_vs_segment() {
     run_fixture(&testdata_dir().join("annotation-chain-vs-segment.txt"));
+}
+
+#[test]
+fn default_app_layout() {
+    run_fixture(&testdata_dir().join("default-app-layout.txt"));
 }

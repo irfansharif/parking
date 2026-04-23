@@ -11,6 +11,14 @@
 //!   dedup_overlapping_spines
 //!                         — trim the shorter of two collinear,
 //!                           overlapping spines.
+//!   normalize_paired_spines
+//!                         — snap a nearly-parallel opposing spine onto
+//!                           the longer partner's direction and line, so
+//!                           back-to-back rows tile on a shared grid.
+//!   extend_primary_with_extensions
+//!                         — fold a primary's extension segments into its
+//!                           own extent, producing one longer SpineSegment
+//!                           that the snap pass can treat uniformly.
 
 use crate::geom::inset::signed_area;
 use crate::geom::poly::{clip_segment_to_face, simplify_contour};
@@ -257,6 +265,158 @@ pub(crate) fn dedup_overlapping_spines(
     result
 }
 
+/// Fold a primary spine's extensions into its own extent so the result
+/// is a single longer `SpineSegment` covering [min, max] along the
+/// primary's direction. Extensions are colinear with their primary by
+/// construction (see `extend_spines_to_faces`), so this is a pure
+/// extent-union: the primary's `outward_normal`, `face_idx`,
+/// `is_interior`, and `travel_dir` carry through unchanged.
+pub(crate) fn extend_primary_with_extensions(
+    primary: SpineSegment,
+    exts: &[SpineSegment],
+) -> SpineSegment {
+    if exts.is_empty() {
+        return primary;
+    }
+    let dir = (primary.end - primary.start).normalize();
+    let origin = primary.start;
+    let project = |p: Vec2| -> f64 { (p - origin).dot(dir) };
+
+    let mut min_t = project(primary.start).min(project(primary.end));
+    let mut max_t = project(primary.start).max(project(primary.end));
+    for ext in exts {
+        let t1 = project(ext.start);
+        let t2 = project(ext.end);
+        min_t = min_t.min(t1).min(t2);
+        max_t = max_t.max(t1).max(t2);
+    }
+    SpineSegment {
+        start: origin + dir * min_t,
+        end: origin + dir * max_t,
+        outward_normal: primary.outward_normal,
+        face_idx: primary.face_idx,
+        is_interior: primary.is_interior,
+        travel_dir: primary.travel_dir,
+    }
+}
+
+/// Snap nearly-parallel opposing spines onto a shared line so back-to-back
+/// rows tile on the same grid. For each length-descending pass, the longest
+/// unconsumed spine claims the first eligible shorter partner and that
+/// partner's geometry is reprojected onto the anchor's direction and line.
+///
+/// Eligibility: same `is_interior` kind, perpendicular midpoint distance
+/// within `stall_width / 4` (tight enough to only admit spines on what's
+/// essentially the same underlying edge — true back-to-back pairs — and
+/// exclude anything further apart, which isn't a pair at all), and
+/// direction / opposite-normal alignment both within `snap_ceiling_deg`
+/// of exact. Pairs that exceed the ceiling are left untouched (treated
+/// as intentional skew).
+///
+/// The longer spine stays put; the shorter one loses at most `~length ·
+/// (1 - cos(ceiling))` of extent when its endpoints are perpendicular-
+/// projected onto the anchor's line. At 15° that's ~3% shrinkage.
+pub(crate) fn normalize_paired_spines(
+    spines: Vec<SpineSegment>,
+    params: &ParkingParams,
+    snap_ceiling_deg: f64,
+) -> Vec<SpineSegment> {
+    let n = spines.len();
+    if n < 2 {
+        return spines;
+    }
+
+    let mut out = spines;
+    let mut consumed = vec![false; n];
+
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        let la = (out[a].end - out[a].start).length();
+        let lb = (out[b].end - out[b].start).length();
+        lb.partial_cmp(&la).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let cos_ceil = snap_ceiling_deg.to_radians().cos();
+    let max_perp = params.stall_width / 4.0;
+
+    for i in 0..n {
+        let anchor_idx = order[i];
+        if consumed[anchor_idx] {
+            continue;
+        }
+        for j in (i + 1)..n {
+            let other_idx = order[j];
+            if consumed[other_idx] {
+                continue;
+            }
+            if !pair_eligible(&out[anchor_idx], &out[other_idx], cos_ceil, max_perp) {
+                continue;
+            }
+            out[other_idx] = snap_onto_anchor(&out[anchor_idx], &out[other_idx]);
+            consumed[anchor_idx] = true;
+            consumed[other_idx] = true;
+            break;
+        }
+    }
+
+    out
+}
+
+fn pair_eligible(a: &SpineSegment, b: &SpineSegment, cos_ceil: f64, max_perp: f64) -> bool {
+    if a.is_interior != b.is_interior {
+        return false;
+    }
+    let dir_a = (a.end - a.start).normalize();
+    let dir_b = (b.end - b.start).normalize();
+    if dir_a.dot(dir_b).abs() < cos_ceil {
+        return false;
+    }
+    if a.outward_normal.dot(b.outward_normal) > -cos_ceil {
+        return false;
+    }
+    let mid_a = (a.start + a.end) * 0.5;
+    let mid_b = (b.start + b.end) * 0.5;
+    let sep = mid_b - mid_a;
+    let perp_dist = (sep - dir_a * sep.dot(dir_a)).length();
+    perp_dist <= max_perp
+}
+
+fn snap_onto_anchor(anchor: &SpineSegment, other: &SpineSegment) -> SpineSegment {
+    let dir_a = (anchor.end - anchor.start).normalize();
+    let origin = anchor.start;
+    let project = |p: Vec2| -> Vec2 {
+        let t = (p - origin).dot(dir_a);
+        origin + dir_a * t
+    };
+    let new_start = project(other.start);
+    let new_end = project(other.end);
+
+    let n1 = Vec2::new(-dir_a.y, dir_a.x);
+    let n2 = Vec2::new(dir_a.y, -dir_a.x);
+    let new_normal = if n1.dot(other.outward_normal) >= n2.dot(other.outward_normal) {
+        n1
+    } else {
+        n2
+    };
+
+    let new_travel = other.travel_dir.map(|td| {
+        if td.dot(dir_a) >= td.dot(dir_a * -1.0) {
+            dir_a
+        } else {
+            dir_a * -1.0
+        }
+    });
+
+    SpineSegment {
+        start: new_start,
+        end: new_end,
+        outward_normal: new_normal,
+        face_idx: other.face_idx,
+        is_interior: other.is_interior,
+        travel_dir: new_travel,
+    }
+}
+
 /// Generate spine segments for a face shape (outer contour + holes).
 ///
 /// Computes the multi-contour straight skeleton (outer CCW + holes CW),
@@ -305,7 +465,7 @@ pub(crate) fn compute_face_spines(
             return vec![];
         }
     }
-    let ed = effective_depth - 0.05;
+    let ed = effective_depth;
     let mut aisle_facing_flat: Vec<bool> = Vec::new();
     let face_interior = !face_is_boundary;
     let mut interior_flat: Vec<bool> = Vec::new();
@@ -393,8 +553,11 @@ pub(crate) fn compute_face_spines(
 
     // If the normal wavefront is empty, the face is too narrow for back-to-back
     // stalls but may fit single-sided rows. Suppress one aisle-facing edge at a
-    // time (treat it as a wall) and re-run the skeleton to get spines for the
-    // remaining aisle edges.
+    // time (treat it as a wall) and re-run the skeleton to get spines inset
+    // from each remaining aisle edge. All candidates are emitted — pairing
+    // (normalize_paired_spines) and stall-level conflict resolution
+    // (remove_conflicting_stalls with longer-spine tiebreak) decide the
+    // winner downstream.
     if wf_to_process.is_empty() {
         let aisle_indices: Vec<usize> = aisle_facing_flat
             .iter()
@@ -476,33 +639,30 @@ pub(crate) fn compute_face_spines(
                 continue;
             }
 
-            // Clip spine and stall-reach line to face interior.
-            let spine_clips = clip_segment_to_face(spine_start, spine_end, shape);
+            // Clip only the stall-reach line; the spine itself comes from
+            // the wavefront and may sit on a face boundary (narrow boundary
+            // faces), where `point_in_face` would wrongly drop it.
             let reach = (ed - 0.5).max(0.0);
             let offset_start = spine_start + outward * reach;
             let offset_end = spine_end + outward * reach;
             let offset_clips = clip_segment_to_face(offset_start, offset_end, shape);
 
-            for (st0, st1) in &spine_clips {
-                for (ot0, ot1) in &offset_clips {
-                    let t0 = st0.max(*ot0);
-                    let t1 = st1.min(*ot1);
-                    if t1 - t0 < 1e-9 {
-                        continue;
-                    }
-                    let d = spine_end - spine_start;
-                    let s = spine_start + d * t0;
-                    let e = spine_start + d * t1;
-                    if (e - s).length() > 1.0 {
-                        all_spines.push(SpineSegment {
-                            start: s,
-                            end: e,
-                            outward_normal: outward,
-                            face_idx: 0,
-                            is_interior,
-                            travel_dir,
-                        });
-                    }
+            for &(t0, t1) in &offset_clips {
+                if t1 - t0 < 1e-9 {
+                    continue;
+                }
+                let d = spine_end - spine_start;
+                let s = spine_start + d * t0;
+                let e = spine_start + d * t1;
+                if (e - s).length() > 1.0 {
+                    all_spines.push(SpineSegment {
+                        start: s,
+                        end: e,
+                        outward_normal: outward,
+                        face_idx: 0,
+                        is_interior,
+                        travel_dir,
+                    });
                 }
             }
         }
@@ -567,6 +727,30 @@ pub(crate) fn extend_spines_to_faces(
         let off_end = ext_end + spine.outward_normal * reach;
         let offset_clips = clip_segment_to_face(off_start, off_end, face_shape);
 
+        // Only the clip intervals abutting the original spine are valid
+        // extensions. For concave faces the line may exit and re-enter the
+        // face further along; those "back-half" intervals must be ignored so
+        // the extension stops at the first face-edge crossing rather than
+        // jumping across a gap to a disconnected interval.
+        let center_t = (extend_dist + spine_len * 0.5) / ext_total;
+        let Some(&(st0, st1)) = spine_clips
+            .iter()
+            .find(|&&(t0, t1)| center_t >= t0 - 1e-9 && center_t <= t1 + 1e-9)
+        else {
+            continue;
+        };
+        let Some(&(ot0, ot1)) = offset_clips
+            .iter()
+            .find(|&&(t0, t1)| center_t >= t0 - 1e-9 && center_t <= t1 + 1e-9)
+        else {
+            continue;
+        };
+        let t0 = st0.max(ot0);
+        let t1 = st1.min(ot1);
+        if t1 - t0 < 1e-9 {
+            continue;
+        }
+
         // The original spine occupies a known parameter range on the extended
         // line. Shrink it by one stall_pitch on each side so that extension
         // segments overlap the primary, ensuring contiguous stall placement.
@@ -578,52 +762,166 @@ pub(crate) fn extend_spines_to_faces(
         // side) so the last stall doesn't create a thin sliver island.
         let end_margin_t = (stall_pitch * 1.5) / ext_total;
 
-        for &(st0, st1) in &spine_clips {
-            for &(ot0, ot1) in &offset_clips {
-                let t0 = st0.max(ot0);
-                let t1 = st1.min(ot1);
-                if t1 - t0 < 1e-9 {
-                    continue;
-                }
-
-                // Extract portions outside the (shrunk) original spine range.
-                // Outer ends are pulled inward by end_margin_t to avoid
-                // thin sliver islands at face boundaries.
-                // Left tail: [t0 + margin, min(t1, orig_t0)]
-                if t0 < orig_t0 - 1e-9 {
-                    let tail_end = t1.min(orig_t0);
-                    let s = ext_start + ext_vec * (t0 + end_margin_t);
-                    let e = ext_start + ext_vec * tail_end;
-                    if (e - s).length() > 1.0 {
-                        extensions.push((SpineSegment {
-                            start: s,
-                            end: e,
-                            outward_normal: spine.outward_normal,
-                            face_idx: spine.face_idx,
-                            is_interior: spine.is_interior,
-                            travel_dir: spine.travel_dir,
-                        }, src_idx));
-                    }
-                }
-                // Right tail: [max(t0, orig_t1), t1 - margin]
-                if t1 > orig_t1 + 1e-9 {
-                    let tail_start = t0.max(orig_t1);
-                    let s = ext_start + ext_vec * tail_start;
-                    let e = ext_start + ext_vec * (t1 - end_margin_t);
-                    if (e - s).length() > 1.0 {
-                        extensions.push((SpineSegment {
-                            start: s,
-                            end: e,
-                            outward_normal: spine.outward_normal,
-                            face_idx: spine.face_idx,
-                            is_interior: spine.is_interior,
-                            travel_dir: spine.travel_dir,
-                        }, src_idx));
-                    }
-                }
+        // Extract portions outside the (shrunk) original spine range.
+        // Outer ends are pulled inward by end_margin_t to avoid
+        // thin sliver islands at face boundaries.
+        // Left tail: [t0 + margin, min(t1, orig_t0)]
+        if t0 < orig_t0 - 1e-9 {
+            let tail_end = t1.min(orig_t0);
+            let s = ext_start + ext_vec * (t0 + end_margin_t);
+            let e = ext_start + ext_vec * tail_end;
+            if (e - s).length() > 1.0 {
+                extensions.push((SpineSegment {
+                    start: s,
+                    end: e,
+                    outward_normal: spine.outward_normal,
+                    face_idx: spine.face_idx,
+                    is_interior: spine.is_interior,
+                    travel_dir: spine.travel_dir,
+                }, src_idx));
+            }
+        }
+        // Right tail: [max(t0, orig_t1), t1 - margin]
+        if t1 > orig_t1 + 1e-9 {
+            let tail_start = t0.max(orig_t1);
+            let s = ext_start + ext_vec * tail_start;
+            let e = ext_start + ext_vec * (t1 - end_margin_t);
+            if (e - s).length() > 1.0 {
+                extensions.push((SpineSegment {
+                    start: s,
+                    end: e,
+                    outward_normal: spine.outward_normal,
+                    face_idx: spine.face_idx,
+                    is_interior: spine.is_interior,
+                    travel_dir: spine.travel_dir,
+                }, src_idx));
             }
         }
     }
 
     extensions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params() -> ParkingParams {
+        ParkingParams::default()
+    }
+
+    fn spine(start: Vec2, end: Vec2, normal: Vec2) -> SpineSegment {
+        SpineSegment {
+            start,
+            end,
+            outward_normal: normal.normalize(),
+            face_idx: 0,
+            is_interior: true,
+            travel_dir: None,
+        }
+    }
+
+    #[test]
+    fn paired_spines_within_ceiling_snap_onto_longer() {
+        // Anchor: long horizontal spine along y=0, normal +y.
+        let anchor = spine(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(0.0, 1.0));
+        // Other: shorter, rotated 10°, centered around y=0 so midpoint
+        // falls well within `stall_width / 4 = 2.25` perp threshold.
+        let angle = 10.0_f64.to_radians();
+        let dx = angle.cos() * 20.0;
+        let dy = angle.sin() * 20.0;
+        let other_start = Vec2::new(10.0, -dy / 2.0);
+        let other_end = Vec2::new(10.0 + dx, dy / 2.0);
+        let other_normal = Vec2::new(-angle.sin(), -angle.cos());
+        let other = spine(other_start, other_end, other_normal);
+
+        let out = normalize_paired_spines(vec![anchor.clone(), other], &params(), 15.0);
+        // Anchor should be unchanged.
+        assert_eq!(out[0].start, anchor.start);
+        assert_eq!(out[0].end, anchor.end);
+        // Other should now sit on y=0.
+        assert!(out[1].start.y.abs() < 1e-9, "other.start.y = {}", out[1].start.y);
+        assert!(out[1].end.y.abs() < 1e-9, "other.end.y = {}", out[1].end.y);
+        // Other's direction should be parallel to anchor (±x).
+        let dir = (out[1].end - out[1].start).normalize();
+        assert!(dir.x.abs() > 0.999, "dir = {:?}", dir);
+        // Other's normal should still point roughly -y (opposite to anchor).
+        assert!(out[1].outward_normal.y < -0.99, "normal = {:?}", out[1].outward_normal);
+    }
+
+    #[test]
+    fn paired_spines_beyond_ceiling_untouched() {
+        // 25° angle delta — exceeds 15° ceiling. Spine is centered around
+        // y=0 so proximity passes; ceiling alone must do the rejecting.
+        let anchor = spine(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(0.0, 1.0));
+        let angle = 25.0_f64.to_radians();
+        let dx = angle.cos() * 30.0;
+        let dy = angle.sin() * 30.0;
+        let other = spine(
+            Vec2::new(10.0, -dy / 2.0),
+            Vec2::new(10.0 + dx, dy / 2.0),
+            Vec2::new(-angle.sin(), -angle.cos()),
+        );
+        let other_clone = other.clone();
+        let out = normalize_paired_spines(vec![anchor, other], &params(), 15.0);
+        assert_eq!(out[1].start, other_clone.start);
+        assert_eq!(out[1].end, other_clone.end);
+    }
+
+    #[test]
+    fn different_is_interior_never_pair() {
+        let anchor = spine(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(0.0, 1.0));
+        let mut other = spine(Vec2::new(0.0, 3.0), Vec2::new(100.0, 3.0), Vec2::new(0.0, -1.0));
+        other.is_interior = false;
+        let other_clone = other.clone();
+        let out = normalize_paired_spines(vec![anchor, other], &params(), 15.0);
+        assert_eq!(out[1].start, other_clone.start);
+        assert_eq!(out[1].end, other_clone.end);
+    }
+
+    #[test]
+    fn non_opposing_normals_never_pair() {
+        let anchor = spine(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(0.0, 1.0));
+        // Same-direction normal (both +y) — not opposing.
+        let other = spine(Vec2::new(0.0, 3.0), Vec2::new(80.0, 3.0), Vec2::new(0.0, 1.0));
+        let other_clone = other.clone();
+        let out = normalize_paired_spines(vec![anchor, other], &params(), 15.0);
+        assert_eq!(out[1].start, other_clone.start);
+        assert_eq!(out[1].end, other_clone.end);
+    }
+
+    #[test]
+    fn far_spines_not_paired() {
+        let anchor = spine(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(0.0, 1.0));
+        let p = params();
+        // Well beyond aisle_width / 2.
+        let far_y = p.aisle_width + 2.0 * p.stall_depth;
+        let other = spine(
+            Vec2::new(0.0, far_y),
+            Vec2::new(80.0, far_y),
+            Vec2::new(0.0, -1.0),
+        );
+        let other_clone = other.clone();
+        let out = normalize_paired_spines(vec![anchor, other], &p, 15.0);
+        assert_eq!(out[1].start, other_clone.start);
+        assert_eq!(out[1].end, other_clone.end);
+    }
+
+    #[test]
+    fn across_aisle_spines_not_paired() {
+        // Two parallel opposing spines separated by aisle_width — these are
+        // facing each other across an aisle, NOT back-to-back partners.
+        // Snapping would move one row of stalls outside its face.
+        let p = params();
+        let anchor = spine(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(0.0, 1.0));
+        let other = spine(
+            Vec2::new(0.0, p.aisle_width),
+            Vec2::new(80.0, p.aisle_width),
+            Vec2::new(0.0, -1.0),
+        );
+        let other_clone = other.clone();
+        let out = normalize_paired_spines(vec![anchor, other], &p, 15.0);
+        assert_eq!(out[1].start, other_clone.start);
+        assert_eq!(out[1].end, other_clone.end);
+    }
 }

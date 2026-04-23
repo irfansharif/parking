@@ -2,28 +2,54 @@
 //!
 //! Post-placement passes that drop stalls which don't belong:
 //!
-//!   - `clip_stalls_to_faces`  — drop stalls whose shrunk corners
-//!     protrude past their own face boundary, or whose depth-ray
-//!     projection straddles a face corner.
-//!   - `quad_contained_in_face` — boolean-intersection area test
-//!     (stall ∩ face ≥ min_frac × stall_area).
-//!   - `quad_contained_in_boundary` — centroid-in-boundary +
-//!     no-quad-edge-crosses-boundary-edge.
+//!   - `clip_stalls_to_faces`  — drop stalls that aren't fully contained
+//!     in their tagged face, via `quad_fully_in_face`.
+//!   - `quad_fully_in_face` — boolean-difference test: `stall − face`
+//!     area must be ≤ `STALL_OVERHANG_TOL × stall_area`.
+//!   - `filter_stalls_by_entrance_coverage` — drop stalls whose open
+//!     (aisle) edge lies strictly inside the face interior instead of on
+//!     its boundary (or outside it). An entrance inside the face means
+//!     the stall faces a parking bay instead of a drive aisle — it's
+//!     unreachable. Overhang past the boundary is *not* this filter's
+//!     concern; `clip_stalls_to_faces` governs that.
 //!   - `shrink_toward_centroid` — overlap-test helper shared with
 //!     extension-stall greedy placement.
 
 use crate::geom::boolean::{self, FillRule};
-use crate::geom::clip::{point_in_polygon, segments_intersect};
+use crate::geom::clip::point_in_polygon;
 use crate::geom::inset::signed_area;
-use crate::geom::poly::{point_in_face, point_to_segment_dist, ray_hit_face_edge};
+use crate::geom::poly::point_to_segment_dist;
+use crate::pipeline::bays::normalize_face_winding;
 use crate::types::{StallKind, StallModifier, StallQuad, Vec2};
 
-/// Remove stalls where any shrunk corner falls outside the stall's own
-/// face. This catches stalls that protrude past the face boundary into
-/// corridors or adjacent faces.
+/// Max fraction of stall area allowed outside its tagged face.
+const STALL_OVERHANG_TOL: f64 = 2e-2;
+
+/// Tolerance (world units) for treating a sampled entrance point as
+/// "on the face edge" rather than strictly inside. Coords are in
+/// stall-width units (~9 by default).
+const ENTRANCE_EPS: f64 = 0.5;
+
+/// Minimum fraction of the entrance segment that must be on the face
+/// boundary or outside the face (i.e., *not* strictly inside the face
+/// interior). Entrance points that fall in the interior mean the stall
+/// opens into a parking bay rather than a drive aisle, so it's
+/// unreachable. Overhang past the boundary — the entrance being
+/// slightly outside — is fine here and governed separately by
+/// `STALL_OVERHANG_TOL`.
+const ENTRANCE_MIN_COVERAGE: f64 = 0.9;
+
+/// Number of samples taken along the entrance segment (endpoints +
+/// interior).
+const ENTRANCE_SAMPLES: usize = 11;
+
+/// Drop stalls that aren't fully contained in their tagged face. When
+/// `back_half_only` is true, only the spine-side half of each stall is
+/// tested — the entrance half is allowed to overhang the face boundary.
 pub(crate) fn clip_stalls_to_faces(
     stalls: Vec<(StallQuad, usize)>,
     faces: &[Vec<Vec<Vec2>>],
+    back_half_only: bool,
 ) -> Vec<(StallQuad, usize)> {
     stalls
         .into_iter()
@@ -31,134 +57,128 @@ pub(crate) fn clip_stalls_to_faces(
             if *face_idx >= faces.len() {
                 return false;
             }
-            let shape = &faces[*face_idx];
-            // Shrink 40% toward centroid for tolerance. Angled stalls have
-            // corners that extend past the spine into the corridor, so a
-            // proportional shrink handles all angles.
-            let cx = stall.corners.iter().map(|c| c.x).sum::<f64>() / 4.0;
-            let cy = stall.corners.iter().map(|c| c.y).sum::<f64>() / 4.0;
-            let centroid = Vec2::new(cx, cy);
-            let shrunk: Vec<Vec2> = stall
-                .corners
-                .iter()
-                .map(|c| *c + (centroid - *c) * 0.4)
-                .collect();
-            // Every shrunk corner must be inside the stall's own face.
-            if !shrunk.iter().all(|corner| point_in_face(*corner, shape)) {
-                return false;
-            }
-            // Corner ray check: rays from p2 (dir p1→p2) and p3 (dir p0→p3)
-            // must hit the same face boundary edge. Reject stalls that
-            // straddle a face corner (each depth side projects to a
-            // different edge).
-            if !shape.is_empty() {
-                let origin_a = stall.corners[2] + (centroid - stall.corners[2]) * 0.2;
-                let origin_b = stall.corners[3] + (centroid - stall.corners[3]) * 0.2;
-                let dir_a = (stall.corners[2] - stall.corners[1]).normalize();
-                let dir_b = (stall.corners[3] - stall.corners[0]).normalize();
-                let hit_a = ray_hit_face_edge(origin_a, dir_a, shape);
-                let hit_b = ray_hit_face_edge(origin_b, dir_b, shape);
-                match (hit_a, hit_b) {
-                    (Some((ci_a, ei_a)), Some((ci_b, ei_b))) => {
-                        if ci_a != ci_b || ei_a != ei_b {
-                            return false;
-                        }
-                    }
-                    _ => {
-                        return false;
-                    }
-                }
-            }
-            true
+            let probe = if back_half_only {
+                back_half_quad(&stall.corners)
+            } else {
+                stall.corners
+            };
+            quad_fully_in_face(&probe, &faces[*face_idx])
         })
         .collect()
 }
 
-/// Test whether a stall quad is mostly contained in a face by computing
-/// the boolean intersection `stall ∩ face`. If the intersection area is
-/// less than `min_frac` of the stall area, the stall bleeds outside.
-/// Angled stall corners that poke slightly into the corridor are
-/// tolerated since they represent a small fraction of total area.
-pub(crate) fn quad_contained_in_face(
-    corners: &[Vec2; 4],
-    face_shape: &[Vec<Vec2>],
-    min_frac: f64,
-) -> bool {
-    let stall_area = signed_area(corners).abs();
-    if stall_area < 1e-6 {
-        return false;
-    }
-
-    let stall_subj = vec![corners.to_vec()];
-
-    // Build face as multi-contour (outer CCW + holes CW).
-    let mut face_paths: Vec<Vec<Vec2>> = Vec::new();
-    for (i, contour) in face_shape.iter().enumerate() {
-        let p = if i == 0 {
-            if signed_area(contour) < 0.0 {
-                contour.iter().rev().copied().collect()
-            } else {
-                contour.clone()
-            }
-        } else if signed_area(contour) > 0.0 {
-            contour.iter().rev().copied().collect()
-        } else {
-            contour.clone()
-        };
-        face_paths.push(p);
-    }
-
-    let intersection = boolean::intersect(&stall_subj, &face_paths, FillRule::NonZero);
-
-    let mut isect_area = 0.0;
-    for shape in &intersection {
-        for contour in shape {
-            isect_area += signed_area(contour).abs();
-        }
-    }
-
-    isect_area >= min_frac * stall_area
+/// Build the back half of a stall quad: the two back corners plus the
+/// midpoints of each side edge. Corners are `[back_left, back_right,
+/// aisle_right, aisle_left]`; the back half wraps `back_left →
+/// back_right → mid(back_right, aisle_right) → mid(aisle_left, back_left)`.
+fn back_half_quad(corners: &[Vec2; 4]) -> [Vec2; 4] {
+    let mid_right = (corners[1] + corners[2]) * 0.5;
+    let mid_left = (corners[3] + corners[0]) * 0.5;
+    [corners[0], corners[1], mid_right, mid_left]
 }
 
-/// Test whether a stall quad is fully contained within the site boundary
-/// (inside outer, outside all holes). Same geometric approach: centroid
-/// inside + no edge crossings.
-pub(crate) fn quad_contained_in_boundary(
-    corners: &[Vec2; 4],
-    raw_outer: &[Vec2],
-    raw_holes: &[Vec<Vec2>],
-) -> bool {
-    let cx = (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4.0;
-    let cy = (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4.0;
-    let centroid = Vec2::new(cx, cy);
-
-    if !point_in_polygon(&centroid, raw_outer) {
+/// True when the stall quad is contained in the face: the boolean
+/// difference `stall − face` has area ≤ `STALL_OVERHANG_TOL × stall_area`.
+pub(crate) fn quad_fully_in_face(corners: &[Vec2; 4], face_shape: &[Vec<Vec2>]) -> bool {
+    let stall_area = signed_area(corners).abs();
+    if stall_area < 1e-9 || face_shape.is_empty() {
         return false;
     }
-    for hole in raw_holes {
-        if point_in_polygon(&centroid, hole) {
-            return false;
+    let stall_subj = vec![corners.to_vec()];
+    let face_paths = normalize_face_winding(face_shape);
+    let leftover = boolean::difference(&stall_subj, &face_paths, FillRule::NonZero);
+    let mut leftover_area = 0.0;
+    for shape in &leftover {
+        for contour in shape {
+            leftover_area += signed_area(contour).abs();
         }
     }
+    leftover_area <= STALL_OVERHANG_TOL * stall_area
+}
 
-    // No quad edge may cross any boundary edge.
-    let raw_outer_vec = raw_outer.to_vec();
-    let all_contours = std::iter::once(&raw_outer_vec).chain(raw_holes.iter());
-    for contour in all_contours {
-        let n = contour.len();
-        for i in 0..4 {
-            let a = corners[i];
-            let b = corners[(i + 1) % 4];
-            for j in 0..n {
-                let c = contour[j];
-                let d = contour[(j + 1) % n];
-                if segments_intersect(a, b, c, d) {
-                    return false;
+/// Drop stalls whose aisle-facing (entrance) edge falls strictly inside
+/// the tagged face's interior. The entrance segment runs from
+/// `corners[3]` (aisle_left) to `corners[2]` (aisle_right); cars enter
+/// through this edge, so it must sit on the face boundary or on the
+/// aisle side of it. If the entrance is in the face interior the stall
+/// opens into an adjacent parking bay — unreachable. Overhang past the
+/// boundary (entrance slightly outside) is tolerated here; that's what
+/// `STALL_OVERHANG_TOL` is for.
+pub(crate) fn filter_stalls_by_entrance_coverage(
+    stalls: Vec<(StallQuad, usize, usize)>,
+    faces: &[Vec<Vec<Vec2>>],
+) -> Vec<(StallQuad, usize, usize)> {
+    stalls
+        .into_iter()
+        .filter(|(stall, face_idx, _spine_idx)| {
+            if *face_idx >= faces.len() {
+                return false;
+            }
+            entrance_coverage(&stall.corners, &faces[*face_idx]) >= ENTRANCE_MIN_COVERAGE
+        })
+        .collect()
+}
+
+/// Fraction of samples along the entrance segment (corners[3]→corners[2])
+/// that are *not* strictly inside the face interior — i.e., either on a
+/// face boundary edge (within `ENTRANCE_EPS`) or past it.
+fn entrance_coverage(corners: &[Vec2; 4], face_shape: &[Vec<Vec2>]) -> f64 {
+    let a = corners[3];
+    let b = corners[2];
+    if (b - a).length() < 1e-9 || face_shape.is_empty() {
+        return 0.0;
+    }
+    let outer = &face_shape[0];
+    if outer.len() < 3 {
+        return 0.0;
+    }
+    let n = ENTRANCE_SAMPLES;
+    let mut good = 0usize;
+    for i in 0..n {
+        let t = i as f64 / (n - 1) as f64;
+        let p = a + (b - a) * t;
+
+        // A sample counts as "on the edge" if it's within ENTRANCE_EPS
+        // of any ring's edge. That includes being near a hole boundary,
+        // where the stall is adjacent to an island or building.
+        let mut on_edge = false;
+        for ring in face_shape {
+            if ring.len() < 2 {
+                continue;
+            }
+            for j in 0..ring.len() {
+                let c = ring[j];
+                let d = ring[(j + 1) % ring.len()];
+                if point_to_segment_dist(p, c, d) <= ENTRANCE_EPS {
+                    on_edge = true;
+                    break;
+                }
+            }
+            if on_edge {
+                break;
+            }
+        }
+        if on_edge {
+            good += 1;
+            continue;
+        }
+
+        // Otherwise the sample is "outside" the face if it's not inside
+        // the outer ring, or it's inside a hole.
+        let mut inside = point_in_polygon(&p, outer);
+        if inside {
+            for hole in face_shape.iter().skip(1) {
+                if point_in_polygon(&p, hole) {
+                    inside = false;
+                    break;
                 }
             }
         }
+        if !inside {
+            good += 1;
+        }
     }
-    true
+    good as f64 / n as f64
 }
 
 /// §1.4 post-placement pass: retype stalls whose centroid falls

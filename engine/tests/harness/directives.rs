@@ -279,6 +279,7 @@ fn apply_param(params: &mut ParkingParams, key: &str, raw_val: &str) -> Result<(
         "stalls_per_face" => params.stalls_per_face = parse_u32(v)?,
         "use_regions" => params.use_regions = parse_bool(v)?,
         "island_stall_interval" => params.island_stall_interval = parse_u32(v)?,
+        "min_stalls_per_spine" => params.min_stalls_per_spine = parse_u32(v)?,
         other => return Err(format!("unknown param: {}", other)),
     }
     Ok(())

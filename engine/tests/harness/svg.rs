@@ -73,11 +73,10 @@ pub fn render(boundary: &Polygon, layout: &ParkingLayout, opts: &SvgOptions) -> 
         f(2.0 * vb_min.y + vb_h)
     ));
 
-    // Layer order: boundary → holes → aisles → stalls → graph. Each
-    // layer is its own <g id="..."> so a reviewer can read the SVG
-    // top-to-bottom matching pipeline stages.
+    // Layer order: boundary → holes → stalls → graph. Each layer is its
+    // own <g id="..."> so a reviewer can read the SVG top-to-bottom
+    // matching pipeline stages.
     render_boundary(&mut out, &discretized);
-    render_aisles(&mut out, &layout.aisle_polygons);
     render_stalls(&mut out, &layout.stalls);
     render_graph(&mut out, &layout.resolved_graph);
 
@@ -99,19 +98,6 @@ fn render_boundary(out: &mut String, boundary: &Polygon) {
         }
         out.push_str("</g>\n");
     }
-}
-
-fn render_aisles(out: &mut String, aisles: &[Vec<Vec2>]) {
-    if aisles.is_empty() {
-        return;
-    }
-    out.push_str(
-        "<g id=\"aisles\" fill=\"#bcd5f0\" fill-opacity=\"0.6\" stroke=\"#4a7bb7\" stroke-width=\"0.4\">\n",
-    );
-    for poly in aisles {
-        out.push_str(&polygon_el(poly, None));
-    }
-    out.push_str("</g>\n");
 }
 
 fn render_stalls(out: &mut String, stalls: &[StallQuad]) {
@@ -220,11 +206,6 @@ fn content_bbox(boundary: &Polygon, layout: &ParkingLayout) -> (Vec2, Vec2) {
     };
     for p in &boundary.outer {
         extend(p);
-    }
-    for poly in &layout.aisle_polygons {
-        for p in poly {
-            extend(p);
-        }
     }
     for s in &layout.stalls {
         if s.kind == StallKind::Suppressed {

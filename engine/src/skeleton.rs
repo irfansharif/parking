@@ -1,6 +1,10 @@
 use crate::geom::inset::signed_area;
 use crate::types::Vec2;
 
+/// Absolute FP slack when matching skeleton events against an extraction
+/// depth: events within this of `d` are treated as at-d (pre-event).
+const EVENT_TIME_TOL: f64 = 1e-6;
+
 // ---------------------------------------------------------------------------
 // Straight skeleton types
 // ---------------------------------------------------------------------------
@@ -792,15 +796,17 @@ pub fn wavefront_loops_at(
         return vec![];
     }
 
+    // Pick the last event strictly before d; tolerance keeps events at-d
+    // (where an aisle-facing edge collapses exactly at extraction depth)
+    // on the pre-event side so their spine can still be emitted.
     let mut loops = &skeleton.events[0].active_loops;
     for i in 1..skeleton.events.len() {
-        if skeleton.events[i].d <= d {
+        if skeleton.events[i].d < d - EVENT_TIME_TOL {
             loops = &skeleton.events[i].active_loops;
         } else {
             break;
         }
     }
-
     let mut result = Vec::new();
     for lp in loops {
         if lp.len() < 3 {
@@ -818,16 +824,21 @@ pub fn wavefront_loops_at(
             None => continue,
         };
 
-        // Direction check: each offset edge must still run in the same
-        // direction as its original edge.
+        // Each nonzero-length offset edge must run in the same direction
+        // as its original. Zero-length edges (collapses at d) are skipped
+        // so one degenerate edge doesn't invalidate the whole loop.
         let n = wf.len();
         let mut valid = true;
         for i in 0..n {
             let next = (i + 1) % n;
             let offset_dir = wf[next] - wf[i];
+            let len_sq = offset_dir.x * offset_dir.x + offset_dir.y * offset_dir.y;
+            if len_sq < 1e-12 {
+                continue;
+            }
             let orig_edge = lp[(i + 1) % n];
             let orig_dir = skeleton.edge_dirs[orig_edge];
-            if orig_dir.dot(offset_dir) <= 0.0 {
+            if orig_dir.dot(offset_dir) < 0.0 {
                 valid = false;
                 break;
             }

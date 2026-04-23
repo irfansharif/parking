@@ -1,0 +1,29 @@
+# Regression: rect with rect hole but with stall_face_clipping off.
+# Used to isolate whether missing perimeter stalls are from the filter
+# or from upstream placement/spine issues.
+
+polygon outer
+0,0
+800,0
+800,800
+0,800
+----
+polygon outer: 4 vertices
+
+polygon hole
+300,300
+500,300
+500,500
+300,500
+----
+hole: 4 vertices
+
+set stall_face_clipping=false
+----
+set stall_face_clipping=false
+
+generate
+----
+
+snapshot
+----

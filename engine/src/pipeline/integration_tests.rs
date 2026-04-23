@@ -10,7 +10,7 @@
 //! declaration in `pipeline/mod.rs`; the whole file only compiles
 //! under `cargo test`.
 
-use crate::geom::clip::{clip_stalls_to_boundary, remove_conflicting_stalls};
+use crate::geom::clip::remove_conflicting_stalls;
 use crate::geom::inset::signed_area;
 use crate::geom::poly::{point_in_face, point_to_segment_dist};
 use crate::graph::auto_generate;
@@ -55,7 +55,7 @@ mod tests {
         let params = ParkingParams::default();
         let graph = auto_generate(&boundary, &params, &[], &[]);
 
-        let (stalls, _, spines, _, _, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default());
+        let (stalls, spines, _, _, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default());
         eprintln!("\nTotal stalls: {}", stalls.len());
         eprintln!("Total spines: {}", spines.len());
         assert!(stalls.len() >= 50);
@@ -172,7 +172,7 @@ mod tests {
         let params = ParkingParams::default();
         let debug = DebugToggles::default();
 
-        let (stalls, _, _, _faces_out, _, _, islands) =
+        let (stalls, _, _faces_out, _, _, islands) =
             generate_from_spines(
                 &crate::graph::auto_generate(&boundary, &params, &[], &[]),
                 &boundary, &params, &debug,
@@ -250,8 +250,7 @@ mod tests {
         let (tagged_stalls_3, _) = place_stalls_on_spines(&all_spines, &params, true, None);
         let tagged_stalls: Vec<(StallQuad, usize)> = tagged_stalls_3.iter()
             .map(|(s, fi, _)| (s.clone(), *fi)).collect();
-        let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces);
-        let tagged_stalls = clip_stalls_to_boundary(tagged_stalls, &boundary.outer, &[]);
+        let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces, false);
         let tagged_stalls = remove_conflicting_stalls(tagged_stalls, &[], &[]);
         let islands = compute_islands(&faces, &tagged_stalls, 10.0, true);
 
@@ -547,7 +546,8 @@ mod tests {
 
     /// Narrow face: two parallel aisle edges only 30ft apart (< 2×18=36ft).
     /// The normal skeleton collapses, but edge-suppression produces
-    /// single-sided spines — one per aisle-facing edge.
+    /// single-sided spines — one per aisle-facing edge. Downstream pairing
+    /// and stall conflict resolution pick the winner.
     #[test]
     fn test_narrow_face_single_sided_spines() {
         let face_contour = vec![
@@ -968,7 +968,7 @@ mod tests {
 
         // --- Test TwoWayOriented ---
         let graph = make_graph(AisleDirection::TwoWayOriented);
-        let (stalls, _, spine_lines, faces, _, _, _) = generate_from_spines(&graph, &boundary, &params, &debug);
+        let (stalls, spine_lines, faces, _, _, _) = generate_from_spines(&graph, &boundary, &params, &debug);
 
         eprintln!("\n=== TwoWayOriented test ===");
         eprintln!("stalls: {}, spines: {}, faces: {}", stalls.len(), spine_lines.len(), faces.len());

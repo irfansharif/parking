@@ -23,7 +23,7 @@ annotation-json: +1
 
 generate
 ----
-total_stalls: 168
+total_stalls: 170
 
 annotations
 ----
