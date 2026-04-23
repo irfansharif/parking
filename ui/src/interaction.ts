@@ -68,7 +68,6 @@ export function setupInteraction(
     // Default: select mode — hit test and drag.
     const allVerts = app.getAllVertices();
     const perimCount = app.getEffectiveAisleGraph()?.perim_vertex_count ?? 0;
-    const activeLotId = app.state.activeLotId;
     let closest: { ref: VertexRef; dist: number } | null = null;
 
     for (const v of allVerts) {

@@ -41,7 +41,6 @@ import type {
   EdgeArc,
   ParkingLayout,
   ParkingParams,
-  PerimeterLoop,
   Polygon,
   RegionDebug,
   RegionInfo,
@@ -264,8 +263,6 @@ export function splitArcAt(
 // — the engine's `bulge_to_arc` and this one produce identical output.
 // Step 3+ may revisit.
 // ---------------------------------------------------------------------------
-
-const STRAIGHT_EPS = 1e-9;
 
 export interface ArcDef {
   center: Vec2;

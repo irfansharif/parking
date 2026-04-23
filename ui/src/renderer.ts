@@ -8,14 +8,10 @@ import {
   SpineLine,
   Face,
   AisleDirection,
-  ParkingParams,
-  Annotation,
-  Target,
   annotationWorldPos,
   arcApex,
   bulgeToArc,
   computeRegionFrame,
-  frameForward,
 } from "./types";
 import { SnapGuide } from "./snap";
 
@@ -575,7 +571,7 @@ export class Renderer {
     ctx.stroke();
   }
 
-  private drawPaintLines(state: AppState, lot: ParkingLot): void {
+  private drawPaintLines(_state: AppState, lot: ParkingLot): void {
     const { ctx } = this;
     ctx.save();
     ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
@@ -723,7 +719,6 @@ export class Renderer {
         const end = graph.vertices[edge.end];
         const isSelected = state.selectedEdge?.chain.includes(ei) ?? false;
         const isSegmentSelected = isSelected && state.selectedEdge?.mode === "segment" && state.selectedEdge?.index === ei;
-        const isChainSelected = isSelected && !isSegmentSelected;
         const direction = (edge.direction ?? "TwoWay") as AisleDirection;
         const isOneWay = direction === "OneWay";
         const isTwoWayOriented = direction === "TwoWayOriented";
@@ -1060,73 +1055,6 @@ export class Renderer {
           ctx.stroke();
         }
       }
-    }
-  }
-
-  private drawAisleVector(state: AppState): void {
-    const { ctx } = this;
-    const activeLot = state.lots.find((l) => l.id === state.activeLotId);
-    if (!activeLot) return;
-    const vec = activeLot.aisleVector;
-    const dx = vec.end.x - vec.start.x;
-    const dy = vec.end.y - vec.start.y;
-    const len = Math.sqrt(dx * dx + dy * dy);
-
-    // Faint infinite extent line
-    if (len > 1e-9) {
-      const nx = dx / len;
-      const ny = dy / len;
-      const ext = 10000;
-      ctx.beginPath();
-      ctx.moveTo(vec.start.x - nx * ext, vec.start.y - ny * ext);
-      ctx.lineTo(vec.end.x + nx * ext, vec.end.y + ny * ext);
-      ctx.strokeStyle = "rgba(255, 160, 50, 0.2)";
-      ctx.lineWidth = 0.5;
-      ctx.setLineDash([4, 4]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
-    // Solid control segment
-    ctx.beginPath();
-    ctx.moveTo(vec.start.x, vec.start.y);
-    ctx.lineTo(vec.end.x, vec.end.y);
-    ctx.strokeStyle = "rgba(255, 160, 50, 0.9)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    // Arrowhead at end
-    if (len > 10) {
-      const nx = dx / len;
-      const ny = dy / len;
-      const arrowSize = 7;
-      const ax = vec.end.x;
-      const ay = vec.end.y;
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(ax - nx * arrowSize + ny * arrowSize * 0.4, ay - ny * arrowSize - nx * arrowSize * 0.4);
-      ctx.lineTo(ax - nx * arrowSize - ny * arrowSize * 0.4, ay - ny * arrowSize + nx * arrowSize * 0.4);
-      ctx.closePath();
-      ctx.fillStyle = "rgba(255, 160, 50, 0.9)";
-      ctx.fill();
-    }
-
-    // Endpoint dots
-    const endpoints = [
-      { pos: vec.start, ref: { type: "aisle-vector" as const, index: 0, endpoint: "start" as const } },
-      { pos: vec.end, ref: { type: "aisle-vector" as const, index: 0, endpoint: "end" as const } },
-    ];
-    for (const ep of endpoints) {
-      const isSelected = this.vertexRefsEqual(ep.ref, state.selectedVertex);
-      const isHovered = this.vertexRefsEqual(ep.ref, state.hoveredVertex);
-      const r = isSelected || isHovered ? 6 : 4.5;
-      ctx.beginPath();
-      ctx.arc(ep.pos.x, ep.pos.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = isSelected ? "#ffffff" : isHovered ? "#ffff00" : "rgba(255, 160, 50, 0.95)";
-      ctx.fill();
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
-      ctx.lineWidth = 0.8;
-      ctx.stroke();
     }
   }
 
