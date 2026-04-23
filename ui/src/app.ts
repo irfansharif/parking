@@ -11,28 +11,24 @@ import {
   DebugToggles,
   Annotation,
   GridStop,
-  PerimeterLoop,
   Target,
   TrafficDirection,
-  RegionId,
   arcApex,
   bulgeFromApex,
   computeBoundaryPin,
-  computeRegionFrame,
-  evalArcAt,
   evalBoundaryEdge,
-  frameInverse,
   annotationWorldPos,
   projectToArc,
   worldToPerimeterPos,
-  chainExtentsInRegion,
-  chainToAbstractLatticeEdge,
   worldToAbstractVertex,
   worldToSpliceVertex,
 } from "./types";
 import { SnapGuide, SnapState, emptySnapState } from "./snap";
-import { findCollinearChain } from "./interaction";
 import { showToast } from "./toast";
+import {
+  resolve_grid_target_js,
+  targets_equal_js,
+} from "./wasm/parking_lot_engine";
 
 // ---------------------------------------------------------------------------
 // Arc helpers for boundary-edge editing
@@ -959,81 +955,29 @@ export class App {
   }
 
   /**
-   * Compute the abstract-lattice scope for an aisle-edge selection.
-   * Segment mode returns the seed sub-edge's extents. Chain mode
-   * widens to the full collinear run, projected into the seed's
-   * region frame (no tolerance rejection — unlike
-   * `chainToAbstractLatticeEdge`, this always succeeds on a multi-edge
-   * chain so chain mode never silently collapses into segment mode).
-   */
-  private computeChainScope(
-    sel: EdgeRef,
-    graph: DriveAisleGraph,
-    lot: ParkingLot,
-    regionId: number,
-    seedScope: { xa: number; ya: number; xb: number; yb: number },
-  ): { xa: number; ya: number; xb: number; yb: number } {
-    if (sel.mode !== "chain" || sel.chain.length <= 1) return seedScope;
-    const region = lot.layout?.region_debug?.regions.find((r) => r.id === regionId);
-    if (!region) return seedScope;
-    const chainPts: Vec2[] = [];
-    for (const ei of sel.chain) {
-      const ce = graph.edges[ei];
-      if (!ce) continue;
-      chainPts.push(graph.vertices[ce.start]);
-      chainPts.push(graph.vertices[ce.end]);
-    }
-    const extents = chainExtentsInRegion(chainPts, this.state.params, region);
-    if (!extents) return seedScope;
-    return { xa: extents.xa, ya: extents.ya, xb: extents.xb, yb: extents.yb };
-  }
-
-  /**
-   * Resolve an aisle-edge selection to a `Target::Grid` that covers the
-   * selection. Returns null if the selection doesn't live on grid-aligned
-   * lattice vertices.
-   *
-   * Two strategies in order:
-   *   1. Seed sub-edge's endpoints both snap to lattice junctions in
-   *      the same region. Scope = chain extents.
-   *   2. Seed is an interior break (endpoints off-grid) but the chain's
-   *      outer junctions *are* on-grid. Scope = chain extents.
+   * Resolve an aisle-edge selection to a `Target::Grid` that covers
+   * the selection. Delegates to `resolve::resolve_grid_target` in the
+   * engine — which handles both the on-grid seed + chain-widening
+   * path and the off-grid seed + chain-junction fallback.
    */
   private resolveGridTarget(
     sel: EdgeRef,
-    graph: DriveAisleGraph,
-    seed: { start: number; end: number },
+    _graph: DriveAisleGraph,
+    _seed: { start: number; end: number },
     lot: ParkingLot,
   ): Target | null {
     const regionDebug = lot.layout?.region_debug;
     if (!regionDebug) return null;
-    const s = graph.vertices[seed.start];
-    const e = graph.vertices[seed.end];
-
-    let region: RegionId;
-    let scope: { xa: number; ya: number; xb: number; yb: number };
-
-    const absA = worldToAbstractVertex(s, this.state.params, regionDebug);
-    const absB = worldToAbstractVertex(e, this.state.params, regionDebug);
-    if (absA && absB && absA.region === absB.region) {
-      const seedScope = { xa: absA.xi, ya: absA.yi, xb: absB.xi, yb: absB.yi };
-      scope = this.computeChainScope(sel, graph, lot, absA.region, seedScope);
-      region = absA.region;
-    } else {
-      // Seed off-grid; fall back to chain's outer junctions.
-      const chainPts: Vec2[] = [];
-      for (const ei of sel.chain) {
-        const ce = graph.edges[ei];
-        if (!ce) continue;
-        chainPts.push(graph.vertices[ce.start]);
-        chainPts.push(graph.vertices[ce.end]);
-      }
-      const chainScope = chainToAbstractLatticeEdge(chainPts, this.state.params, regionDebug);
-      if (!chainScope) return null;
-      region = chainScope.region;
-      scope = { xa: chainScope.xa, ya: chainScope.ya, xb: chainScope.xb, yb: chainScope.yb };
-    }
-    return gridTargetFromScope(region, scope);
+    const graph = this.getEffectiveAisleGraph(lot);
+    if (!graph) return null;
+    return resolve_grid_target_js(
+      sel.index,
+      new Uint32Array(sel.chain),
+      sel.mode === "chain",
+      graph,
+      this.state.params,
+      regionDebug,
+    ) as Target | null;
   }
 
   deleteSelectedEdge(): void {
@@ -1109,7 +1053,7 @@ export class App {
     const gridTarget = this.resolveGridTarget(sel, graph, seed, lot);
     if (gridTarget) {
       const existing = lot.annotations.findIndex(
-        (ann) => ann.kind === "Direction" && targetsEqual(ann.target, gridTarget),
+        (ann) => ann.kind === "Direction" && targets_equal_js(ann.target, gridTarget),
       );
       if (existing < 0) {
         const annIdx = lot.annotations.length;
@@ -1164,102 +1108,6 @@ export class App {
       this.state.selectedVertex = { type: "annotation", index: existing, lotId: lot.id };
     }
   }
-}
-
-function scopeDiffers(
-  a: { xa: number; ya: number; xb: number; yb: number },
-  b: { xa: number; ya: number; xb: number; yb: number },
-): boolean {
-  return a.xa !== b.xa || a.ya !== b.ya || a.xb !== b.xb || a.yb !== b.yb;
-}
-
-/**
- * Build a Grid target from a lattice-scope (xa, ya) → (xb, yb). Picks the
- * axis based on which coord is fixed; if both endpoints are the same point
- * the target is a vertex (range = (s, s)), otherwise a span.
- */
-function gridTargetFromScope(
-  region: RegionId,
-  scope: { xa: number; ya: number; xb: number; yb: number },
-): Target | null {
-  if (scope.xa === scope.xb && scope.ya === scope.yb) {
-    // A single lattice point — address on the X-axis line by convention.
-    const stop: GridStop = { at: "Lattice", other: scope.ya };
-    return {
-      on: "Grid",
-      region,
-      axis: "X",
-      coord: scope.xa,
-      range: [stop, stop],
-    };
-  }
-  if (scope.xa === scope.xb) {
-    // Varying axis is Y: line fixed at x=xa.
-    const s1: GridStop = { at: "Lattice", other: scope.ya };
-    const s2: GridStop = { at: "Lattice", other: scope.yb };
-    return {
-      on: "Grid",
-      region,
-      axis: "X",
-      coord: scope.xa,
-      range: [s1, s2],
-    };
-  }
-  if (scope.ya === scope.yb) {
-    // Varying axis is X: line fixed at y=ya.
-    const s1: GridStop = { at: "Lattice", other: scope.xa };
-    const s2: GridStop = { at: "Lattice", other: scope.xb };
-    return {
-      on: "Grid",
-      region,
-      axis: "Y",
-      coord: scope.ya,
-      range: [s1, s2],
-    };
-  }
-  return null;
-}
-
-/**
- * Structural equality for Targets. Used to find an existing direction
- * annotation whose scope matches the current click (either orientation).
- */
-function targetsEqual(a: Target, b: Target): boolean {
-  if (a.on !== b.on) return false;
-  if (a.on === "Grid" && b.on === "Grid") {
-    if (a.region !== b.region || a.axis !== b.axis || a.coord !== b.coord) return false;
-    if (a.range == null && b.range == null) return true;
-    if (a.range == null || b.range == null) return false;
-    const matchFwd =
-      gridStopsEqual(a.range[0], b.range[0]) && gridStopsEqual(a.range[1], b.range[1]);
-    const matchRev =
-      gridStopsEqual(a.range[0], b.range[1]) && gridStopsEqual(a.range[1], b.range[0]);
-    return matchFwd || matchRev;
-  }
-  if (a.on === "DriveLine" && b.on === "DriveLine") {
-    return a.id === b.id && Math.abs(a.t - b.t) < 1e-3;
-  }
-  if (a.on === "Perimeter" && b.on === "Perimeter") {
-    return (
-      loopsEqual(a.loop, b.loop) && Math.abs(a.arc - b.arc) < 1e-3
-    );
-  }
-  return false;
-}
-
-function gridStopsEqual(a: GridStop, b: GridStop): boolean {
-  if (a.at !== b.at) return false;
-  if (a.at === "Lattice" && b.at === "Lattice") return a.other === b.other;
-  if (a.at === "CrossesDriveLine" && b.at === "CrossesDriveLine") return a.id === b.id;
-  if (a.at === "CrossesPerimeter" && b.at === "CrossesPerimeter") return loopsEqual(a.loop, b.loop);
-  return false;
-}
-
-function loopsEqual(a: PerimeterLoop, b: PerimeterLoop): boolean {
-  if (a.kind !== b.kind) return false;
-  if (a.kind === "Outer" && b.kind === "Outer") return true;
-  if (a.kind === "Hole" && b.kind === "Hole") return a.index === b.index;
-  return false;
 }
 
 function aisleVectorFromAngle(angleDeg: number, _offset: number, center: Vec2): { start: Vec2; end: Vec2 } {

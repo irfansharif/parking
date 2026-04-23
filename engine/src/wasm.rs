@@ -312,3 +312,33 @@ pub fn find_collinear_chain_js(
     let graph: DriveAisleGraph = serde_wasm_bindgen::from_value(graph)?;
     Ok(resolve::find_collinear_chain(&graph, seed_idx))
 }
+
+/// `resolve::resolve_grid_target` — from an edge selection (seed +
+/// chain + mode) to a `Target::Grid`, or null if the selection doesn't
+/// sit on grid-aligned lattice vertices.
+#[wasm_bindgen]
+pub fn resolve_grid_target_js(
+    seed_index: usize,
+    chain: Vec<usize>,
+    is_chain_mode: bool,
+    graph: JsValue,
+    params: JsValue,
+    region_debug: JsValue,
+) -> Result<JsValue, JsValue> {
+    let graph: DriveAisleGraph = serde_wasm_bindgen::from_value(graph)?;
+    let params: ParkingParams = serde_wasm_bindgen::from_value(params)?;
+    let region_debug: Option<RegionDebug> = serde_wasm_bindgen::from_value(region_debug)?;
+    let result = match region_debug.as_ref() {
+        Some(rd) => resolve::resolve_grid_target(seed_index, &chain, is_chain_mode, &graph, &params, rd),
+        None => None,
+    };
+    Ok(serde_wasm_bindgen::to_value(&result)?)
+}
+
+/// `resolve::targets_equal` — structural equality over `Target`.
+#[wasm_bindgen]
+pub fn targets_equal_js(a: JsValue, b: JsValue) -> Result<bool, JsValue> {
+    let a: Target = serde_wasm_bindgen::from_value(a)?;
+    let b: Target = serde_wasm_bindgen::from_value(b)?;
+    Ok(resolve::targets_equal(&a, &b))
+}

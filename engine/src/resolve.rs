@@ -591,6 +591,194 @@ pub fn find_collinear_chain(graph: &DriveAisleGraph, seed_idx: usize) -> Vec<usi
     chain
 }
 
+// ---------------------------------------------------------------------------
+// Chain → grid target. Composes `world_to_abstract_vertex` on the seed
+// edge's endpoints with `chain_extents_in_region` / `chain_to_abstract_
+// lattice_edge` to produce the `Target::Grid` a chain-mode UI
+// selection deletes or cycles direction on.
+//
+// Two paths:
+//
+//   1. Seed endpoints snap to lattice junctions in the same region.
+//      Scope widens to the chain's extents in that region (lenient —
+//      chain crosses region boundaries are silently clamped to the
+//      seed's region instead of rejecting).
+//
+//   2. Seed is an interior break (endpoints off-grid — e.g. a
+//      drive-line splice). Fall back to the chain's outer junctions
+//      via the strict `chain_to_abstract_lattice_edge`; reject if the
+//      chain isn't axis-aligned.
+//
+// Returns `None` when neither path yields a grid-addressable scope —
+// the caller then falls through to a drive-line splice target.
+// ---------------------------------------------------------------------------
+
+/// Build a grid `Target` from a lattice scope. Single-point scope
+/// maps to a `range = (s, s)` vertex on the X axis by convention;
+/// varying-axis scopes set `axis` accordingly.
+pub fn grid_target_from_scope(scope: ChainLatticeEdge) -> Option<Target> {
+    if scope.xa == scope.xb && scope.ya == scope.yb {
+        // Single lattice point — address on the X axis by convention.
+        let stop = GridStop::Lattice { other: scope.ya };
+        return Some(Target::Grid {
+            region: scope.region,
+            axis: Axis::X,
+            coord: scope.xa,
+            range: Some((stop.clone(), stop)),
+        });
+    }
+    if scope.xa == scope.xb {
+        // Varying along y, x fixed.
+        let s1 = GridStop::Lattice { other: scope.ya };
+        let s2 = GridStop::Lattice { other: scope.yb };
+        return Some(Target::Grid {
+            region: scope.region,
+            axis: Axis::X,
+            coord: scope.xa,
+            range: Some((s1, s2)),
+        });
+    }
+    if scope.ya == scope.yb {
+        // Varying along x, y fixed.
+        let s1 = GridStop::Lattice { other: scope.xa };
+        let s2 = GridStop::Lattice { other: scope.xb };
+        return Some(Target::Grid {
+            region: scope.region,
+            axis: Axis::Y,
+            coord: scope.ya,
+            range: Some((s1, s2)),
+        });
+    }
+    None
+}
+
+/// Resolve an edge-chain selection (seed edge + collinear run) to a
+/// `Target::Grid`. See module-level comment for the two paths. A
+/// selection with `chain.len() <= 1` or explicit segment mode widens
+/// only to the seed sub-edge.
+pub fn resolve_grid_target(
+    seed_index: usize,
+    chain: &[usize],
+    is_chain_mode: bool,
+    graph: &DriveAisleGraph,
+    params: &ParkingParams,
+    region_debug: &RegionDebug,
+) -> Option<Target> {
+    let seed = graph.edges.get(seed_index)?;
+    let s = graph.vertices[seed.start];
+    let e = graph.vertices[seed.end];
+
+    let abs_a = world_to_abstract_vertex(s, params, Some(region_debug), 0.5);
+    let abs_b = world_to_abstract_vertex(e, params, Some(region_debug), 0.5);
+
+    let scope = match (abs_a, abs_b) {
+        (Some(a), Some(b)) if a.region == b.region => {
+            // Seed on-grid. Default to the seed's own extents, then
+            // widen to the full chain within the same region.
+            let seed_scope = ChainLatticeEdge {
+                region: a.region,
+                xa: a.xi,
+                ya: a.yi,
+                xb: b.xi,
+                yb: b.yi,
+            };
+            if is_chain_mode && chain.len() > 1 {
+                let region_info = region_debug.regions.iter().find(|r| r.id == a.region)?;
+                let chain_pts = chain_world_points(chain, graph);
+                chain_extents_in_region(&chain_pts, params, region_info).unwrap_or(seed_scope)
+            } else {
+                seed_scope
+            }
+        }
+        _ => {
+            // Seed off-grid — fall back to chain junctions via the
+            // strict projection.
+            let chain_pts = chain_world_points(chain, graph);
+            chain_to_abstract_lattice_edge(&chain_pts, params, Some(region_debug))?
+        }
+    };
+    grid_target_from_scope(scope)
+}
+
+fn chain_world_points(chain: &[usize], graph: &DriveAisleGraph) -> Vec<Vec2> {
+    let mut pts = Vec::with_capacity(chain.len() * 2);
+    for ei in chain {
+        if let Some(e) = graph.edges.get(*ei) {
+            pts.push(graph.vertices[e.start]);
+            pts.push(graph.vertices[e.end]);
+        }
+    }
+    pts
+}
+
+/// Structural equality of two targets. Compares fields — ignores
+/// stop-order (`(s1, s2)` vs `(s2, s1)` match) for grid ranges and
+/// uses a small epsilon on parametric `t` / `arc` so floating-point
+/// round-trips through JSON stay equal.
+pub fn targets_equal(a: &Target, b: &Target) -> bool {
+    match (a, b) {
+        (
+            Target::Grid {
+                region: ra,
+                axis: aa,
+                coord: ca,
+                range: rna,
+            },
+            Target::Grid {
+                region: rb,
+                axis: ab,
+                coord: cb,
+                range: rnb,
+            },
+        ) => {
+            if ra != rb || aa != ab || ca != cb {
+                return false;
+            }
+            match (rna, rnb) {
+                (None, None) => true,
+                (Some((a0, a1)), Some((b0, b1))) => {
+                    (grid_stops_equal(a0, b0) && grid_stops_equal(a1, b1))
+                        || (grid_stops_equal(a0, b1) && grid_stops_equal(a1, b0))
+                }
+                _ => false,
+            }
+        }
+        (Target::DriveLine { id: ai, t: at }, Target::DriveLine { id: bi, t: bt }) => {
+            ai == bi && (at - bt).abs() < 1e-3
+        }
+        (
+            Target::Perimeter {
+                loop_: al,
+                arc: aa,
+            },
+            Target::Perimeter {
+                loop_: bl,
+                arc: ba,
+            },
+        ) => loops_equal(al, bl) && (aa - ba).abs() < 1e-3,
+        _ => false,
+    }
+}
+
+fn grid_stops_equal(a: &GridStop, b: &GridStop) -> bool {
+    match (a, b) {
+        (GridStop::Lattice { other: x }, GridStop::Lattice { other: y }) => x == y,
+        (GridStop::CrossesDriveLine { id: x }, GridStop::CrossesDriveLine { id: y }) => x == y,
+        (GridStop::CrossesPerimeter { loop_: x }, GridStop::CrossesPerimeter { loop_: y }) => {
+            loops_equal(x, y)
+        }
+        _ => false,
+    }
+}
+
+fn loops_equal(a: &PerimeterLoop, b: &PerimeterLoop) -> bool {
+    match (a, b) {
+        (PerimeterLoop::Outer, PerimeterLoop::Outer) => true,
+        (PerimeterLoop::Hole { index: x }, PerimeterLoop::Hole { index: y }) => x == y,
+        _ => false,
+    }
+}
+
 // Touch imports that aren't read yet but document intent for future
 // resolvers. Cheap enough that dropping them reintroduces churn.
 #[allow(dead_code)]
