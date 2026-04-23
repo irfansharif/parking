@@ -1,10 +1,10 @@
 //! Drive-aisle graph: topology, auto-generation, and planar-arrangement
 //! region decomposition.
 //!
-//!   aisle   — Phase A auto-generation (`auto_generate`), manual/auto
-//!             merge (`merge_with_auto`), `Region` struct, and all the
-//!             cross-cutting helpers (inset-distance derivation, hole
-//!             snapping, interval math).
+//!   aisle   — Phase A auto-generation (`auto_generate`), `Region`
+//!             struct, and all the cross-cutting helpers
+//!             (inset-distance derivation, hole snapping, interval
+//!             math).
 //!   regions — Planar-arrangement face enumeration (`enumerate_regions`)
 //!             used by `aisle::decompose_regions` to slice the lot into
 //!             independently-configurable regions.

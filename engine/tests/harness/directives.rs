@@ -9,7 +9,7 @@
 
 use parking_lot_engine::pipeline::generate::generate;
 use parking_lot_engine::types::{
-    AisleDirection, AisleEdge, Annotation, Axis, DebugToggles, DriveAisleGraph, DriveLine,
+    AisleDirection, Annotation, Axis, DebugToggles, DriveLine,
     EdgeArc, GenerateInput, GridStop, HolePin, ParkingLayout, ParkingParams, PerimeterLoop,
     Polygon, RegionId, Target, TrafficDirection, Vec2,
 };
@@ -20,7 +20,8 @@ use crate::harness::svg;
 pub struct FixtureCtx {
     pub input: GenerateInput,
     pub last_layout: Option<ParkingLayout>,
-    /// Root directory where `snapshots/<name>.svg` goldens live.
+    /// Root directory where `<name>.svg` goldens live — currently
+    /// `engine/tests/testdata/`, the same dir as the `.txt` fixtures.
     pub snapshot_root: PathBuf,
     /// Default snapshot name when a `snapshot` directive omits one;
     /// derived from the fixture file stem.
@@ -53,7 +54,6 @@ impl FixtureCtx {
         Self {
             input: GenerateInput {
                 boundary: Polygon::default(),
-                aisle_graph: None,
                 drive_lines: Vec::new(),
                 annotations: Vec::new(),
                 params: ParkingParams::default(),
@@ -98,8 +98,6 @@ pub fn execute(ctx: &mut FixtureCtx, command: &str, body: &str) -> Result<Outcom
         "annotations" => annotations_cmd(ctx),
         "stall-modifier-json" => stall_modifier_json(ctx, body),
         "drive-line" => drive_line_cmd(ctx, rest, body),
-        "vertex" => vertex_cmd(ctx, rest),
-        "edge" => edge_cmd(ctx, rest),
         "edge-select" => edge_select_cmd(ctx, rest),
         "edge-delete" => edge_delete_cmd(ctx),
         "edge-cycle" => edge_cycle_cmd(ctx),
@@ -675,68 +673,6 @@ fn fmt_xy(v: f64) -> String {
     }
 }
 
-fn vertex_cmd(ctx: &mut FixtureCtx, args: &str) -> Result<Outcome, String> {
-    let mut parts = args.splitn(2, char::is_whitespace);
-    let action = parts.next().unwrap_or("").trim();
-    let tail = parts.next().unwrap_or("").trim();
-    match action {
-        "add" => {
-            let p = parse_xy(tail)?;
-            let graph = ctx.input.aisle_graph.get_or_insert_with(|| DriveAisleGraph {
-                vertices: Vec::new(),
-                edges: Vec::new(),
-                perim_vertex_count: 0,
-            });
-            let idx = graph.vertices.len();
-            graph.vertices.push(p);
-            Ok(Outcome {
-                output: format!("{}", idx),
-                ..Default::default()
-            })
-        }
-        other => Err(format!("vertex: unknown action {:?}", other)),
-    }
-}
-
-fn edge_cmd(ctx: &mut FixtureCtx, args: &str) -> Result<Outcome, String> {
-    let mut parts = args.splitn(2, char::is_whitespace);
-    let action = parts.next().unwrap_or("").trim();
-    let tail = parts.next().unwrap_or("").trim();
-    match action {
-        "add" => {
-            let (s, e) = tail
-                .split_once(',')
-                .ok_or_else(|| "edge add requires i,j".to_string())?;
-            let start = s
-                .trim()
-                .parse::<usize>()
-                .map_err(|e| format!("edge start: {}", e))?;
-            let end = e
-                .trim()
-                .parse::<usize>()
-                .map_err(|e| format!("edge end: {}", e))?;
-            let width = ctx.input.params.aisle_width / 2.0;
-            let graph = ctx.input.aisle_graph.get_or_insert_with(|| DriveAisleGraph {
-                vertices: Vec::new(),
-                edges: Vec::new(),
-                perim_vertex_count: 0,
-            });
-            graph.edges.push(AisleEdge {
-                start,
-                end,
-                width,
-                interior: false,
-                direction: AisleDirection::TwoWay,
-            });
-            Ok(Outcome {
-                output: format!("edge {}->{}", start, end),
-                ..Default::default()
-            })
-        }
-        other => Err(format!("edge: unknown action {:?}", other)),
-    }
-}
-
 /// Parse the UI's one-line annotation DSL:
 ///   annotation <kind> on=<substrate> [axis=...] [coord=...]
 ///              [range=whole | at=<stop> | range=<s1>,<s2>] [traffic=...]
@@ -982,7 +918,6 @@ fn edge_delete_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
         .ok_or_else(|| "edge-delete requires a prior `edge-select`".to_string())?;
     let target = resolve_selection_target(ctx, &sel)?;
     ctx.input.annotations.push(parking_lot_engine::types::Annotation::DeleteEdge { target });
-    ctx.input.aisle_graph = None;
     Ok(Outcome {
         output: "edge-delete".to_string(),
         ..Default::default()
@@ -1017,7 +952,6 @@ fn edge_cycle_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
             traffic: TrafficDirection::TwoWayOriented,
         });
     }
-    ctx.input.aisle_graph = None;
     Ok(Outcome {
         output: "edge-cycle".to_string(),
         ..Default::default()

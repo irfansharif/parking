@@ -13,11 +13,18 @@ pub struct SvgOptions {
     /// Outer margin around the boundary bbox, as a fraction of the max
     /// bbox dimension. 0.05 means +5% on every side.
     pub margin: f64,
+    /// Pixels per user-unit (ft). Controls the SVG's declared `width`/
+    /// `height` so stalls render at a fixed physical size regardless of
+    /// which viewer is showing the file.
+    pub px_per_unit: f64,
 }
 
 impl Default for SvgOptions {
     fn default() -> Self {
-        Self { margin: 0.05 }
+        Self {
+            margin: 0.05,
+            px_per_unit: 2.0,
+        }
     }
 }
 
@@ -28,7 +35,7 @@ pub fn render(boundary: &Polygon, layout: &ParkingLayout, opts: &SvgOptions) -> 
     // hide the curvature and desync from the generated aisles.
     let discretized = discretize_polygon(boundary);
 
-    let (min, max) = bbox(&discretized);
+    let (min, max) = content_bbox(&discretized, layout);
     let w = (max.x - min.x).max(1.0);
     let h = (max.y - min.y).max(1.0);
     let pad = w.max(h) * opts.margin;
@@ -37,13 +44,28 @@ pub fn render(boundary: &Polygon, layout: &ParkingLayout, opts: &SvgOptions) -> 
     let vb_h = h + 2.0 * pad;
 
     let mut out = String::new();
+    // `width`/`height` pin the canonical render size so a 9×18 stall
+    // is always the same number of pixels, no matter which viewer
+    // opens the file. `preserveAspectRatio="xMidYMid meet"` is the
+    // SVG default, but stating it explicitly guards against viewers
+    // that would otherwise stretch the viewBox non-uniformly to fill
+    // their pane (which makes top/bottom stalls read shorter than
+    // the left/right ones).
     out.push_str(&format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{} {} {} {}\">\n",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"{} {} {} {}\" preserveAspectRatio=\"xMidYMid meet\">\n",
+        f(vb_w * opts.px_per_unit),
+        f(vb_h * opts.px_per_unit),
         f(vb_min.x),
         f(vb_min.y),
         f(vb_w),
         f(vb_h),
     ));
+    // Keep strokes at a constant pixel width regardless of how the
+    // viewer scales the viewBox — otherwise small preview panes drop
+    // stall boundaries below one pixel and the row reads as a solid
+    // band. `vector-effect` doesn't inherit through `<g>` in the
+    // spec, so apply it via CSS.
+    out.push_str("<style>polygon,line{vector-effect:non-scaling-stroke}</style>\n");
     // SVG y-axis flips down, but parking coords treat y-up. We mirror
     // the whole picture so a CCW outer boundary stays visually CCW.
     out.push_str(&format!(
@@ -182,17 +204,38 @@ fn polygon_el<P: AsRef<[Vec2]>>(pts: P, fill: Option<&str>) -> String {
     s
 }
 
-fn bbox(boundary: &Polygon) -> (Vec2, Vec2) {
+/// Union of every renderable point — boundary, aisle polygons, stall
+/// quads. Perimeter stalls sit outside the user-drawn boundary, so a
+/// boundary-only bbox clips them on smaller lots (DESIGN note: the
+/// boundary the user draws is the drive-aisle perimeter, and stalls
+/// extend beyond it).
+fn content_bbox(boundary: &Polygon, layout: &ParkingLayout) -> (Vec2, Vec2) {
     let mut min = Vec2::new(f64::INFINITY, f64::INFINITY);
     let mut max = Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for p in &boundary.outer {
+    let mut extend = |p: &Vec2| {
         min.x = min.x.min(p.x);
         min.y = min.y.min(p.y);
         max.x = max.x.max(p.x);
         max.y = max.y.max(p.y);
+    };
+    for p in &boundary.outer {
+        extend(p);
+    }
+    for poly in &layout.aisle_polygons {
+        for p in poly {
+            extend(p);
+        }
+    }
+    for s in &layout.stalls {
+        if s.kind == StallKind::Suppressed {
+            continue;
+        }
+        for p in &s.corners {
+            extend(p);
+        }
     }
     if min.x.is_infinite() {
-        // Empty boundary; fall back to a unit box at origin.
+        // Empty content; fall back to a unit box at origin.
         return (Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0));
     }
     (min, max)

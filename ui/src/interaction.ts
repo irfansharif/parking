@@ -95,10 +95,6 @@ export function setupInteraction(
     }
 
     if (closest) {
-      // Switch active lot to the one owning this vertex.
-      if (closest.ref.lotId) {
-        app.state.activeLotId = closest.ref.lotId;
-      }
       app.state.selectedVertex = closest.ref;
       app.state.selectedEdge = null;
       app.state.isDragging = closest.ref.type !== "aisle";
@@ -123,21 +119,21 @@ export function setupInteraction(
         lastEdgeClickIdx = edgeHit.index;
         app.state.selectedEdge = edgeHit;
         // Sync: also select annotation on this edge if one exists.
-        const activeLot = app.activeLot();
-        const graph = app.getEffectiveAisleGraph(activeLot);
+        const lot = app.state.lot;
+        const graph = app.getEffectiveAisleGraph();
         if (graph) {
           const edge = graph.edges[edgeHit.index];
           if (edge) {
             const s = graph.vertices[edge.start];
             const e = graph.vertices[edge.end];
             const mid = { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 };
-            const annIdx = activeLot.annotations.findIndex((a) => {
-              const ap = annotationWorldPos(a, activeLot, app.state.params);
+            const annIdx = lot.annotations.findIndex((a) => {
+              const ap = annotationWorldPos(a, lot, app.state.params);
               if (!ap) return false;
               return Math.sqrt((ap.x - mid.x) ** 2 + (ap.y - mid.y) ** 2) < 5;
             });
             if (annIdx >= 0) {
-              app.state.selectedVertex = { type: "annotation", index: annIdx, lotId: activeLot.id };
+              app.state.selectedVertex = { type: "annotation", index: annIdx };
             }
           }
         }
@@ -281,51 +277,46 @@ export function setupInteraction(
     let bestIdx = -1;
     let bestTarget: "outer" | "hole" = "outer";
     let bestHoleIdx = -1;
-    let bestLotId = "";
 
-    for (const lot of app.state.lots) {
-      const outer = lot.boundary.outer;
-      for (let i = 0; i < outer.length; i++) {
-        const a = outer[i];
-        const b = outer[(i + 1) % outer.length];
-        const arc = lot.boundary.outer_arcs?.[i];
+    const lot = app.state.lot;
+    const outer = lot.boundary.outer;
+    for (let i = 0; i < outer.length; i++) {
+      const a = outer[i];
+      const b = outer[(i + 1) % outer.length];
+      const arc = lot.boundary.outer_arcs?.[i];
+      const dist = arc
+        ? pointToArcDist(worldPos, a, arc, b)
+        : pointToSegmentDist(worldPos, a, b);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIdx = i;
+        bestTarget = "outer";
+      }
+    }
+    for (let hi = 0; hi < lot.boundary.holes.length; hi++) {
+      const hole = lot.boundary.holes[hi];
+      for (let i = 0; i < hole.length; i++) {
+        const a = hole[i];
+        const b = hole[(i + 1) % hole.length];
+        const arc = lot.boundary.hole_arcs?.[hi]?.[i];
         const dist = arc
           ? pointToArcDist(worldPos, a, arc, b)
           : pointToSegmentDist(worldPos, a, b);
         if (dist < bestDist) {
           bestDist = dist;
           bestIdx = i;
-          bestTarget = "outer";
-          bestLotId = lot.id;
-        }
-      }
-      for (let hi = 0; hi < lot.boundary.holes.length; hi++) {
-        const hole = lot.boundary.holes[hi];
-        for (let i = 0; i < hole.length; i++) {
-          const a = hole[i];
-          const b = hole[(i + 1) % hole.length];
-          const arc = lot.boundary.hole_arcs?.[hi]?.[i];
-          const dist = arc
-            ? pointToArcDist(worldPos, a, arc, b)
-            : pointToSegmentDist(worldPos, a, b);
-          if (dist < bestDist) {
-            bestDist = dist;
-            bestIdx = i;
-            bestTarget = "hole";
-            bestHoleIdx = hi;
-            bestLotId = lot.id;
-          }
+          bestTarget = "hole";
+          bestHoleIdx = hi;
         }
       }
     }
 
     const threshold = 10;
     if (bestDist < threshold) {
-      app.state.activeLotId = bestLotId;
       if (bestTarget === "outer") {
-        app.insertBoundaryVertex(bestIdx, worldPos, bestLotId);
+        app.insertBoundaryVertex(bestIdx, worldPos);
       } else {
-        app.insertHoleVertex(bestHoleIdx, bestIdx, worldPos, bestLotId);
+        app.insertHoleVertex(bestHoleIdx, bestIdx, worldPos);
       }
     }
   });
@@ -363,7 +354,7 @@ export function setupInteraction(
         app.cycleEdgeDirection(app.state.selectedEdge);
         renderer.render(app.state);
       } else if (sel?.type === "drive-line") {
-        app.toggleDriveLinePartitions(sel.index, sel.lotId);
+        app.toggleDriveLinePartitions(sel.index);
         renderer.render(app.state);
       } else if (sel?.type === "boundary-hole" && sel.holeIndex !== undefined) {
         app.toggleSeparator(sel.holeIndex, sel.index);
@@ -382,15 +373,15 @@ export function setupInteraction(
       const sel = app.state.selectedVertex;
       if (!sel) return;
       if (sel.type === "annotation") {
-        app.deleteAnnotation(sel.index, sel.lotId);
+        app.deleteAnnotation(sel.index);
       } else if (sel.type === "boundary-outer") {
-        app.deleteBoundaryVertex(sel.index, sel.lotId);
+        app.deleteBoundaryVertex(sel.index);
       } else if (sel.type === "boundary-hole" && sel.holeIndex !== undefined) {
-        app.deleteHoleVertex(sel.holeIndex, sel.index, sel.lotId);
+        app.deleteHoleVertex(sel.holeIndex, sel.index);
       } else if (sel.type === "aisle") {
-        app.deleteAisleVertexByAnnotation(sel.index, sel.lotId);
+        app.deleteAisleVertexByAnnotation(sel.index);
       } else if (sel.type === "drive-line") {
-        app.deleteDriveLine(sel.index, sel.lotId);
+        app.deleteDriveLine(sel.index);
       }
       renderer.render(app.state);
     }
@@ -433,26 +424,24 @@ function hitTestRegionVectorBody(worldPos: Vec2, app: App, worldRadius: number):
   const halfLen = 30;
   let best: { ref: VertexRef; dist: number } | null = null;
 
-  for (const lot of app.state.lots) {
-    const rd = lot.layout?.region_debug;
-    if (!rd) continue;
+  const rd = app.state.lot.layout?.region_debug;
+  if (!rd) return null;
 
-    for (let i = 0; i < rd.regions.length; i++) {
-      const region = rd.regions[i];
-      const angleRad = region.aisle_angle_deg * (Math.PI / 180);
-      const dirX = Math.cos(angleRad);
-      const dirY = Math.sin(angleRad);
-      const cx = region.center.x;
-      const cy = region.center.y;
-      const sx = cx - dirX * halfLen;
-      const sy = cy - dirY * halfLen;
-      const ex = cx + dirX * halfLen;
-      const ey = cy + dirY * halfLen;
+  for (let i = 0; i < rd.regions.length; i++) {
+    const region = rd.regions[i];
+    const angleRad = region.aisle_angle_deg * (Math.PI / 180);
+    const dirX = Math.cos(angleRad);
+    const dirY = Math.sin(angleRad);
+    const cx = region.center.x;
+    const cy = region.center.y;
+    const sx = cx - dirX * halfLen;
+    const sy = cy - dirY * halfLen;
+    const ex = cx + dirX * halfLen;
+    const ey = cy + dirY * halfLen;
 
-      const dist = pointToSegmentDist(worldPos, { x: sx, y: sy }, { x: ex, y: ey });
-      if (dist < worldRadius && (!best || dist < best.dist)) {
-        best = { ref: { type: "region-vector", index: i, endpoint: "body", lotId: lot.id }, dist };
-      }
+    const dist = pointToSegmentDist(worldPos, { x: sx, y: sy }, { x: ex, y: ey });
+    if (dist < worldRadius && (!best || dist < best.dist)) {
+      best = { ref: { type: "region-vector", index: i, endpoint: "body" }, dist };
     }
   }
 

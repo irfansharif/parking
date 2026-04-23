@@ -1,4 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -15 330 230">
+<svg xmlns="http://www.w3.org/2000/svg" width="791.780" height="591.780" viewBox="-47.945 -47.945 395.890 295.890" preserveAspectRatio="xMidYMid meet">
+<style>polygon,line{vector-effect:non-scaling-stroke}</style>
 <g transform="translate(0,200) scale(1,-1)">
 <g id="boundary" fill="none" stroke="#222" stroke-width="0.5">
 <polygon points="0,0 300,0 300,200 0,200"/>

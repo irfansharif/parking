@@ -138,7 +138,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
   regCheckbox.checked = !!app.state.params.use_regions;
   regCheckbox.addEventListener("change", () => {
     (app.state.params as any).use_regions = regCheckbox.checked;
-    for (const lot of app.state.lots) lot.aisleGraph = null;
     app.generate();
   });
   regLabel.appendChild(regCheckbox);
@@ -352,21 +351,11 @@ function syncParamInputs(container: HTMLElement, app: App): void {
 function updateMetrics(container: HTMLElement, app: App): void {
   container.querySelectorAll(".metric-row").forEach((el) => el.remove());
 
-  let totalStalls = 0;
-  for (const lot of app.state.lots) {
-    if (lot.layout) totalStalls += lot.layout.metrics.total_stalls;
-  }
+  const totalStalls = app.state.lot.layout?.metrics.total_stalls ?? 0;
   if (totalStalls === 0) return;
 
-  const metrics = [
-    { label: "Total Stalls", value: totalStalls },
-    { label: "Lots", value: app.state.lots.length },
-  ];
-
-  for (const m of metrics) {
-    const row = document.createElement("div");
-    row.className = "metric-row";
-    row.innerHTML = `<span>${m.label}</span><span class="value">${m.value}</span>`;
-    container.appendChild(row);
-  }
+  const row = document.createElement("div");
+  row.className = "metric-row";
+  row.innerHTML = `<span>Total Stalls</span><span class="value">${totalStalls}</span>`;
+  container.appendChild(row);
 }

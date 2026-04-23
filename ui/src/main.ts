@@ -27,18 +27,17 @@ async function main() {
     renderer.render(app.state);
   });
 
-  // Fit all lot boundaries in the canvas with some padding.
+  // Fit the lot boundary in the canvas with some padding.
   {
     const container = canvas.parentElement!;
     const cw = container.clientWidth;
     const ch = container.clientHeight;
     const xs: number[] = [];
     const ys: number[] = [];
-    for (const lot of app.state.lots) {
-      for (const v of lot.boundary.outer) { xs.push(v.x); ys.push(v.y); }
-      xs.push(lot.aisleVector.start.x, lot.aisleVector.end.x);
-      ys.push(lot.aisleVector.start.y, lot.aisleVector.end.y);
-    }
+    const lot = app.state.lot;
+    for (const v of lot.boundary.outer) { xs.push(v.x); ys.push(v.y); }
+    xs.push(lot.aisleVector.start.x, lot.aisleVector.end.x);
+    ys.push(lot.aisleVector.start.y, lot.aisleVector.end.y);
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
@@ -63,33 +62,8 @@ async function main() {
   // Expose fixture dumper for debugging. Usage:
   //   copy(window.dumpFixture())
   // Then paste into tests/testdata/<name>.txt
-  // For multi-lot, dumps each lot with new-lot/select-lot commands.
   (window as any).dumpFixture = () => {
-    if (app.state.lots.length <= 1) {
-      return debug_input_js((window as any).__parkingInput);
-    }
-    const parts: string[] = [];
-    for (let i = 0; i < app.state.lots.length; i++) {
-      const lot = app.state.lots[i];
-      const input = {
-        boundary: lot.boundary,
-        aisle_graph: lot.aisleGraph,
-        drive_lines: lot.driveLines,
-        annotations: lot.annotations.filter((a: any) => a._active !== false),
-        params: app.state.params,
-        debug: app.state.debug,
-        regionOverrides: Object.entries(lot.regionOverrides).map(([k, v]: [string, any]) => ({
-          region_id: Number(k),
-          aisle_angle_deg: v.angle,
-          aisle_offset: v.offset,
-        })),
-      };
-      if (i > 0) {
-        parts.push(`new-lot\n----\nnew-lot: ${lot.id}\n`);
-      }
-      parts.push(debug_input_js(JSON.stringify(input)));
-    }
-    return parts.join("\n");
+    return debug_input_js((window as any).__parkingInput);
   };
 }
 

@@ -2,7 +2,7 @@ use crate::annotations::{apply_annotations, resolve_regions_for_frames, Resolved
 use crate::geom::clip::{clip_stalls_to_boundary, point_in_polygon, remove_conflicting_stalls};
 use crate::geom::inset::{inset_polygon, signed_area};
 use crate::geom::poly::{point_in_or_on_face, simplify_contour};
-use crate::graph::{auto_generate, compute_inset_d, decompose_regions, derive_raw_holes, derive_raw_outer, intersect_line_polygon, merge_with_auto, subtract_intervals, Region};
+use crate::graph::{auto_generate, compute_inset_d, decompose_regions, derive_raw_holes, derive_raw_outer, intersect_line_polygon, subtract_intervals, Region};
 use crate::pipeline::bays::{extract_faces, normalize_face_winding};
 use crate::pipeline::corridors::{
     deduplicate_corridors, generate_miter_fills, merge_corridor_shapes,
@@ -58,16 +58,12 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         .map(|dl| (dl.id, dl.start, dl.end))
         .collect();
 
-    // First, resolve the aisle graph from manual + auto as usual.
-    let mut graph = match input.aisle_graph.clone() {
-        Some(manual) => merge_with_auto(manual, &input.boundary, &input.params),
-        None => auto_generate(
-            &input.boundary,
-            &input.params,
-            &partitioning_lines,
-            &input.region_overrides,
-        ),
-    };
+    let mut graph = auto_generate(
+        &input.boundary,
+        &input.params,
+        &partitioning_lines,
+        &input.region_overrides,
+    );
 
     // Append drive line edges on top — they're additive and should
     // not cause auto edges to be filtered out. Drive-line vertices
@@ -946,8 +942,8 @@ pub fn generate_from_spines(
         );
     }
 
+    let islands = compute_islands(&faces, &all_tagged, 10.0);
     let all_stalls: Vec<StallQuad> = all_tagged.iter().map(|(s, _)| s.clone()).collect();
-    let islands = compute_islands(&faces, &all_stalls, 10.0);
 
     // Build spine lines for visualization: primary + extension.
     // If the short-segment filter is active, only include spines that

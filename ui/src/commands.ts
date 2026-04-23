@@ -34,41 +34,23 @@ export function createCommandAPI(app: App): CommandAPI {
 
       switch (cmd) {
         case "clear": {
-          const lot = app.activeLot();
+          const lot = app.state.lot;
           lot.boundary = { outer: [], holes: [], outer_arcs: [], hole_arcs: [] };
           lot.driveLines = [];
           lot.annotations = [];
-          lot.aisleGraph = null;
           return "cleared";
-        }
-
-        case "new-lot": {
-          // Create a new empty lot and switch to it.
-          const newLot = app.addLot({ outer: [], holes: [], outer_arcs: [], hole_arcs: [] });
-          return `new-lot: ${newLot.id}`;
-        }
-
-        case "select-lot": {
-          // Switch active lot by index (0-based).
-          const idx = parseInt(parts[1]);
-          if (idx < 0 || idx >= app.state.lots.length) {
-            return `error: lot index ${idx} out of range (${app.state.lots.length} lots)`;
-          }
-          app.state.activeLotId = app.state.lots[idx].id;
-          return `select-lot: ${idx}`;
         }
 
         case "polygon": {
           const subtype = parts[1]; // "outer" or "hole"
           if (!body) return "error: polygon requires body with vertices";
           const points = parsePoints(body);
-          const lot = app.activeLot();
+          const lot = app.state.lot;
           if (subtype === "outer") {
             lot.boundary.outer = points;
             lot.boundary.holes = [];
             lot.driveLines = [];
             lot.annotations = [];
-            lot.aisleGraph = null;
           } else if (subtype === "hole") {
             lot.boundary.holes.push(points);
           }
@@ -85,7 +67,6 @@ export function createCommandAPI(app: App): CommandAPI {
           // Handle boolean params (use_regions).
           if (rawVal === "true" || rawVal === "false") {
             (app.state.params as any)[key] = rawVal === "true";
-            for (const lot of app.state.lots) lot.aisleGraph = null;
             app.generate();
             return `set ${key}=${rawVal}`;
           }
@@ -106,84 +87,25 @@ export function createCommandAPI(app: App): CommandAPI {
             return `error: debug ${key} requires true|false`;
           }
           (app.state.debug as any)[key] = rawVal === "true";
-          for (const lot of app.state.lots) lot.aisleGraph = null;
           app.generate();
           return `debug ${key}=${rawVal}`;
         }
 
-        case "vertex": {
-          const action = parts[1];
-          const lot = app.activeLot();
-          if (action === "add") {
-            const coords = parts[2];
-            const [x, y] = coords.split(",").map(Number);
-            if (!lot.aisleGraph) {
-              lot.aisleGraph = { vertices: [], edges: [], perim_vertex_count: 0 };
-            }
-            const g = lot.aisleGraph;
-            const idx = g.vertices.length;
-            g.vertices.push({ x, y });
-            return String(idx);
-          } else if (action === "move") {
-            const idx = parseInt(parts[2]);
-            const coords = parts[3];
-            const [x, y] = coords.split(",").map(Number);
-            if (lot.aisleGraph && idx < lot.aisleGraph.vertices.length) {
-              lot.aisleGraph.vertices[idx] = { x, y };
-            }
-            return `moved vertex ${idx} to ${x},${y}`;
-          }
-          return "error: unknown vertex action";
-        }
-
-        case "edge": {
-          const action = parts[1];
-          const lot = app.activeLot();
-          if (action === "add") {
-            const coords = parts[2];
-            const [v1, v2] = coords.split(",").map(Number);
-            if (!lot.aisleGraph) {
-              lot.aisleGraph = { vertices: [], edges: [], perim_vertex_count: 0 };
-            }
-            lot.aisleGraph.edges.push({
-              start: v1,
-              end: v2,
-              width: app.state.params.aisle_width / 2,
-              interior: false,
-              direction: "TwoWay",
-            });
-            return `edge ${v1}->${v2}`;
-          }
-          return "error: unknown edge action";
-        }
-
         case "generate": {
           app.generate();
-          if (app.state.lots.length === 1) {
-            const m = app.activeLot().layout?.metrics;
-            if (!m) return "error: generate failed";
-            return `total_stalls: ${m.total_stalls}`;
-          }
-          // Multi-lot: report per-lot and total.
-          let total = 0;
-          const perLot: string[] = [];
-          for (let i = 0; i < app.state.lots.length; i++) {
-            const m = app.state.lots[i].layout?.metrics;
-            const n = m?.total_stalls ?? 0;
-            perLot.push(`lot_${i}: ${n}`);
-            total += n;
-          }
-          return `total_stalls: ${total}\n${perLot.join("\n")}`;
+          const m = app.state.lot.layout?.metrics;
+          if (!m) return "error: generate failed";
+          return `total_stalls: ${m.total_stalls}`;
         }
 
         case "state": {
-          return JSON.stringify(app.activeLot().layout);
+          return JSON.stringify(app.state.lot.layout);
         }
 
         case "dormant": {
           // Report the dormant annotation indices from the most recent
           // generate. Each entry is an index into lot.annotations.
-          const layout = app.activeLot().layout;
+          const layout = app.state.lot.layout;
           if (!layout) return "error: no layout";
           const dormant = (layout as any).dormant_annotations ?? [];
           if (dormant.length === 0) {
@@ -304,7 +226,7 @@ export function createCommandAPI(app: App): CommandAPI {
           // Dump active annotations in a compact, stable form. Anchor
           // is printed when set (chain-mode annotations carry a
           // separate click-anchor for marker placement).
-          const lot = app.activeLot();
+          const lot = app.state.lot;
           const lines = lot.annotations
             .filter((a: any) => a._active !== false)
             .map((a: any) => formatAnnotation(a));
@@ -314,7 +236,7 @@ export function createCommandAPI(app: App): CommandAPI {
         case "hole": {
           if (!body) return "error: hole requires body with vertices";
           const points = parsePoints(body);
-          app.activeLot().boundary.holes.push(points);
+          app.state.lot.boundary.holes.push(points);
           return `hole: ${points.length} vertices`;
         }
 
@@ -330,7 +252,7 @@ export function createCommandAPI(app: App): CommandAPI {
           const idMatch = command.match(/\bid=(\d+)/);
           const pinMatch = command.match(/hole-pin=(\d+),(\d+)/);
           const partitions = /\bpartitions\b/.test(command);
-          const lot = app.activeLot();
+          const lot = app.state.lot;
           const id = idMatch ? parseInt(idMatch[1]) : app.newDriveLineId();
           if (idMatch) app.bumpDriveLineId(id);
           if (pinMatch) {
@@ -368,7 +290,7 @@ export function createCommandAPI(app: App): CommandAPI {
           //   * `<delete-vertex|delete-edge|direction> on=<substrate> ...`
           //     — all other annotations in the new substrate-local model.
           const subtype = parts[1];
-          const lot = app.activeLot();
+          const lot = app.state.lot;
           if (subtype === "delete-vertex-at-index") {
             let idx: number | undefined;
             for (const p of parts.slice(2)) {
@@ -414,7 +336,7 @@ export function createCommandAPI(app: App): CommandAPI {
           // <id> is a RegionId (stable hash of the bounding separator
           // pair) — accepted as a decimal u64 or "0x..." hex. Look it up
           // in the last layout's region_debug.regions[].id.
-          const lot = app.activeLot();
+          const lot = app.state.lot;
           let regionId: number | undefined;
           let angle: number | undefined;
           let offset: number | undefined;
@@ -437,7 +359,6 @@ export function createCommandAPI(app: App): CommandAPI {
           }
           if (angle !== undefined) lot.regionOverrides[regionKey].angle = angle;
           if (offset !== undefined) lot.regionOverrides[regionKey].offset = offset;
-          lot.aisleGraph = null;
           app.generate();
           const spec = parts.slice(1).join(" ");
           return spec;
@@ -448,7 +369,7 @@ export function createCommandAPI(app: App): CommandAPI {
           // Usage: arc outer <edgeIdx> <bulge>
           //        arc hole <holeIdx> <edgeIdx> <bulge>
           const target = parts[1]; // "outer" or "hole"
-          const lot = app.activeLot();
+          const lot = app.state.lot;
           if (target === "outer") {
             const edgeIdx = parseInt(parts[2]);
             const bulge = parseFloat(parts[3]);
@@ -456,7 +377,6 @@ export function createCommandAPI(app: App): CommandAPI {
               lot.boundary.outer_arcs = new Array(lot.boundary.outer.length).fill(null);
             }
             lot.boundary.outer_arcs[edgeIdx] = { bulge };
-            lot.aisleGraph = null;
             return `arc outer edge ${edgeIdx}`;
           } else if (target === "hole") {
             const holeIdx = parseInt(parts[2]);
@@ -467,7 +387,6 @@ export function createCommandAPI(app: App): CommandAPI {
               lot.boundary.hole_arcs[holeIdx] = new Array(lot.boundary.holes[holeIdx].length).fill(null);
             }
             lot.boundary.hole_arcs[holeIdx][edgeIdx] = { bulge };
-            lot.aisleGraph = null;
             return `arc hole ${holeIdx} edge ${edgeIdx}`;
           }
           return "error: arc target must be 'outer' or 'hole'";
@@ -492,7 +411,7 @@ export function createCommandAPI(app: App): CommandAPI {
     },
 
     getState(): object {
-      return app.activeLot().layout ?? {};
+      return app.state.lot.layout ?? {};
     },
   };
 }

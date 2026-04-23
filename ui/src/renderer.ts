@@ -51,12 +51,12 @@ export class Renderer {
       this.drawSnapGuides(state.snapGuides, cam, w, h);
     }
 
-    // 2–5. Per-lot rendering
-    for (const lot of state.lots) {
-      this.drawBoundary(state, lot);
+    // 2–5. Lot rendering
+    const lot = state.lot;
+    this.drawBoundary(state, lot);
 
-      const layout = lot.layout;
-      if (!layout) continue;
+    const layout = lot.layout;
+    if (layout) {
 
       if (state.layers.faces && layout.faces) {
         for (let i = 0; i < layout.faces.length; i++) {
@@ -219,8 +219,7 @@ export class Renderer {
       if (state.layers.paintLines) {
         this.drawPaintLines(state, lot);
       }
-
-    } // end per-lot loop
+    }
 
     // 6. Vertex network overlay (always called; individual sections
     //    check their own layer flags inside).
@@ -228,9 +227,8 @@ export class Renderer {
 
     // 6b. Skeleton source vertices drawn after vertex network.
     if (state.layers.skeletonDebug) {
-      for (const lot of state.lots) {
-        const skd = lot.layout?.skeleton_debug;
-        if (!skd) continue;
+      const skd = state.lot.layout?.skeleton_debug;
+      if (skd) {
         const colors = Renderer.FACE_COLORS;
         for (let si = 0; si < skd.length; si++) {
           const sk = skd[si];
@@ -345,7 +343,6 @@ export class Renderer {
   private drawBoundary(state: AppState, lot: ParkingLot): void {
     const { ctx } = this;
     const { boundary } = lot;
-    const isActive = lot.id === state.activeLotId;
 
     const derivedOuter = lot.layout?.derived_outer ?? boundary.outer;
     ctx.beginPath();
@@ -356,7 +353,7 @@ export class Renderer {
     if (state.layers.vertices) {
       ctx.beginPath();
       this.tracePathWithArcs(boundary.outer, boundary.outer_arcs);
-      ctx.strokeStyle = isActive ? "rgba(233, 69, 96, 0.8)" : "rgba(233, 69, 96, 0.4)";
+      ctx.strokeStyle = "rgba(233, 69, 96, 0.8)";
       ctx.lineWidth = 1;
       ctx.stroke();
     }
@@ -374,15 +371,15 @@ export class Renderer {
         const holeArcs = boundary.hole_arcs?.[hi];
         ctx.beginPath();
         this.tracePathWithArcs(hole, holeArcs);
-        ctx.strokeStyle = isActive ? "rgba(233, 69, 96, 0.6)" : "rgba(233, 69, 96, 0.3)";
+        ctx.strokeStyle = "rgba(233, 69, 96, 0.6)";
         ctx.lineWidth = 0.8;
         ctx.stroke();
       }
 
       // Draw edge midpoint / apex handles.
-      this.drawEdgeHandles(boundary.outer, boundary.outer_arcs, isActive);
+      this.drawEdgeHandles(boundary.outer, boundary.outer_arcs);
       for (let hi = 0; hi < boundary.holes.length; hi++) {
-        this.drawEdgeHandles(boundary.holes[hi], boundary.hole_arcs?.[hi], isActive);
+        this.drawEdgeHandles(boundary.holes[hi], boundary.hole_arcs?.[hi]);
       }
     }
   }
@@ -390,11 +387,10 @@ export class Renderer {
   private drawEdgeHandles(
     points: Vec2[],
     arcs: (EdgeArc | null)[] | undefined,
-    isActive: boolean,
   ): void {
     const { ctx } = this;
-    const alpha = isActive ? 0.6 : 0.25;
-    const ghostAlpha = isActive ? 0.4 : 0.15;
+    const alpha = 0.6;
+    const ghostAlpha = 0.4;
 
     for (let i = 0; i < points.length; i++) {
       const p0 = points[i];
@@ -700,11 +696,8 @@ export class Renderer {
 
   private drawVertexNetwork(state: AppState): void {
     const { ctx } = this;
-    const activeLot = state.lots.find((l) => l.id === state.activeLotId);
-
     const graph: DriveAisleGraph | null =
-      activeLot?.aisleGraph ?? activeLot?.layout?.resolved_graph ?? null;
-    const isManualGraph = activeLot?.aisleGraph != null;
+      state.lot.layout?.resolved_graph ?? null;
 
     // Draw aisle graph edges (dashed lines)
     if (graph && state.layers.vertices) {
@@ -733,9 +726,7 @@ export class Renderer {
             ? isTwoWayOriented ? "rgba(100, 200, 255, 0.7)" : "rgba(255, 180, 50, 0.7)"
             : isPerimeter
               ? "rgba(255, 100, 100, 0.5)"
-              : isManualGraph
-                ? "rgba(100, 150, 255, 0.5)"
-                : "rgba(100, 150, 255, 0.3)";
+              : "rgba(100, 150, 255, 0.3)";
         ctx.lineWidth = isSegmentSelected ? 2.5 : isSelected ? 1.5 : isDirected ? 1.0 : 0.5;
         ctx.beginPath();
         ctx.moveTo(start.x, start.y);
@@ -816,7 +807,7 @@ export class Renderer {
     }
 
     // Draw drive line edges (solid green + faint infinite extent)
-    const allDriveLines = state.layers.driveLines ? state.lots.flatMap((l) => l.driveLines) : [];
+    const allDriveLines = state.layers.driveLines ? state.lot.driveLines : [];
     for (const dl of allDriveLines) {
       const dir = { x: dl.end.x - dl.start.x, y: dl.end.y - dl.start.y };
       const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y);
@@ -862,80 +853,73 @@ export class Renderer {
       return [{
         pos: v,
         ref: { type: "aisle" as const, index: i },
-        color: isManualGraph
-          ? "rgba(100, 150, 255, 0.9)"
-          : "rgba(100, 150, 255, 0.5)",
+        color: "rgba(100, 150, 255, 0.5)",
       }];
     });
 
+    const lot = state.lot;
+
     const driveLineVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
     if (state.layers.driveLines) {
-      for (const lot of state.lots) {
-        lot.driveLines.forEach((dl, i) => {
-          driveLineVerts.push({
-            pos: dl.start,
-            ref: { type: "drive-line", index: i, endpoint: "start", lotId: lot.id },
-            color: "#00ff88",
-          });
-          driveLineVerts.push({
-            pos: dl.end,
-            ref: { type: "drive-line", index: i, endpoint: "end", lotId: lot.id },
-            color: "#00ff88",
-          });
+      lot.driveLines.forEach((dl, i) => {
+        driveLineVerts.push({
+          pos: dl.start,
+          ref: { type: "drive-line", index: i, endpoint: "start" },
+          color: "#00ff88",
         });
-      }
-    }
-
-    const annotationVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
-    for (const lot of state.lots) {
-      lot.annotations.forEach((ann, i) => {
-        const pos = annotationWorldPos(ann, lot, state.params);
-        if (!pos) return;
-        const isDelete =
-          ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
-        const isTwoWayOri =
-          ann.kind === "Direction" &&
-          (ann.traffic === "TwoWayOriented" ||
-            ann.traffic === "TwoWayOrientedReverse");
-        const activeColor = isDelete
-          ? "rgba(255, 80, 80, 0.95)"
-          : isTwoWayOri
-            ? "rgba(100, 200, 255, 0.95)"
-            : "rgba(255, 180, 50, 0.95)";
-        const inactiveColor = isDelete
-          ? "rgba(255, 80, 80, 0.3)"
-          : isTwoWayOri
-            ? "rgba(100, 200, 255, 0.3)"
-            : "rgba(255, 180, 50, 0.3)";
-        annotationVerts.push({
-          pos,
-          ref: { type: "annotation", index: i, lotId: lot.id },
-          color: ann._active === false ? inactiveColor : activeColor,
+        driveLineVerts.push({
+          pos: dl.end,
+          ref: { type: "drive-line", index: i, endpoint: "end" },
+          color: "#00ff88",
         });
       });
     }
 
+    const annotationVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
+    lot.annotations.forEach((ann, i) => {
+      const pos = annotationWorldPos(ann, lot, state.params);
+      if (!pos) return;
+      const isDelete =
+        ann.kind === "DeleteVertex" || ann.kind === "DeleteEdge";
+      const isTwoWayOri =
+        ann.kind === "Direction" &&
+        (ann.traffic === "TwoWayOriented" ||
+          ann.traffic === "TwoWayOrientedReverse");
+      const activeColor = isDelete
+        ? "rgba(255, 80, 80, 0.95)"
+        : isTwoWayOri
+          ? "rgba(100, 200, 255, 0.95)"
+          : "rgba(255, 180, 50, 0.95)";
+      const inactiveColor = isDelete
+        ? "rgba(255, 80, 80, 0.3)"
+        : isTwoWayOri
+          ? "rgba(100, 200, 255, 0.3)"
+          : "rgba(255, 180, 50, 0.3)";
+      annotationVerts.push({
+        pos,
+        ref: { type: "annotation", index: i },
+        color: ann._active === false ? inactiveColor : activeColor,
+      });
+    });
+
     const boundaryVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
     if (state.layers.vertices) {
-      for (const lot of state.lots) {
-        const isActive = lot.id === state.activeLotId;
-        lot.boundary.outer.forEach((v, i) => {
+      lot.boundary.outer.forEach((v, i) => {
+        boundaryVerts.push({
+          pos: v,
+          ref: { type: "boundary-outer", index: i },
+          color: "rgba(255, 160, 50, 0.9)",
+        });
+      });
+      lot.boundary.holes.forEach((hole, hi) => {
+        hole.forEach((v, vi) => {
           boundaryVerts.push({
             pos: v,
-            ref: { type: "boundary-outer", index: i, lotId: lot.id },
-            color: isActive ? "rgba(255, 160, 50, 0.9)" : "rgba(255, 160, 50, 0.4)",
+            ref: { type: "boundary-hole", index: vi, holeIndex: hi },
+            color: "rgba(255, 120, 50, 0.9)",
           });
         });
-        lot.boundary.holes.forEach((hole, hi) => {
-          hole.forEach((v, vi) => {
-            boundaryVerts.push({
-              pos: v,
-              ref: { type: "boundary-hole", index: vi, holeIndex: hi, lotId: lot.id },
-              color: isActive ? "rgba(255, 120, 50, 0.9)" : "rgba(255, 120, 50, 0.4)",
-            });
-          });
-        });
-      }
+      });
     }
 
     const allVerts = [
@@ -994,9 +978,9 @@ export class Renderer {
     const colors = Renderer.FACE_COLORS;
     const halfLen = 30;
 
-    for (const lot of state.lots) {
-      const rd = lot.layout?.region_debug;
-      if (!rd || rd.regions.length === 0) continue;
+    {
+      const rd = state.lot.layout?.region_debug;
+      if (!rd || rd.regions.length === 0) return;
 
       for (let i = 0; i < rd.regions.length; i++) {
         const region = rd.regions[i];
@@ -1042,7 +1026,7 @@ export class Renderer {
           { pos: { x: ex, y: ey }, endpoint: "end" },
         ];
         for (const ep of endpoints) {
-          const ref: VertexRef = { type: "region-vector", index: i, endpoint: ep.endpoint, lotId: lot.id };
+          const ref: VertexRef = { type: "region-vector", index: i, endpoint: ep.endpoint };
           const isSelected = this.vertexRefsEqual(ref, state.selectedVertex);
           const isHovered = this.vertexRefsEqual(ref, state.hoveredVertex);
           const radius = isSelected || isHovered ? 6 : 4.5;
@@ -1064,7 +1048,6 @@ export class Renderer {
   ): boolean {
     if (!a || !b) return false;
     if (a.type !== b.type || a.index !== b.index) return false;
-    if (a.lotId !== b.lotId) return false;
     if (a.type === "boundary-hole")
       return a.holeIndex === (b as VertexRef).holeIndex;
     if (a.type === "drive-line" || a.type === "aisle-vector" || a.type === "region-vector")

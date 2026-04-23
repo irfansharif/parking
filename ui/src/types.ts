@@ -121,9 +121,7 @@ export type Annotation = EngineAnnotation & { _active?: boolean };
 // ---------------------------------------------------------------------------
 
 export interface ParkingLot {
-  id: string;
   boundary: Polygon;
-  aisleGraph: import("./bindings").DriveAisleGraph | null;
   driveLines: DriveLine[];
   annotations: Annotation[];
   aisleVector: { start: Vec2; end: Vec2 };

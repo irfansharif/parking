@@ -3,6 +3,9 @@
 /**
  * `RegionId` stays in JavaScript's safe-integer range by construction
  * (see `from_signature` packing), so we expose it to TS as `number`
- * rather than ts-rs's default `bigint` mapping for `u64`.
+ * rather than ts-rs's default `bigint` mapping for `u64`. Serde
+ * (de)serializes through the inner `u64` via manual impls rather than
+ * `#[serde(transparent)]` because ts-rs 12's serde-compat parser
+ * doesn't understand that attribute and emits a noisy warning.
  */
 export type RegionId = number;

@@ -29,7 +29,7 @@ const SNAP_SCREEN_PX = 8;
 const RELEASE_SCREEN_PX = 16;
 
 function refsEqual(a: VertexRef, b: VertexRef): boolean {
-  return a.type === b.type && a.index === b.index && a.holeIndex === b.holeIndex && a.lotId === b.lotId;
+  return a.type === b.type && a.index === b.index && a.holeIndex === b.holeIndex;
 }
 
 // Compute snapped position and active guide lines for a cursor at rawPos.

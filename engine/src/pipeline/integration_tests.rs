@@ -253,8 +253,7 @@ mod tests {
         let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces);
         let tagged_stalls = clip_stalls_to_boundary(tagged_stalls, &boundary.outer, &[]);
         let tagged_stalls = remove_conflicting_stalls(tagged_stalls, &[], &[]);
-        let all_stalls: Vec<StallQuad> = tagged_stalls.iter().map(|(s, _)| s.clone()).collect();
-        let islands = compute_islands(&faces, &all_stalls, 10.0);
+        let islands = compute_islands(&faces, &tagged_stalls, 10.0);
 
         // No island should have area close to the boundary or the hole.
         // No island should be as large as the full boundary or the hole itself.
@@ -689,7 +688,6 @@ mod tests {
                 holes: vec![],
                 ..Default::default()
             },
-            aisle_graph: None,
             drive_lines: vec![],
             annotations: vec![],
             params: ParkingParams::default(),
@@ -783,7 +781,6 @@ mod tests {
                 holes: vec![],
                 ..Default::default()
             },
-            aisle_graph: None,
             drive_lines: vec![],
             annotations: vec![],
             params: ParkingParams::default(),
@@ -876,7 +873,6 @@ mod tests {
                 ]],
                 ..Default::default()
             },
-            aisle_graph: None,
             drive_lines: vec![
                 DriveLine {
                     start: Vec2::new(-50.0, 250.0),
@@ -1070,7 +1066,6 @@ mod tests {
                 holes: vec![],
                 ..Default::default()
             },
-            aisle_graph: None,
             drive_lines: vec![
                 DriveLine {
                     start: Vec2::new(150.0, -50.0),

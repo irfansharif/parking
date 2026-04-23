@@ -131,23 +131,6 @@ pub fn format_fixture(input: &GenerateInput) -> String {
         }
     }
 
-    // Aisle graph vertices and edges.
-    if let Some(ref graph) = input.aisle_graph {
-        out.push('\n');
-        for (i, v) in graph.vertices.iter().enumerate() {
-            out.push_str(&format!(
-                "vertex add {},{}\n----\n{}\n\n",
-                fmt_coord(v.x), fmt_coord(v.y), i
-            ));
-        }
-        for e in &graph.edges {
-            out.push_str(&format!(
-                "edge add {},{}\n----\nedge {}->{}\n\n",
-                e.start, e.end, e.start, e.end
-            ));
-        }
-    }
-
     // Region overrides. Keyed by RegionId (u64 hex) rather than the
     // old unstable integer index.
     for ov in &input.region_overrides {

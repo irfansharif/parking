@@ -18,12 +18,6 @@ fn testdata_dir() -> PathBuf {
         .join("testdata")
 }
 
-fn snapshot_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("snapshots")
-}
-
 fn update_snapshots() -> bool {
     matches!(
         std::env::var("UPDATE_SNAPSHOTS").as_deref(),
@@ -43,7 +37,7 @@ fn run_fixture(path: &Path) {
         .unwrap_or("snapshot")
         .to_string();
 
-    let mut ctx = FixtureCtx::new(snapshot_dir(), default_name, update);
+    let mut ctx = FixtureCtx::new(testdata_dir(), default_name, update);
     let mut actuals: Vec<String> = Vec::with_capacity(cases.len());
     let mut failures: Vec<String> = Vec::new();
 
@@ -209,11 +203,6 @@ fn partitioning_dangling() {
 #[test]
 fn half_hull() {
     run_fixture(&testdata_dir().join("half-hull.txt"));
-}
-
-#[test]
-fn manual_aisle_graph() {
-    run_fixture(&testdata_dir().join("manual-aisle-graph.txt"));
 }
 
 #[test]

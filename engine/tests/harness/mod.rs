@@ -9,7 +9,8 @@
 //!   <expected output lines>
 //!
 //! Text directives assert on engine output; the `snapshot` directive
-//! emits a deterministic SVG and diffs against `engine/tests/snapshots/`.
+//! emits a deterministic SVG and diffs against the `.svg` golden sitting
+//! next to the fixture under `engine/tests/testdata/`.
 //!
 //! Run with `cargo test -p parking-lot-engine` or, to refresh goldens,
 //! `UPDATE_SNAPSHOTS=1 cargo test -p parking-lot-engine`.

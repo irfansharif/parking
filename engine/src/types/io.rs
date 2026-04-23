@@ -37,7 +37,7 @@ pub struct ParkingParams {
     /// length of a face along the aisle: dy = stalls_per_face *
     /// stall_pitch. Was `cross_aisle_max_run` (a float in stall-pitch
     /// units); now an integer count.
-    #[serde(default, alias = "cross_aisle_max_run", alias = "cross_aisle_spacing")]
+    #[serde(default)]
     pub stalls_per_face: u32,
     #[serde(default)]
     pub use_regions: bool,
@@ -184,7 +184,6 @@ impl Default for DebugToggles {
 #[ts(export)]
 pub struct GenerateInput {
     pub boundary: Polygon,
-    pub aisle_graph: Option<DriveAisleGraph>,
     #[serde(default)]
     pub drive_lines: Vec<DriveLine>,
     #[serde(default)]

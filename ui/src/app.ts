@@ -48,7 +48,6 @@ export interface VertexRef {
   index: number;
   holeIndex?: number;
   endpoint?: "start" | "end" | "body";
-  lotId?: string;
   cpTarget?: "outer" | "hole";
 }
 
@@ -81,8 +80,7 @@ export interface LayerVisibility {
 }
 
 export interface AppState {
-  lots: ParkingLot[];
-  activeLotId: string;
+  lot: ParkingLot;
   params: ParkingParams;
   debug: DebugToggles;
   selectedVertex: VertexRef | null;
@@ -109,7 +107,6 @@ export class App {
   state: AppState;
   private generateFn: GenerateFn;
   private onUpdate: () => void;
-  private nextLotId = 1;
   private nextDriveLineId = 1;
 
   /** Mint a fresh drive-line id. Splice annotations key off this. */
@@ -131,7 +128,6 @@ export class App {
     this.onUpdate = onUpdate;
 
     const defaultLot: ParkingLot = {
-      id: "lot-0",
       boundary: {
         outer: [
           { x: 76.30, y: 0 },
@@ -150,7 +146,6 @@ export class App {
         outer_arcs: [],
         hole_arcs: [],
       },
-      aisleGraph: null,
       annotations: [
         {
           kind: "DeleteEdge",
@@ -190,8 +185,7 @@ export class App {
     };
 
     this.state = {
-      lots: [defaultLot],
-      activeLotId: "lot-0",
+      lot: defaultLot,
       params: {
         stall_width: 9,
         stall_depth: 18,
@@ -255,38 +249,15 @@ export class App {
     };
   }
 
-  // ── Lot helpers ──────────────────────────────────────────────────────
-
-  activeLot(): ParkingLot {
-    return this.state.lots.find((l) => l.id === this.state.activeLotId)!;
-  }
-
-  lotById(id: string): ParkingLot | undefined {
-    return this.state.lots.find((l) => l.id === id);
-  }
-
-  /** Resolve the lot a VertexRef belongs to. Falls back to active lot. */
-  lotForRef(ref: VertexRef): ParkingLot {
-    if (ref.lotId) {
-      return this.lotById(ref.lotId) ?? this.activeLot();
-    }
-    return this.activeLot();
-  }
-
-  private newLotId(): string {
-    return `lot-${this.nextLotId++}`;
-  }
-
-  addLot(boundary: Polygon): ParkingLot {
-    const id = this.newLotId();
-    // Compute centroid for aisle vector placement.
+  /** Replace the lot's boundary (used by add-boundary mode). Resets
+   *  driveLines, annotations, region overrides, and reorients the
+   *  aisle vector over the new boundary's centroid. */
+  replaceBoundary(boundary: Polygon): void {
     const cx = boundary.outer.reduce((s, v) => s + v.x, 0) / boundary.outer.length;
     const cy = boundary.outer.reduce((s, v) => s + v.y, 0) / boundary.outer.length;
     const initialVector = aisleVectorFromAngle(90, 0, { x: cx, y: cy });
-    const lot: ParkingLot = {
-      id,
+    this.state.lot = {
       boundary,
-      aisleGraph: null,
       driveLines: [],
       annotations: [],
       aisleVector: initialVector,
@@ -294,29 +265,12 @@ export class App {
       regionOverrides: {},
       layout: null,
     };
-    this.state.lots.push(lot);
-    this.state.activeLotId = id;
-    return lot;
-  }
-
-  deleteLot(id: string): void {
-    this.state.lots = this.state.lots.filter((l) => l.id !== id);
-    if (this.state.activeLotId === id) {
-      this.state.activeLotId = this.state.lots[0]?.id ?? "";
-    }
   }
 
   generate(): void {
-    for (const lot of this.state.lots) {
-      this.generateLot(lot);
-    }
-    this.onUpdate();
-  }
-
-  generateLot(lot: ParkingLot): void {
+    const lot = this.state.lot;
     const input: GenerateInput = {
       boundary: lot.boundary,
-      aisle_graph: lot.aisleGraph,
       drive_lines: lot.driveLines,
       annotations: lot.annotations.filter((a) => a._active !== false),
       params: this.state.params,
@@ -329,24 +283,20 @@ export class App {
       stall_modifiers: [],
     };
     const inputJson = JSON.stringify(input);
-    if (lot.id === this.state.activeLotId) {
-      (window as any).__parkingInput = inputJson;
-    }
+    (window as any).__parkingInput = inputJson;
     try {
       const resultJson = this.generateFn(inputJson);
       lot.layout = JSON.parse(resultJson);
     } catch (e) {
-      console.error(`Generate failed for lot ${lot.id}:`, e);
+      console.error("Generate failed:", e);
     }
+    this.onUpdate();
   }
 
   setParam(key: keyof ParkingParams, value: number): void {
     (this.state.params as any)[key] = value;
-    for (const lot of this.state.lots) {
-      lot.aisleGraph = null;
-    }
     if (key === "aisle_angle_deg" || key === "aisle_offset") {
-      this.syncAisleVector(this.activeLot());
+      this.syncAisleVector(this.state.lot);
     }
     this.generate();
   }
@@ -379,126 +329,95 @@ export class App {
     lot.aisleVector = aisleVectorFromAngle(angleDeg, 0, newCenter);
   }
 
-  // Returns the effective aisle graph for a lot (default: active lot).
-  getEffectiveAisleGraph(lot?: ParkingLot): DriveAisleGraph | null {
-    const l = lot ?? this.activeLot();
-    return l.aisleGraph ?? l.layout?.resolved_graph ?? null;
-  }
-
-  // Promote the auto-generated (resolved) graph into the editable
-  // aisleGraph so it can be dragged/modified.
-  materializeAisleGraph(lot?: ParkingLot): void {
-    const l = lot ?? this.activeLot();
-    if (l.aisleGraph) return;
-    const resolved = l.layout?.resolved_graph;
-    if (!resolved) return;
-    l.aisleGraph = {
-      vertices: resolved.vertices.map((v) => ({ ...v })),
-      edges: resolved.edges.map((e) => ({ ...e })),
-      perim_vertex_count: resolved.perim_vertex_count,
-    };
+  getEffectiveAisleGraph(): DriveAisleGraph | null {
+    return this.state.lot.layout?.resolved_graph ?? null;
   }
 
   getAllVertices(): { ref: VertexRef; pos: Vec2 }[] {
     const result: { ref: VertexRef; pos: Vec2 }[] = [];
+    const lot = this.state.lot;
 
-    for (const lot of this.state.lots) {
-      const lid = lot.id;
-
-      // Region vector endpoints — highest hit-test priority.
-      const rd = lot.layout?.region_debug;
-      if (rd) {
-        const halfLen = 30;
-        for (let i = 0; i < rd.regions.length; i++) {
-          const region = rd.regions[i];
-          const angleRad = region.aisle_angle_deg * (Math.PI / 180);
-          const dirX = Math.cos(angleRad);
-          const dirY = Math.sin(angleRad);
-          const cx = region.center.x;
-          const cy = region.center.y;
-          result.push({
-            ref: { type: "region-vector", index: i, endpoint: "start", lotId: lid },
-            pos: { x: cx - dirX * halfLen, y: cy - dirY * halfLen },
-          });
-          result.push({
-            ref: { type: "region-vector", index: i, endpoint: "end", lotId: lid },
-            pos: { x: cx + dirX * halfLen, y: cy + dirY * halfLen },
-          });
-        }
+    // Region vector endpoints — highest hit-test priority.
+    const rd = lot.layout?.region_debug;
+    if (rd) {
+      const halfLen = 30;
+      for (let i = 0; i < rd.regions.length; i++) {
+        const region = rd.regions[i];
+        const angleRad = region.aisle_angle_deg * (Math.PI / 180);
+        const dirX = Math.cos(angleRad);
+        const dirY = Math.sin(angleRad);
+        const cx = region.center.x;
+        const cy = region.center.y;
+        result.push({
+          ref: { type: "region-vector", index: i, endpoint: "start" },
+          pos: { x: cx - dirX * halfLen, y: cy - dirY * halfLen },
+        });
+        result.push({
+          ref: { type: "region-vector", index: i, endpoint: "end" },
+          pos: { x: cx + dirX * halfLen, y: cy + dirY * halfLen },
+        });
       }
-      // Annotation anchors: resolve each annotation's target to its
-      // current world position. Dormant annotations (substrate missing)
-      // return null and are skipped.
-      lot.annotations.forEach((ann, i) => {
-        const pos = annotationWorldPos(ann, lot, this.state.params);
-        if (pos) {
-          result.push({ ref: { type: "annotation", index: i, lotId: lid }, pos });
-        }
-      });
-      // Drive-line vertices.
-      lot.driveLines.forEach((dl, i) => {
-        result.push({
-          ref: { type: "drive-line", index: i, endpoint: "start", lotId: lid },
-          pos: dl.start,
-        });
-        result.push({
-          ref: { type: "drive-line", index: i, endpoint: "end", lotId: lid },
-          pos: dl.end,
-        });
-      });
-      // Edge midpoint handles — highest priority, shown on every edge.
-      // Dragging creates or adjusts the edge's arc (apex follows the
-      // drag; snapping back to the chord removes the arc).
-      for (let i = 0; i < lot.boundary.outer.length; i++) {
-        const a = lot.boundary.outer[i];
-        const b = lot.boundary.outer[(i + 1) % lot.boundary.outer.length];
-        const arc = lot.boundary.outer_arcs?.[i];
+    }
+    // Annotation anchors: resolve each annotation's target to its
+    // current world position. Dormant annotations (substrate missing)
+    // return null and are skipped.
+    lot.annotations.forEach((ann, i) => {
+      const pos = annotationWorldPos(ann, lot, this.state.params);
+      if (pos) {
+        result.push({ ref: { type: "annotation", index: i }, pos });
+      }
+    });
+    // Drive-line vertices.
+    lot.driveLines.forEach((dl, i) => {
+      result.push({ ref: { type: "drive-line", index: i, endpoint: "start" }, pos: dl.start });
+      result.push({ ref: { type: "drive-line", index: i, endpoint: "end" }, pos: dl.end });
+    });
+    // Edge midpoint handles — highest priority, shown on every edge.
+    // Dragging creates or adjusts the edge's arc (apex follows the
+    // drag; snapping back to the chord removes the arc).
+    for (let i = 0; i < lot.boundary.outer.length; i++) {
+      const a = lot.boundary.outer[i];
+      const b = lot.boundary.outer[(i + 1) % lot.boundary.outer.length];
+      const arc = lot.boundary.outer_arcs?.[i];
+      const pos = arc
+        ? arcApex(a, b, arc.bulge)
+        : { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      result.push({ ref: { type: "edge-midpoint", index: i, cpTarget: "outer" }, pos });
+    }
+    // Boundary vertices.
+    lot.boundary.outer.forEach((v, i) => {
+      result.push({ ref: { type: "boundary-outer", index: i }, pos: v });
+    });
+    lot.boundary.holes.forEach((hole, hi) => {
+      // Edge midpoint handles for hole edges.
+      for (let i = 0; i < hole.length; i++) {
+        const a = hole[i];
+        const b = hole[(i + 1) % hole.length];
+        const arc = lot.boundary.hole_arcs?.[hi]?.[i];
         const pos = arc
           ? arcApex(a, b, arc.bulge)
           : { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
         result.push({
-          ref: { type: "edge-midpoint", index: i, cpTarget: "outer", lotId: lid },
+          ref: { type: "edge-midpoint", index: i, cpTarget: "hole", holeIndex: hi },
           pos,
         });
       }
-      // Boundary vertices.
-      lot.boundary.outer.forEach((v, i) => {
-        result.push({ ref: { type: "boundary-outer", index: i, lotId: lid }, pos: v });
+      // Hole vertices.
+      hole.forEach((v, vi) => {
+        result.push({ ref: { type: "boundary-hole", index: vi, holeIndex: hi }, pos: v });
       });
-      lot.boundary.holes.forEach((hole, hi) => {
-        // Edge midpoint handles for hole edges.
-        for (let i = 0; i < hole.length; i++) {
-          const a = hole[i];
-          const b = hole[(i + 1) % hole.length];
-          const arc = lot.boundary.hole_arcs?.[hi]?.[i];
-          const pos = arc
-            ? arcApex(a, b, arc.bulge)
-            : { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-          result.push({
-            ref: { type: "edge-midpoint", index: i, cpTarget: "hole", holeIndex: hi, lotId: lid },
-            pos,
-          });
-        }
-        // Hole vertices.
-        hole.forEach((v, vi) => {
-          result.push({
-            ref: { type: "boundary-hole", index: vi, holeIndex: hi, lotId: lid },
-            pos: v,
-          });
-        });
+    });
+    const graph = this.getEffectiveAisleGraph();
+    if (graph) {
+      graph.vertices.forEach((v, i) => {
+        result.push({ ref: { type: "aisle", index: i }, pos: v });
       });
-      const graph = this.getEffectiveAisleGraph(lot);
-      if (graph) {
-        graph.vertices.forEach((v, i) => {
-          result.push({ ref: { type: "aisle", index: i, lotId: lid }, pos: v });
-        });
-      }
     }
     return result;
   }
 
   moveVertex(ref: VertexRef, pos: Vec2): void {
-    const lot = this.lotForRef(ref);
+    const lot = this.state.lot;
     if (ref.type === "edge-midpoint") {
       // Drag edge midpoint → update the edge's arc bulge so its apex
       // lands at `pos` (projected onto the chord-perpendicular bisector;
@@ -531,7 +450,6 @@ export class App {
           lot.boundary.hole_arcs[hi][ref.index] = { bulge };
         }
       }
-      lot.aisleGraph = null;
     } else if (ref.type === "boundary-outer") {
       // Arc bulges are stored as a signed scalar independent of
       // endpoint positions, so moving an endpoint automatically
@@ -540,7 +458,6 @@ export class App {
       for (const dl of lot.driveLines) {
         this.resolveBoundaryPin(dl, lot);
       }
-      lot.aisleGraph = null;
     } else if (ref.type === "boundary-hole" && ref.holeIndex !== undefined) {
       lot.boundary.holes[ref.holeIndex][ref.index] = pos;
       for (const dl of lot.driveLines) {
@@ -548,7 +465,6 @@ export class App {
           dl.start = pos;
         }
       }
-      lot.aisleGraph = null;
     } else if (ref.type === "annotation") {
       // Annotations are anchored to stable identities (abstract grid
       // coords or drive-line splice positions), not draggable in world
@@ -558,7 +474,7 @@ export class App {
       const dl = lot.driveLines[ref.index];
       if (dl.holePin && ref.endpoint === "start") {
         this.moveVertex(
-          { type: "boundary-hole", index: dl.holePin.vertexIndex, holeIndex: dl.holePin.holeIndex, lotId: lot.id },
+          { type: "boundary-hole", index: dl.holePin.vertexIndex, holeIndex: dl.holePin.holeIndex },
           pos,
         );
         return;
@@ -570,7 +486,6 @@ export class App {
       } else if (ref.endpoint === "start" || ref.endpoint === "end") {
         dl[ref.endpoint] = pos;
       }
-      lot.aisleGraph = null;
     } else if (ref.type === "region-vector") {
       const rd = lot.layout?.region_debug;
       const region = rd?.regions[ref.index];
@@ -601,7 +516,6 @@ export class App {
         }
         lot.regionOverrides[regionKey].offset = offset;
       }
-      lot.aisleGraph = null;
     } else if (ref.type === "aisle-vector") {
       const vec = lot.aisleVector;
       if (ref.endpoint === "start") {
@@ -626,20 +540,18 @@ export class App {
       // placed at an arbitrary world position.
       const curProj = midpointPerpProj(vec, this.state.params.aisle_angle_deg);
       this.state.params.aisle_offset = curProj - lot.aisleOffsetBaseline;
-      lot.aisleGraph = null;
     }
     this.generate();
   }
 
   addHole(vertices: Vec2[]): void {
-    const lot = this.activeLot();
+    const lot = this.state.lot;
     lot.boundary.holes.push(vertices);
-    lot.aisleGraph = null;
     this.generate();
   }
 
   toggleEdgeArc(edgeIndex: number, target: "outer" | "hole", holeIndex?: number): void {
-    const lot = this.activeLot();
+    const lot = this.state.lot;
     const verts = target === "outer" ? lot.boundary.outer : lot.boundary.holes[holeIndex!];
     if (target === "outer") {
       if (!lot.boundary.outer_arcs) lot.boundary.outer_arcs = new Array(verts.length).fill(null);
@@ -653,12 +565,11 @@ export class App {
       const arcs = lot.boundary.hole_arcs[holeIndex!];
       arcs[edgeIndex] = arcs[edgeIndex] ? null : defaultArcForEdge();
     }
-    lot.aisleGraph = null;
     this.generate();
   }
 
-  insertBoundaryVertex(index: number, pos: Vec2, lotId?: string): void {
-    const lot = lotId ? this.lotById(lotId)! : this.activeLot();
+  insertBoundaryVertex(index: number, pos: Vec2): void {
+    const lot = this.state.lot;
     lot.boundary.outer.splice(index + 1, 0, pos);
     // Maintain arc array: split the edge's arc at the insertion point,
     // or insert a straight-edge slot.
@@ -674,12 +585,11 @@ export class App {
         lot.boundary.outer_arcs.splice(index + 1, 0, null);
       }
     }
-    lot.aisleGraph = null;
     this.generate();
   }
 
-  deleteBoundaryVertex(index: number, lotId?: string): boolean {
-    const lot = lotId ? this.lotById(lotId)! : this.activeLot();
+  deleteBoundaryVertex(index: number): boolean {
+    const lot = this.state.lot;
     if (lot.boundary.outer.length <= 3) return false;
     lot.boundary.outer.splice(index, 1);
     // Maintain arc array: remove the edge entry and revert the merged
@@ -693,13 +603,12 @@ export class App {
         lot.boundary.outer_arcs[prevEdge % lot.boundary.outer_arcs.length] = null;
       }
     }
-    lot.aisleGraph = null;
     this.generate();
     return true;
   }
 
-  deleteHoleVertex(holeIndex: number, vertexIndex: number, lotId?: string): void {
-    const lot = lotId ? this.lotById(lotId)! : this.activeLot();
+  deleteHoleVertex(holeIndex: number, vertexIndex: number): void {
+    const lot = this.state.lot;
     const hole = lot.boundary.holes[holeIndex];
     if (hole.length <= 3) {
       lot.boundary.holes.splice(holeIndex, 1);
@@ -717,12 +626,11 @@ export class App {
       }
     }
     this.state.selectedVertex = null;
-    lot.aisleGraph = null;
     this.generate();
   }
 
-  insertHoleVertex(holeIndex: number, afterIndex: number, pos: Vec2, lotId?: string): void {
-    const lot = lotId ? this.lotById(lotId)! : this.activeLot();
+  insertHoleVertex(holeIndex: number, afterIndex: number, pos: Vec2): void {
+    const lot = this.state.lot;
     lot.boundary.holes[holeIndex].splice(afterIndex + 1, 0, pos);
     const hc = lot.boundary.hole_arcs?.[holeIndex];
     if (hc && hc.length > 0) {
@@ -738,15 +646,13 @@ export class App {
         hc.splice(afterIndex + 1, 0, null);
       }
     }
-    lot.aisleGraph = null;
     this.generate();
   }
 
   commitPendingHole(): void {
     if (this.state.pendingHole.length >= 3) {
-      const lot = this.activeLot();
+      const lot = this.state.lot;
       lot.boundary.holes.push([...this.state.pendingHole]);
-      lot.aisleGraph = null;
       this.generate();
     }
     this.state.pendingHole = [];
@@ -754,7 +660,7 @@ export class App {
 
   commitPendingBoundary(): void {
     if (this.state.pendingBoundary.length >= 3) {
-      this.addLot({
+      this.replaceBoundary({
         outer: [...this.state.pendingBoundary],
         holes: [],
         outer_arcs: [],
@@ -766,7 +672,7 @@ export class App {
   }
 
   addDriveLine(start: Vec2, end: Vec2): void {
-    this.activeLot().driveLines.push({
+    this.state.lot.driveLines.push({
       id: this.newDriveLineId(),
       start,
       end,
@@ -775,25 +681,24 @@ export class App {
     this.generate();
   }
 
-  deleteAnnotation(index: number, lotId?: string): void {
-    const lot = lotId ? this.lotById(lotId)! : this.activeLot();
+  deleteAnnotation(index: number): void {
+    const lot = this.state.lot;
     lot.annotations.splice(index, 1);
     this.state.selectedVertex = null;
     this.generate();
   }
 
-  toggleDriveLinePartitions(index: number, lotId?: string): void {
-    const lot = (lotId && this.state.lots.find((l) => l.id === lotId)) || this.activeLot();
+  toggleDriveLinePartitions(index: number): void {
+    const lot = this.state.lot;
     const dl = lot.driveLines[index];
     if (!dl) return;
     dl.partitions = !(dl.partitions ?? false);
     lot.regionOverrides = {};
-    lot.aisleGraph = null;
     this.generate();
   }
 
   toggleSeparator(holeIndex: number, vertexIndex: number): void {
-    const lot = this.activeLot();
+    const lot = this.state.lot;
     const idx = lot.driveLines.findIndex(
       (dl) => dl.holePin?.holeIndex === holeIndex && dl.holePin?.vertexIndex === vertexIndex,
     );
@@ -814,13 +719,12 @@ export class App {
       });
     }
     lot.regionOverrides = {};
-    lot.aisleGraph = null;
     this.generate();
   }
 
   /** Project a point onto the nearest outer boundary edge. */
   private nearestBoundaryProjection(pt: Vec2, lot?: ParkingLot): { pos: Vec2; edgeIndex: number; t: number } {
-    const l = lot ?? this.activeLot();
+    const l = lot ?? this.state.lot;
     return computeBoundaryPin(pt, l.boundary.outer, l.boundary.outer_arcs);
   }
 
@@ -836,8 +740,8 @@ export class App {
     dl.end = evalBoundaryEdge(lot.boundary.outer, edgeIndex, t, lot.boundary.outer_arcs);
   }
 
-  cycleAnnotationDirection(index: number, lotId?: string): void {
-    const lot = lotId ? this.lotById(lotId)! : this.activeLot();
+  cycleAnnotationDirection(index: number): void {
+    const lot = this.state.lot;
     const ann = lot.annotations[index];
     if (!ann) return;
     if (ann.kind !== "Direction") return;
@@ -864,18 +768,15 @@ export class App {
   }
 
   cleanupTombstones(): void {
-    let changed = false;
-    for (const lot of this.state.lots) {
-      const before = lot.annotations.length;
-      lot.annotations = lot.annotations.filter((a) => a._active !== false);
-      if (lot.annotations.length !== before) changed = true;
-    }
-    if (changed) this.generate();
+    const lot = this.state.lot;
+    const before = lot.annotations.length;
+    lot.annotations = lot.annotations.filter((a) => a._active !== false);
+    if (lot.annotations.length !== before) this.generate();
   }
 
-  deleteAisleVertexByAnnotation(vertexIndex: number, lotId?: string): void {
-    const lot = lotId ? this.lotById(lotId)! : this.activeLot();
-    const graph = this.getEffectiveAisleGraph(lot);
+  deleteAisleVertexByAnnotation(vertexIndex: number): void {
+    const lot = this.state.lot;
+    const graph = this.getEffectiveAisleGraph();
     if (!graph) return;
     const v = graph.vertices[vertexIndex];
     if (!v) return;
@@ -930,7 +831,6 @@ export class App {
       }
     }
     this.state.selectedVertex = null;
-    lot.aisleGraph = null;
     this.generate();
   }
 
@@ -948,7 +848,7 @@ export class App {
   ): Target | null {
     const regionDebug = lot.layout?.region_debug;
     if (!regionDebug) return null;
-    const graph = this.getEffectiveAisleGraph(lot);
+    const graph = this.getEffectiveAisleGraph();
     if (!graph) return null;
     return resolve_grid_target_js(
       sel.index,
@@ -963,8 +863,8 @@ export class App {
   deleteSelectedEdge(): void {
     const sel = this.state.selectedEdge;
     if (!sel) return;
-    const lot = this.activeLot();
-    const graph = this.getEffectiveAisleGraph(lot);
+    const lot = this.state.lot;
+    const graph = this.getEffectiveAisleGraph();
     if (!graph) return;
     const seedEdge = graph.edges[sel.index];
     if (!seedEdge) return;
@@ -973,7 +873,6 @@ export class App {
     if (target) {
       lot.annotations.push({ kind: "DeleteEdge", target });
       this.state.selectedEdge = null;
-      lot.aisleGraph = null;
       this.generate();
       return;
     }
@@ -1012,20 +911,19 @@ export class App {
       target: { on: "DriveLine", id: sa.drive_line_id, t: (ta + tb) / 2 },
     });
     this.state.selectedEdge = null;
-    lot.aisleGraph = null;
     this.generate();
   }
 
-  deleteDriveLine(index: number, lotId?: string): void {
-    const lot = lotId ? this.lotById(lotId)! : this.activeLot();
+  deleteDriveLine(index: number): void {
+    const lot = this.state.lot;
     lot.driveLines.splice(index, 1);
     this.state.selectedVertex = null;
     this.generate();
   }
 
   cycleEdgeDirection(sel: EdgeRef): void {
-    const lot = this.activeLot();
-    const graph = this.getEffectiveAisleGraph(lot);
+    const lot = this.state.lot;
+    const graph = this.getEffectiveAisleGraph();
     if (!graph) return;
     const seed = graph.edges[sel.index];
     if (!seed) return;
@@ -1043,11 +941,11 @@ export class App {
           traffic: "TwoWayOriented",
           _active: true,
         });
-        this.state.selectedVertex = { type: "annotation", index: annIdx, lotId: lot.id };
+        this.state.selectedVertex = { type: "annotation", index: annIdx };
         this.generate();
       } else {
-        this.cycleAnnotationDirection(existing, lot.id);
-        this.state.selectedVertex = { type: "annotation", index: existing, lotId: lot.id };
+        this.cycleAnnotationDirection(existing);
+        this.state.selectedVertex = { type: "annotation", index: existing };
       }
       return;
     }
@@ -1081,11 +979,11 @@ export class App {
         traffic: "TwoWayOriented",
         _active: true,
       });
-      this.state.selectedVertex = { type: "annotation", index: annIdx, lotId: lot.id };
+      this.state.selectedVertex = { type: "annotation", index: annIdx };
       this.generate();
     } else {
-      this.cycleAnnotationDirection(existing, lot.id);
-      this.state.selectedVertex = { type: "annotation", index: existing, lotId: lot.id };
+      this.cycleAnnotationDirection(existing);
+      this.state.selectedVertex = { type: "annotation", index: existing };
     }
   }
 }

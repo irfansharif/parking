@@ -88,9 +88,16 @@ pub(crate) fn mark_island_stalls(
 
 /// Subtract non-island stalls from each face polygon; residual contours
 /// (with area >= `min_area`) are emitted as landscape islands.
+///
+/// `tagged_stalls` carries each stall's face index, which lets us
+/// bucket once and only diff each face against its own stalls —
+/// O(N) total instead of O(F·N). Stalls are guaranteed to sit inside
+/// their tagged face (see `clip_stalls_to_faces`), so bucketing is
+/// safe: a stall from face A would have zero intersection with face
+/// B's subject polygon anyway.
 pub(crate) fn compute_islands(
     faces: &[Vec<Vec<Vec2>>],
-    all_stalls: &[StallQuad],
+    tagged_stalls: &[(StallQuad, usize)],
     min_area: f64,
 ) -> Vec<Island> {
     let ensure_ccw = |pts: &[Vec2]| -> Vec<Vec2> {
@@ -102,10 +109,12 @@ pub(crate) fn compute_islands(
         else { pts.iter().rev().copied().collect() }
     };
 
-    let all_stall_paths: Vec<Vec<Vec2>> = all_stalls.iter()
-        .filter(|s| s.kind != StallKind::Island)
-        .map(|s| s.corners.to_vec())
-        .collect();
+    let mut stalls_by_face: Vec<Vec<Vec<Vec2>>> = vec![Vec::new(); faces.len()];
+    for (stall, face_idx) in tagged_stalls {
+        if stall.kind == StallKind::Island { continue; }
+        if *face_idx >= faces.len() { continue; }
+        stalls_by_face[*face_idx].push(stall.corners.to_vec());
+    }
 
     let mut islands = Vec::new();
 
@@ -117,7 +126,8 @@ pub(crate) fn compute_islands(
             subj.push(ensure_cw(hole));
         }
 
-        if all_stall_paths.is_empty() {
+        let face_stalls = &stalls_by_face[face_idx];
+        if face_stalls.is_empty() {
             let contour = ensure_ccw(&shape[0]);
             if signed_area(&contour).abs() >= min_area {
                 islands.push(Island { contour, holes: vec![], face_idx });
@@ -125,7 +135,7 @@ pub(crate) fn compute_islands(
             continue;
         }
 
-        let raw = boolean::difference(&subj, &all_stall_paths, FillRule::NonZero);
+        let raw = boolean::difference(&subj, face_stalls, FillRule::NonZero);
 
         for sc in raw {
             if sc.is_empty() { continue; }

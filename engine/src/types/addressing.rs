@@ -134,11 +134,25 @@ impl AbstractFrame {
 
 /// `RegionId` stays in JavaScript's safe-integer range by construction
 /// (see `from_signature` packing), so we expose it to TS as `number`
-/// rather than ts-rs's default `bigint` mapping for `u64`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[serde(transparent)]
+/// rather than ts-rs's default `bigint` mapping for `u64`. Serde
+/// (de)serializes through the inner `u64` via manual impls rather than
+/// `#[serde(transparent)]` because ts-rs 12's serde-compat parser
+/// doesn't understand that attribute and emits a noisy warning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, TS)]
 #[ts(export, type = "number")]
 pub struct RegionId(pub u64);
+
+impl Serialize for RegionId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for RegionId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(RegionId(u64::deserialize(deserializer)?))
+    }
+}
 
 impl RegionId {
     /// Build a stable ID from the three identifying integers. Ordered:

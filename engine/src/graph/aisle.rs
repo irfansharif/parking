@@ -1,6 +1,4 @@
 use crate::geom::boolean::{self, FillRule};
-use crate::geom::clip::polygons_overlap;
-use crate::pipeline::corridors::corridor_polygon;
 use crate::geom::inset::{inset_polygon, raw_inset_polygon, signed_area};
 use crate::types::*;
 
@@ -664,85 +662,6 @@ pub fn auto_generate(
     let total_perim = perim_n + hole_loops.iter().map(|h| h.len()).sum::<usize>();
 
     DriveAisleGraph { vertices, edges, perim_vertex_count: total_perim }
-}
-
-/// Merge a manually-edited graph with the auto-generated one. Auto edges whose
-/// corridor overlaps any manual corridor are removed; the rest fill gaps.
-pub fn merge_with_auto(
-    manual: DriveAisleGraph,
-    boundary: &Polygon,
-    params: &ParkingParams,
-) -> DriveAisleGraph {
-    // merge_with_auto is called from the manual-graph path which does
-    // not itself know whether the caller intends the abstract stamp.
-    // Default to false here — manual overlays don't participate in
-    // the abstract grid refactor.
-    let auto = auto_generate(boundary, params, &[] as &[(u32, Vec2, Vec2)], &[]);
-
-    // Compute corridor polygons for manual edges.
-    let manual_corridors: Vec<Vec<Vec2>> = manual
-        .edges
-        .iter()
-        .map(|e| corridor_polygon(&manual.vertices, e))
-        .collect();
-
-    // Filter auto edges: keep those whose corridor doesn't overlap any manual corridor.
-    let mut surviving_auto_edges: Vec<AisleEdge> = Vec::new();
-    let mut auto_vertex_used = vec![false; auto.vertices.len()];
-
-    for e in &auto.edges {
-        let auto_corridor = corridor_polygon(&auto.vertices, e);
-        let overlaps = manual_corridors
-            .iter()
-            .any(|mc| polygons_overlap(&auto_corridor, mc));
-        if !overlaps {
-            surviving_auto_edges.push(e.clone());
-            auto_vertex_used[e.start] = true;
-            auto_vertex_used[e.end] = true;
-        }
-    }
-
-    // Merge vertices: manual first, then surviving auto vertices.
-    let mut merged_vertices: Vec<Vec2> = manual.vertices.clone();
-    let mut merged_edges: Vec<AisleEdge> = manual.edges.clone();
-
-    let tolerance = 1.0;
-    let mut auto_to_merged: Vec<Option<usize>> = vec![None; auto.vertices.len()];
-
-    for (ai, av) in auto.vertices.iter().enumerate() {
-        if !auto_vertex_used[ai] {
-            continue;
-        }
-        let existing = merged_vertices
-            .iter()
-            .position(|mv| (*mv - *av).length() < tolerance);
-        if let Some(mi) = existing {
-            auto_to_merged[ai] = Some(mi);
-        } else {
-            auto_to_merged[ai] = Some(merged_vertices.len());
-            merged_vertices.push(*av);
-        }
-    }
-
-    for e in &surviving_auto_edges {
-        if let (Some(s), Some(t)) = (auto_to_merged[e.start], auto_to_merged[e.end]) {
-            // Skip zero-length edges (both endpoints merged to the same vertex).
-            if s == t { continue; }
-            merged_edges.push(AisleEdge {
-                start: s,
-                end: t,
-                width: e.width,
-                interior: e.interior,
-                direction: e.direction.clone(),
-            });
-        }
-    }
-
-    DriveAisleGraph {
-        vertices: merged_vertices,
-        edges: merged_edges,
-        perim_vertex_count: auto.perim_vertex_count,
-    }
 }
 
 // ---------------------------------------------------------------------------
