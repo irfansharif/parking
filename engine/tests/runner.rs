@@ -220,3 +220,13 @@ fn manual_aisle_graph() {
 fn hole_boundary_face() {
     run_fixture(&testdata_dir().join("hole-boundary-face.txt"));
 }
+
+#[test]
+fn annotation_multi_region_chain() {
+    run_fixture(&testdata_dir().join("annotation-multi-region-chain.txt"));
+}
+
+#[test]
+fn annotation_chain_vs_segment() {
+    run_fixture(&testdata_dir().join("annotation-chain-vs-segment.txt"));
+}

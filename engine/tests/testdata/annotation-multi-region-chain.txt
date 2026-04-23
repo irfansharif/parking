@@ -1,17 +1,9 @@
-# Regression test for chain-mode 'f' (direction) and 'd' (delete) in a
-# lot split by a partition drive line. Exercises the user-reported bug
-# where:
-#
-#   * chain-mode 'd' silently collapsed to a single sub-edge delete
-#     (chainToAbstractLatticeEdge rejected the chain because the
-#     midpoint was near the partition boundary), and
-#   * chain-mode 'f' stored a multi-cell direction annotation but the
-#     engine couldn't apply it (apply_abstract_direction required a
-#     direct graph edge between the endpoints, which only exists for
-#     adjacent single-cell annotations).
-#
-# Both fixes let chain-mode annotations cover the whole row/column in
-# a region and apply to every sub-edge along it.
+# Chain-mode delete + direction across a partitioned lot. The
+# partition drive line splits the 400×300 lot into left + right
+# regions; chain-mode actions must address the whole column/row of
+# sub-edges in the seed's region, and direction annotations must
+# apply to every sub-edge in the chain (not just the adjacent pair,
+# which was the old apply_abstract_direction bug).
 
 polygon outer
 0,0
@@ -39,10 +31,10 @@ total_stalls: 162
 
 # Chain-mode delete inside the left region. The click at (100, 120)
 # lands on a vertical column aisle; chain expansion walks the whole
-# column (constant x, varying y over 6 cells).
+# column.
 edge-select near=100,120 mode=chain
 ----
-edge-select seed=72 mode=chain chain_len=6
+edge-select seed=120 mode=chain chain_len=6
 
 edge-delete
 ----
@@ -62,7 +54,7 @@ total_stalls: 180
 # Chain-mode direction on a horizontal row in the right region.
 edge-select near=300,120 mode=chain
 ----
-edge-select seed=154 mode=chain chain_len=8
+edge-select seed=136 mode=chain chain_len=8
 
 edge-cycle
 ----

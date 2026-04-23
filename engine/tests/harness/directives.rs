@@ -31,6 +31,21 @@ pub struct FixtureCtx {
     /// that don't specify `id=N` explicitly. Starts at 1 so the
     /// default 0 stays reserved as the "no id" sentinel.
     next_drive_line_id: u32,
+    /// Currently-selected aisle-graph edge (seed + chain + mode) —
+    /// mirrors the UI's `app.state.selectedEdge`. Set by `edge-select`,
+    /// consumed by `edge-delete` / `edge-cycle`.
+    selected_edge: Option<SelectedEdge>,
+}
+
+/// Engine-harness analogue of the UI's `EdgeRef`. Kept in the
+/// directive module since it's pure test state; doesn't need ts-rs
+/// codegen.
+struct SelectedEdge {
+    seed_index: usize,
+    chain: Vec<usize>,
+    /// `true` for chain mode (single-click), `false` for segment mode
+    /// (double-click narrow).
+    is_chain_mode: bool,
 }
 
 impl FixtureCtx {
@@ -51,6 +66,7 @@ impl FixtureCtx {
             default_snapshot_name,
             update_snapshots: update,
             next_drive_line_id: 1,
+            selected_edge: None,
         }
     }
 }
@@ -84,6 +100,10 @@ pub fn execute(ctx: &mut FixtureCtx, command: &str, body: &str) -> Result<Outcom
         "drive-line" => drive_line_cmd(ctx, rest, body),
         "vertex" => vertex_cmd(ctx, rest),
         "edge" => edge_cmd(ctx, rest),
+        "edge-select" => edge_select_cmd(ctx, rest),
+        "edge-delete" => edge_delete_cmd(ctx),
+        "edge-cycle" => edge_cycle_cmd(ctx),
+        "dormant" => dormant_cmd(ctx),
         "snapshot" => snapshot(ctx, rest),
         _ => Err(format!("unknown directive: {}", verb)),
     }
@@ -373,14 +393,37 @@ fn stall_modifier_json(ctx: &mut FixtureCtx, body: &str) -> Result<Outcome, Stri
 }
 
 fn annotations_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
+    // Dump the active annotations in the stable one-line DSL — one
+    // line per annotation, in insertion order. Matches the format
+    // emitted by `debug::format_annotation_line` so fixtures that
+    // assert on annotation shape round-trip cleanly.
+    let lines: Vec<String> = ctx
+        .input
+        .annotations
+        .iter()
+        .map(parking_lot_engine::debug::format_annotation_line)
+        .collect();
+    Ok(Outcome {
+        output: lines.join("\n"),
+        ..Default::default()
+    })
+}
+
+fn dormant_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
     let layout = ctx
         .last_layout
         .as_ref()
-        .ok_or_else(|| "annotations requires a prior `generate`".to_string())?;
-    let total = ctx.input.annotations.len();
+        .ok_or_else(|| "dormant requires a prior `generate`".to_string())?;
     let dormant = &layout.dormant_annotations;
+    if dormant.is_empty() {
+        return Ok(Outcome {
+            output: "dormant_annotations: 0".to_string(),
+            ..Default::default()
+        });
+    }
+    let ids: Vec<String> = dormant.iter().map(|i| i.to_string()).collect();
     Ok(Outcome {
-        output: format!("annotations: {}, dormant: {:?}", total, dormant),
+        output: format!("dormant_annotations: {} ({})", dormant.len(), ids.join(",")),
         ..Default::default()
     })
 }
@@ -856,5 +899,210 @@ fn parse_traffic(s: &str) -> Result<TrafficDirection, String> {
         "two-way-oriented" => Ok(TrafficDirection::TwoWayOriented),
         "two-way-oriented-reverse" => Ok(TrafficDirection::TwoWayOrientedReverse),
         other => Err(format!("unknown traffic {:?}", other)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// edge-select / edge-delete / edge-cycle — harness mirrors of the UI's
+// click-to-annotation flow. `edge-select` records a seed edge + its
+// collinear chain in `ctx.selected_edge`; the commit directives resolve
+// that selection to a Grid or DriveLine target and push the
+// corresponding annotation.
+// ---------------------------------------------------------------------------
+
+fn edge_select_cmd(ctx: &mut FixtureCtx, args: &str) -> Result<Outcome, String> {
+    let layout = ctx
+        .last_layout
+        .as_ref()
+        .ok_or_else(|| "edge-select requires a prior `generate`".to_string())?;
+    let graph = &layout.resolved_graph;
+
+    let mut seed: Option<usize> = None;
+    let mut near: Option<Vec2> = None;
+    let mut mode = "chain";
+    for tok in args.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("seed=") {
+            seed = Some(v.parse::<usize>().map_err(|e| format!("seed: {}", e))?);
+        } else if let Some(v) = tok.strip_prefix("near=") {
+            near = Some(parse_xy(v)?);
+        } else if let Some(v) = tok.strip_prefix("mode=") {
+            if v != "chain" && v != "segment" {
+                return Err(format!("edge-select: mode must be chain|segment, got {:?}", v));
+            }
+            mode = if v == "chain" { "chain" } else { "segment" };
+        }
+    }
+    let seed_index = match (seed, near) {
+        (Some(s), _) => s,
+        (None, Some(p)) => {
+            let seen = &mut std::collections::HashSet::<(usize, usize)>::new();
+            let mut best: Option<(usize, f64)> = None;
+            for (i, edge) in graph.edges.iter().enumerate() {
+                let key = (edge.start.min(edge.end), edge.start.max(edge.end));
+                if !seen.insert(key) {
+                    continue;
+                }
+                let a = graph.vertices[edge.start];
+                let b = graph.vertices[edge.end];
+                let d = parking_lot_engine::geom::poly::point_to_segment_dist(p, a, b);
+                if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                    best = Some((i, d));
+                }
+            }
+            best.map(|(i, _)| i)
+                .ok_or_else(|| "edge-select near=X,Y found no edges".to_string())?
+        }
+        _ => return Err("edge-select requires seed=<i> or near=<x>,<y>".to_string()),
+    };
+
+    let chain = if mode == "chain" {
+        parking_lot_engine::resolve::find_collinear_chain(graph, seed_index)
+    } else {
+        vec![seed_index]
+    };
+    let chain_len = chain.len();
+    ctx.selected_edge = Some(SelectedEdge {
+        seed_index,
+        chain,
+        is_chain_mode: mode == "chain",
+    });
+    Ok(Outcome {
+        output: format!(
+            "edge-select seed={} mode={} chain_len={}",
+            seed_index, mode, chain_len
+        ),
+        ..Default::default()
+    })
+}
+
+fn edge_delete_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
+    let sel = ctx
+        .selected_edge
+        .take()
+        .ok_or_else(|| "edge-delete requires a prior `edge-select`".to_string())?;
+    let target = resolve_selection_target(ctx, &sel)?;
+    ctx.input.annotations.push(parking_lot_engine::types::Annotation::DeleteEdge { target });
+    ctx.input.aisle_graph = None;
+    Ok(Outcome {
+        output: "edge-delete".to_string(),
+        ..Default::default()
+    })
+}
+
+fn edge_cycle_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
+    use parking_lot_engine::types::{Annotation, TrafficDirection};
+    let sel = ctx
+        .selected_edge
+        .take()
+        .ok_or_else(|| "edge-cycle requires a prior `edge-select`".to_string())?;
+    let target = resolve_selection_target(ctx, &sel)?;
+    let existing = ctx.input.annotations.iter().position(|ann| {
+        matches!(ann, Annotation::Direction { .. })
+            && parking_lot_engine::resolve::targets_equal(annotation_target(ann), &target)
+    });
+    if let Some(idx) = existing {
+        // Non-tombstone cycle: TwoWayOriented → TwoWayOrientedReverse
+        // → OneWay → OneWayReverse → TwoWayOriented.
+        if let Annotation::Direction { traffic, .. } = &mut ctx.input.annotations[idx] {
+            *traffic = match traffic {
+                TrafficDirection::TwoWayOriented => TrafficDirection::TwoWayOrientedReverse,
+                TrafficDirection::TwoWayOrientedReverse => TrafficDirection::OneWay,
+                TrafficDirection::OneWay => TrafficDirection::OneWayReverse,
+                TrafficDirection::OneWayReverse => TrafficDirection::TwoWayOriented,
+            };
+        }
+    } else {
+        ctx.input.annotations.push(Annotation::Direction {
+            target,
+            traffic: TrafficDirection::TwoWayOriented,
+        });
+    }
+    ctx.input.aisle_graph = None;
+    Ok(Outcome {
+        output: "edge-cycle".to_string(),
+        ..Default::default()
+    })
+}
+
+fn annotation_target(ann: &parking_lot_engine::types::Annotation) -> &parking_lot_engine::types::Target {
+    use parking_lot_engine::types::Annotation;
+    match ann {
+        Annotation::DeleteVertex { target } => target,
+        Annotation::DeleteEdge { target } => target,
+        Annotation::Direction { target, .. } => target,
+    }
+}
+
+/// Resolve a `SelectedEdge` to a `Target` — grid-first, drive-line
+/// fallback. Mirrors `app.deleteSelectedEdge` / `cycleEdgeDirection` on
+/// the UI side.
+fn resolve_selection_target(
+    ctx: &FixtureCtx,
+    sel: &SelectedEdge,
+) -> Result<parking_lot_engine::types::Target, String> {
+    let layout = ctx
+        .last_layout
+        .as_ref()
+        .ok_or_else(|| "selection requires a prior `generate`".to_string())?;
+    let graph = &layout.resolved_graph;
+    if let Some(rd) = layout.region_debug.as_ref() {
+        if let Some(target) = parking_lot_engine::resolve::resolve_grid_target(
+            sel.seed_index,
+            &sel.chain,
+            sel.is_chain_mode,
+            graph,
+            &ctx.input.params,
+            rd,
+        ) {
+            return Ok(target);
+        }
+    }
+    // Splice fallback: chain must live on a single drive line.
+    let seed = graph
+        .edges
+        .get(sel.seed_index)
+        .ok_or_else(|| format!("seed index {} out of bounds", sel.seed_index))?;
+    let s = graph.vertices[seed.start];
+    let e = graph.vertices[seed.end];
+    let sa = parking_lot_engine::resolve::world_to_splice_vertex(s, &ctx.input.drive_lines, 0.5);
+    let sb = parking_lot_engine::resolve::world_to_splice_vertex(e, &ctx.input.drive_lines, 0.5);
+    match (sa, sb) {
+        (Some(a), Some(b)) if a.drive_line_id == b.drive_line_id => {
+            let (mut ta, mut tb) = (a.t, b.t);
+            if sel.is_chain_mode && sel.chain.len() > 1 {
+                let mut ts = Vec::new();
+                for ei in &sel.chain {
+                    if let Some(edge) = graph.edges.get(*ei) {
+                        if let Some(p) = parking_lot_engine::resolve::world_to_splice_vertex(
+                            graph.vertices[edge.start],
+                            &ctx.input.drive_lines,
+                            0.5,
+                        ) {
+                            if p.drive_line_id == a.drive_line_id {
+                                ts.push(p.t);
+                            }
+                        }
+                        if let Some(p) = parking_lot_engine::resolve::world_to_splice_vertex(
+                            graph.vertices[edge.end],
+                            &ctx.input.drive_lines,
+                            0.5,
+                        ) {
+                            if p.drive_line_id == a.drive_line_id {
+                                ts.push(p.t);
+                            }
+                        }
+                    }
+                }
+                if ts.len() >= 2 {
+                    ta = ts.iter().cloned().fold(f64::INFINITY, f64::min);
+                    tb = ts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                }
+            }
+            Ok(parking_lot_engine::types::Target::DriveLine {
+                id: a.drive_line_id,
+                t: (ta + tb) * 0.5,
+            })
+        }
+        _ => Err("selection: no stable anchor (no grid or drive-line target)".to_string()),
     }
 }

@@ -27,7 +27,7 @@ total_stalls: 168
 
 annotations
 ----
-annotations: 1, dormant: []
+direction on=perimeter loop=outer arc=0.50 traffic=one-way
 
 snapshot
 ----
