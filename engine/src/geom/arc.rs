@@ -104,6 +104,88 @@ pub fn eval_arc_at(p0: Vec2, p1: Vec2, bulge: f64, t: f64) -> Vec2 {
     )
 }
 
+/// Split an arc at parameter `t` into two sub-arcs that together
+/// cover the original. Uses tan-half-angle identities: the full
+/// sweep is `-4·atan(b)`, so a fraction-t sub-arc has
+/// `bulge = tan(t · atan(b))`. Near-straight sub-arcs (bulge within
+/// `STRAIGHT_EPS`) are returned as `None` to match the "prefer None
+/// for straight edges" convention used by the arcs array.
+pub fn split_arc_at(bulge: f64, t: f64) -> (Option<EdgeArc>, Option<EdgeArc>) {
+    let half = bulge.atan();
+    let b1 = (t * half).tan();
+    let b2 = ((1.0 - t) * half).tan();
+    let a = if b1.abs() < STRAIGHT_EPS {
+        None
+    } else {
+        Some(EdgeArc { bulge: b1 })
+    };
+    let b = if b2.abs() < STRAIGHT_EPS {
+        None
+    } else {
+        Some(EdgeArc { bulge: b2 })
+    };
+    (a, b)
+}
+
+/// Evaluate a point at parameter `t` along boundary edge `edge_index`.
+/// Matches the `outer_arcs[edge_index]` convention: edge i goes from
+/// `outer[i]` to `outer[(i+1) % n]` with the optional arc at `arcs[i]`.
+pub fn eval_boundary_edge(
+    outer: &[Vec2],
+    edge_index: usize,
+    t: f64,
+    arcs: Option<&[Option<EdgeArc>]>,
+) -> Vec2 {
+    let n = outer.len();
+    let a = outer[edge_index];
+    let b = outer[(edge_index + 1) % n];
+    let bulge = arcs
+        .and_then(|arr| arr.get(edge_index))
+        .and_then(|e| e.as_ref())
+        .map(|e| e.bulge)
+        .unwrap_or(0.0);
+    if bulge.abs() < STRAIGHT_EPS {
+        a + (b - a) * t
+    } else {
+        eval_arc_at(a, b, bulge, t)
+    }
+}
+
+/// Project `pt` onto the nearest outer-boundary edge. Each edge is
+/// either an arc (when `arcs[i]` is `Some`) or a straight segment
+/// (when `None` or `arcs` is `None`). Returns the projected world
+/// position, the index of the winning edge, and the parametric `t`
+/// along that edge.
+pub fn compute_boundary_pin(
+    pt: Vec2,
+    outer: &[Vec2],
+    arcs: Option<&[Option<EdgeArc>]>,
+) -> (Vec2, usize, f64) {
+    let mut best_dist = f64::INFINITY;
+    let mut best_proj = pt;
+    let mut best_edge = 0usize;
+    let mut best_t = 0.0;
+    let n = outer.len();
+    for i in 0..n {
+        let a = outer[i];
+        let b = outer[(i + 1) % n];
+        let bulge = arcs
+            .and_then(|arr| arr.get(i))
+            .and_then(|e| e.as_ref())
+            .map(|e| e.bulge)
+            .unwrap_or(0.0);
+        let (proj, t) = project_to_arc(a, b, bulge, pt);
+        let dist = (pt - proj).length();
+        if dist < best_dist {
+            best_dist = dist;
+            best_proj = proj;
+            best_edge = i;
+            best_t = t;
+        }
+    }
+    (best_proj, best_edge, best_t)
+}
+
 /// Closest point on an arc edge to `pt`, returned as the parameter `t`
 /// and the projected position. Closed form: project onto the circle,
 /// compute the angular offset from `start_angle` along `sweep`, clamp

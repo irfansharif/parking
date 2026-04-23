@@ -19,6 +19,7 @@ import {
   evalBoundaryEdge,
   annotationWorldPos,
   projectToArc,
+  splitArcAt,
   worldToPerimeterPos,
   worldToAbstractVertex,
   worldToSpliceVertex,
@@ -29,25 +30,6 @@ import {
   resolve_grid_target_js,
   targets_equal_js,
 } from "./wasm/parking_lot_engine";
-
-// ---------------------------------------------------------------------------
-// Arc helpers for boundary-edge editing
-// ---------------------------------------------------------------------------
-
-/**
- * Split an arc at parameter `t` into two sub-arcs that together cover
- * the original. Uses tan-half-angle identities: sweep = −4·atan(b), so a
- * fraction-t sub-arc has bulge = tan(t · atan(b)).
- */
-function splitArcAt(bulge: number, t: number): [EdgeArc | null, EdgeArc | null] {
-  const half = Math.atan(bulge);
-  const b1 = Math.tan(t * half);
-  const b2 = Math.tan((1 - t) * half);
-  return [
-    Math.abs(b1) < 1e-6 ? null : { bulge: b1 },
-    Math.abs(b2) < 1e-6 ? null : { bulge: b2 },
-  ];
-}
 
 /** Default bulge applied when the user first turns an edge into an arc. */
 function defaultArcForEdge(): EdgeArc {

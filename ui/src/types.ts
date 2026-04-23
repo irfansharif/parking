@@ -16,13 +16,16 @@ import {
   bulge_from_apex_js,
   chain_extents_in_region_js,
   chain_to_abstract_lattice_edge_js,
+  compute_boundary_pin_js,
   compute_region_frame_js,
   effective_depth_js,
   eval_arc_at_js,
+  eval_boundary_edge_js,
   frame_forward_js,
   frame_inverse_js,
   point_in_polygon_js,
   project_to_arc_js,
+  split_arc_at_js,
   stall_pitch_js,
   target_world_pos_js,
   world_to_abstract_vertex_js,
@@ -223,38 +226,33 @@ export function projectToArc(
 export function evalBoundaryEdge(
   outer: Vec2[], edgeIndex: number, t: number, arcs?: (EdgeArc | null)[],
 ): Vec2 {
-  const a = outer[edgeIndex];
-  const b = outer[(edgeIndex + 1) % outer.length];
-  const arc = arcs?.[edgeIndex];
-  if (arc) return evalArcAt(a, b, arc.bulge, t);
-  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+  const [x, y] = eval_boundary_edge_js(outer, edgeIndex, t, arcs ?? null);
+  return { x, y };
 }
 
 /** Project a world point onto the nearest outer boundary edge. */
 export function computeBoundaryPin(
   pt: Vec2, outer: Vec2[], arcs?: (EdgeArc | null)[],
 ): { pos: Vec2; edgeIndex: number; t: number } {
-  let bestDist = Infinity;
-  let bestProj: Vec2 = pt;
-  let bestEdge = 0;
-  let bestT = 0;
-  for (let i = 0; i < outer.length; i++) {
-    const a = outer[i];
-    const b = outer[(i + 1) % outer.length];
-    const arc = arcs?.[i];
-    const proj = arc
-      ? projectToArc(a, b, arc.bulge, pt)
-      : projectToArc(a, b, 0, pt);
-    const dx = pt.x - proj.pos.x, dy = pt.y - proj.pos.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < bestDist) {
-      bestDist = dist;
-      bestProj = proj.pos;
-      bestEdge = i;
-      bestT = proj.t;
-    }
-  }
-  return { pos: bestProj, edgeIndex: bestEdge, t: bestT };
+  const [px, py, edgeIndex, t] = compute_boundary_pin_js(
+    pt.x, pt.y, outer, arcs ?? null,
+  );
+  return { pos: { x: px, y: py }, edgeIndex, t };
+}
+
+/**
+ * Split an arc at parameter `t`. Returns the two sub-arcs that
+ * together cover the original; `null` for sub-arcs that are
+ * effectively straight.
+ */
+export function splitArcAt(
+  bulge: number, t: number,
+): [EdgeArc | null, EdgeArc | null] {
+  const [b1, b2] = split_arc_at_js(bulge, t);
+  return [
+    Number.isNaN(b1) ? null : { bulge: b1 },
+    Number.isNaN(b2) ? null : { bulge: b2 },
+  ];
 }
 
 // ---------------------------------------------------------------------------

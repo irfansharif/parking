@@ -12,13 +12,16 @@
 use wasm_bindgen::prelude::*;
 
 use crate::debug::format_fixture;
-use crate::geom::arc::{arc_apex, bulge_from_apex, eval_arc_at, project_to_arc};
+use crate::geom::arc::{
+    arc_apex, bulge_from_apex, compute_boundary_pin, eval_arc_at, eval_boundary_edge,
+    project_to_arc, split_arc_at,
+};
 use crate::geom::poly::point_to_segment_dist;
 use crate::pipeline::generate::generate;
 use crate::resolve;
 use crate::types::{
-    AbstractFrame, AbstractPoint2, Annotation, DriveAisleGraph, DriveLine, GenerateInput,
-    ParkingParams, Polygon, RegionDebug, RegionInfo, Target, Vec2,
+    AbstractFrame, AbstractPoint2, Annotation, DriveAisleGraph, DriveLine, EdgeArc,
+    GenerateInput, ParkingParams, Polygon, RegionDebug, RegionInfo, Target, Vec2,
 };
 
 #[wasm_bindgen]
@@ -341,4 +344,50 @@ pub fn targets_equal_js(a: JsValue, b: JsValue) -> Result<bool, JsValue> {
     let a: Target = serde_wasm_bindgen::from_value(a)?;
     let b: Target = serde_wasm_bindgen::from_value(b)?;
     Ok(resolve::targets_equal(&a, &b))
+}
+
+// ---------------------------------------------------------------------------
+// Boundary arc math. The three `outer`/`arcs` helpers live here so the
+// UI doesn't round-trip through wasm per edge inside a loop.
+// ---------------------------------------------------------------------------
+
+/// `geom::arc::split_arc_at` — returns `[b1, b2]` where each is either
+/// the sub-arc's bulge (finite) or `NaN` to signal the sub-arc is
+/// straight (i.e. the TS wrapper maps NaN to `null`).
+#[wasm_bindgen]
+pub fn split_arc_at_js(bulge: f64, t: f64) -> Vec<f64> {
+    let (a, b) = split_arc_at(bulge, t);
+    vec![
+        a.map(|e| e.bulge).unwrap_or(f64::NAN),
+        b.map(|e| e.bulge).unwrap_or(f64::NAN),
+    ]
+}
+
+/// `geom::arc::eval_boundary_edge` — flat `[x, y]`.
+#[wasm_bindgen]
+pub fn eval_boundary_edge_js(
+    outer: JsValue,
+    edge_index: usize,
+    t: f64,
+    arcs: JsValue,
+) -> Result<Vec<f64>, JsValue> {
+    let outer: Vec<Vec2> = serde_wasm_bindgen::from_value(outer)?;
+    let arcs: Option<Vec<Option<EdgeArc>>> = serde_wasm_bindgen::from_value(arcs)?;
+    let p = eval_boundary_edge(&outer, edge_index, t, arcs.as_deref());
+    Ok(vec![p.x, p.y])
+}
+
+/// `geom::arc::compute_boundary_pin` — flat `[px, py, edge_index, t]`.
+/// TS wrapper unpacks into `{pos, edgeIndex, t}`.
+#[wasm_bindgen]
+pub fn compute_boundary_pin_js(
+    ptx: f64,
+    pty: f64,
+    outer: JsValue,
+    arcs: JsValue,
+) -> Result<Vec<f64>, JsValue> {
+    let outer: Vec<Vec2> = serde_wasm_bindgen::from_value(outer)?;
+    let arcs: Option<Vec<Option<EdgeArc>>> = serde_wasm_bindgen::from_value(arcs)?;
+    let (pos, edge_index, t) = compute_boundary_pin(Vec2::new(ptx, pty), &outer, arcs.as_deref());
+    Ok(vec![pos.x, pos.y, edge_index as f64, t])
 }
