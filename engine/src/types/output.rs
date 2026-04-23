@@ -3,6 +3,7 @@
 //! aisle-polygon construction lives in this module.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::geom::Vec2;
 
@@ -10,7 +11,8 @@ use super::geom::Vec2;
 // Stalls
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub enum StallKind {
     Standard,
     Compact,
@@ -24,7 +26,8 @@ pub enum StallKind {
     Suppressed,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct StallQuad {
     pub corners: [Vec2; 4],
     pub kind: StallKind,
@@ -64,7 +67,8 @@ pub struct TaggedFace {
     pub wall_edge_indices: Vec<usize>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct Face {
     pub contour: Vec<Vec2>,
     #[serde(default)]
@@ -83,7 +87,8 @@ pub struct Face {
 // Islands (landscape gaps between/at-ends-of stall rows)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct Island {
     pub contour: Vec<Vec2>,
     #[serde(default)]
@@ -127,7 +132,8 @@ impl SpineSegment {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct SpineLine {
     pub start: Vec2,
     pub end: Vec2,
@@ -140,7 +146,8 @@ pub struct SpineLine {
 // Skeleton debug output
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct SkeletonDebug {
     pub arcs: Vec<[Vec2; 2]>,
     pub nodes: Vec<Vec2>,
@@ -154,12 +161,14 @@ pub struct SkeletonDebug {
 // Metrics + region debug
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct Metrics {
     pub total_stalls: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct RegionDebug {
     /// One clip polygon per region, each with its aisle angle.
     pub regions: Vec<RegionInfo>,
@@ -167,7 +176,8 @@ pub struct RegionDebug {
     pub separators: Vec<(Vec2, Vec2)>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct RegionInfo {
     pub id: super::addressing::RegionId,
     pub clip_poly: Vec<Vec2>,

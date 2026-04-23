@@ -1,149 +1,145 @@
-export interface Vec2 {
-  x: number;
-  y: number;
-}
+// Engine types are generated from Rust via ts-rs — the sole source of
+// truth lives in engine/src/types/*.rs. This file only declares
+// UI-session types (ParkingLot, AbstractFrame for now) plus math
+// helpers that haven't yet moved into the wasm surface (step 2 of the
+// audit will).
+//
+// Re-export the engine types so existing UI imports (`from "./types"`)
+// keep working without caring whether a symbol is hand-written or
+// generated.
 
-export interface StallQuad {
-  corners: [Vec2, Vec2, Vec2, Vec2];
-  kind: "Standard" | "Compact" | "Ev" | "Extension" | "Island";
-}
+import type {
+  EdgeArc,
+  GridStop,
+  ParkingLayout,
+  ParkingParams,
+  PerimeterLoop,
+  Polygon,
+  RegionDebug,
+  RegionId,
+  Vec2,
+  Annotation as EngineAnnotation,
+  DriveLine as EngineDriveLine,
+  Target as EngineTarget,
+} from "./bindings";
 
-export interface Metrics {
-  total_stalls: number;
-}
+export type {
+  AbstractPoint2,
+  AisleDirection,
+  AisleEdge,
+  Axis,
+  DebugToggles,
+  DriveAisleGraph,
+  EdgeArc,
+  Face,
+  GenerateInput,
+  GridStop,
+  HolePin,
+  Island,
+  Metrics,
+  ParkingLayout,
+  ParkingParams,
+  PerimeterLoop,
+  Polygon,
+  RegionDebug,
+  RegionId,
+  RegionInfo,
+  RegionOverride,
+  SkeletonDebug,
+  SpineLine,
+  StallKind,
+  StallModifier,
+  StallQuad,
+  TrafficDirection,
+  Vec2,
+} from "./bindings";
 
-export interface SpineLine {
-  start: Vec2;
-  end: Vec2;
-  normal: Vec2;
-  is_extension?: boolean;
-}
+// ---------------------------------------------------------------------------
+// UI extensions of engine types.
+//
+// `DriveLine` carries a `boundaryPin` — UI-only state pairing a
+// hole-pinned drive line's far endpoint back to a boundary edge so it
+// tracks when the user drags the outer polygon. The engine ignores
+// the field (serde tolerates unknown fields by default).
+//
+// `Annotation` carries `_active` — UI-only tombstone flag used while
+// cycling through direction states before committing or discarding an
+// annotation. Again the engine ignores it (and the UI filters active
+// annotations out before sending in `generateLot`).
+//
+// Neither field lives in the engine types, so we extend the generated
+// shapes here via intersection rather than polluting the Rust side
+// with UI-session concepts.
+// ---------------------------------------------------------------------------
 
-export interface Face {
-  contour: Vec2[];
-  holes?: Vec2[][];
-  is_boundary?: boolean;
-  edge_sources?: string[];
-  hole_edge_sources?: string[][];
-}
+export type DriveLine = EngineDriveLine & {
+  boundaryPin?: { edgeIndex: number; t: number };
+};
 
-export interface Island {
-  contour: Vec2[];
-  holes?: Vec2[][];
-  face_idx: number;
-}
+export type Target = EngineTarget;
 
-export interface ParkingLayout {
-  aisle_polygons: Vec2[][];
-  stalls: StallQuad[];
-  metrics: Metrics;
-  resolved_graph: DriveAisleGraph;
-  spines: SpineLine[];
-  faces: Face[];
-  miter_fills: Vec2[][];
-  skeleton_debug: { arcs: [Vec2, Vec2][]; nodes: Vec2[]; split_nodes: Vec2[]; sources: Vec2[] }[];
-  islands: Island[];
-  derived_outer?: Vec2[];
-  derived_holes?: Vec2[][];
-  region_debug?: RegionDebug;
+export type Annotation = EngineAnnotation & { _active?: boolean };
+
+// ---------------------------------------------------------------------------
+// ParkingLot — UI session aggregate. Holds one engine input (+ its last
+// layout) together with the UI-only state that goes with editing it
+// (aisle vector for the drag handle, cached baseline for the
+// aisle-offset delta, per-region overrides keyed for lookup in lot
+// state). Intentionally NOT generated from Rust; the engine has no
+// analog.
+// ---------------------------------------------------------------------------
+
+export interface ParkingLot {
+  id: string;
+  boundary: Polygon;
+  aisleGraph: import("./bindings").DriveAisleGraph | null;
+  driveLines: DriveLine[];
+  annotations: Annotation[];
+  aisleVector: { start: Vec2; end: Vec2 };
   /**
-   * Indices into the input's annotation list for annotations that
-   * didn't resolve to any graph feature this generate. For abstract
-   * annotations: the (region, xi, yi) lookup missed. For legacy
-   * proximity annotations: currently always empty (legacy silently
-   * no-ops on a miss).
+   * Perpendicular projection of the aisle vector's midpoint at the
+   * time the lot was created (or the last time the vector was
+   * reoriented from scratch). Used to decouple the vector's visual
+   * world position from `params.aisle_offset`:
+   *
+   *   aisle_offset = midpoint.perpProj - aisleOffsetBaseline
+   *
+   * Without this, the first drag of the vector would jump the grid
+   * by (midpoint.perpProj - 0) because the vector's initial world
+   * position has a non-zero perpendicular projection.
    */
-  dormant_annotations?: number[];
-}
-
-export interface RegionDebug {
-  regions: RegionInfo[];
-  separators: [Vec2, Vec2][];
-}
-
-export interface RegionInfo {
-  id: RegionId;
-  clip_poly: Vec2[];
-  aisle_angle_deg: number;
-  aisle_offset: number;
-  center: Vec2;
-}
-
-export type AisleDirection = "TwoWay" | "TwoWayOriented" | "OneWay";
-
-export interface AisleEdge {
-  start: number;
-  end: number;
-  width: number;
-  interior?: boolean;
-  direction?: AisleDirection;
-}
-
-export interface DriveAisleGraph {
-  vertices: Vec2[];
-  edges: AisleEdge[];
-  perim_vertex_count?: number;
-}
-
-/**
- * Circular arc along a polygon edge, AutoCAD-style bulge
- * parameterization. `bulge = sagitta / (chord_length / 2)` — `+1` is a
- * semicircle on the CCW side of the edge direction, `-1` a semicircle
- * on the CW side. Store `null` (not `{ bulge: 0 }`) for straight edges.
- */
-export interface EdgeArc {
-  bulge: number;
-}
-
-export interface Polygon {
-  outer: Vec2[];
-  holes: Vec2[][];
-  outer_arcs?: (EdgeArc | null)[];
-  hole_arcs?: (EdgeArc | null)[][];
-}
-
-export interface ParkingParams {
-  stall_width: number;
-  stall_depth: number;
-  aisle_width: number;
-  stall_angle_deg: number;
-  aisle_angle_deg: number;
-  aisle_offset: number;
-  site_offset: number;
+  aisleOffsetBaseline: number;
   /**
-   * Number of stalls along the aisle direction in one face (between
-   * adjacent cross driving aisles). Integer. Replaces the old
-   * `cross_aisle_max_run` float.
+   * Region overrides keyed by RegionId (u64 encoded as a JS number —
+   * RegionIds are constrained to 53-bit safe integers on the engine
+   * side specifically so JS can hold them losslessly). The string key
+   * comes from `String(regionId)`.
    */
-  stalls_per_face: number;
-  use_regions?: boolean;
-  island_stall_interval?: number;
+  regionOverrides: { [regionId: string]: { angle?: number; offset?: number } };
+  layout: ParkingLayout | null;
 }
 
 // ---------------------------------------------------------------------------
-// AbstractFrame — mirrors engine/src/types.rs::AbstractFrame.
-//
-// Per-region transformation from the abstract integer grid into world
-// space. Derived fresh on every generate, never serialized.
-//
-//     world(x, y) = origin_world + x * dx * x_dir + y * dy * y_dir
-//
+// AbstractFrame — TEMPORARY TS mirror of the engine's per-region
+// frame. The engine struct is never serialized (derived fresh each
+// generate), so ts-rs doesn't cover it. Step 2 of the audit moves this
+// behind a wasm-exposed function and this declaration goes away.
 // ---------------------------------------------------------------------------
 
 export interface AbstractFrame {
   origin_world: Vec2;
-  x_dir: Vec2;           // unit, perpendicular to parallel aisle
-  y_dir: Vec2;           // unit, along parallel aisle
-  dx: number;            // 2*effective_depth + 2*aisle_width
-  dy: number;            // stalls_per_face * stall_pitch
+  x_dir: Vec2; // unit, perpendicular to parallel aisle
+  y_dir: Vec2; // unit, along parallel aisle
+  dx: number; // 2*effective_depth + 2*aisle_width
+  dy: number; // stalls_per_face * stall_pitch
   stalls_per_face: number;
 }
 
-/** Real-valued point in an abstract frame. */
-export interface AbstractPoint2 {
-  x: number;
-  y: number;
-}
+// ---------------------------------------------------------------------------
+// Math helpers (duplicated from engine geom/arc/addressing). Step 2
+// swaps these out for wasm calls; kept here so step 1 is a pure types
+// refactor.
+// ---------------------------------------------------------------------------
 
 function stallPitch(p: ParkingParams): number {
   const sinA = Math.sin((p.stall_angle_deg * Math.PI) / 180);
@@ -392,7 +388,10 @@ export function worldToSpliceVertex(
 }
 
 /** Forward transform: abstract → world. */
-export function frameForward(frame: AbstractFrame, p: AbstractPoint2): Vec2 {
+export function frameForward(
+  frame: AbstractFrame,
+  p: { x: number; y: number },
+): Vec2 {
   return {
     x:
       frame.origin_world.x +
@@ -410,61 +409,16 @@ export function frameForward(frame: AbstractFrame, p: AbstractPoint2): Vec2 {
  * orthonormal, so the inverse is just a projection onto each axis
  * followed by a division by the corresponding scale.
  */
-export function frameInverse(frame: AbstractFrame, w: Vec2): AbstractPoint2 {
+export function frameInverse(
+  frame: AbstractFrame,
+  w: Vec2,
+): { x: number; y: number } {
   const rx = w.x - frame.origin_world.x;
   const ry = w.y - frame.origin_world.y;
   return {
     x: (rx * frame.x_dir.x + ry * frame.x_dir.y) / frame.dx,
     y: (rx * frame.y_dir.x + ry * frame.y_dir.y) / frame.dy,
   };
-}
-
-export interface DebugToggles {
-  // Corridor merging
-  miter_fills: boolean;
-  boundary_only_miters: boolean;
-  spike_removal: boolean;
-  contour_simplification: boolean;
-  hole_filtering: boolean;
-  // Spine generation
-  face_simplification: boolean;
-  edge_classification: boolean;
-  spine_clipping: boolean;
-  // Spine post-processing
-  spine_dedup: boolean;
-  spine_merging: boolean;
-  short_spine_filter: boolean;
-  // Spine extensions
-  spine_extensions: boolean;
-  // Stall placement
-  stall_centering: boolean;
-  stall_face_clipping: boolean;
-  // Boundary
-  boundary_clipping: boolean;
-  // Conflict removal
-  conflict_removal: boolean;
-  // Short segment filter
-  short_segment_filter: boolean;
-  // Edge provenance
-  edge_provenance: boolean;
-  // Skeleton debug visualization
-  skeleton_debug: boolean;
-}
-
-export interface DriveLine {
-  start: Vec2;
-  end: Vec2;
-  /** Stable identifier assigned by the UI at creation time. Used by
-   *  Splice* annotations as the addressing axis. */
-  id: number;
-  /** When set, start is pinned to a hole vertex (separator). */
-  holePin?: { holeIndex: number; vertexIndex: number };
-  /** When set, end is pinned to a boundary edge at parameter t. */
-  boundaryPin?: { edgeIndex: number; t: number };
-  /** When true, participates in face enumeration and partitions the lot
-   *  into regions. Otherwise, the line is a corridor-only drive line
-   *  (aisle graph edge, no partitioning effect). */
-  partitions?: boolean;
 }
 
 // Shared arc-math helpers — mirror engine/src/geom/arc.rs. Bulges with
@@ -603,60 +557,6 @@ export function computeBoundaryPin(
   }
   return { pos: bestProj, edgeIndex: bestEdge, t: bestT };
 }
-
-/**
- * A spatial intent that survives graph regeneration. The annotation targets
- * a vertex or one-or-more sub-edges in one substrate's own coord system
- * (grid, drive-line, or perimeter). Single dormancy rule: any referenced
- * substrate or stop missing from the current graph → dormant this regen.
- */
-export type Annotation = {
-  _active?: boolean;
-} & (
-  | { kind: "DeleteVertex"; target: Target }
-  | { kind: "DeleteEdge"; target: Target }
-  | { kind: "Direction"; target: Target; traffic: TrafficDirection }
-);
-
-/**
- * Traffic direction relative to the target carrier's canonical direction.
- * Grid line: canonical = +other-axis (low → high). Drive line: canonical =
- * +t (start → end). Perimeter: canonical = CCW (Outer) / CW (Hole).
- */
-export type TrafficDirection =
-  | "OneWay"
-  | "OneWayReverse"
-  | "TwoWayOriented"
-  | "TwoWayOrientedReverse";
-
-/**
- * A referenceable region in one substrate's coord system.
- * - Grid.range = null → whole grid line (edge annotations only).
- * - Grid.range = [s, s] → a vertex at that stop.
- * - Grid.range = [s1, s2] (s1 ≠ s2) → a span of sub-edges.
- * - DriveLine / Perimeter: a single parametric point; resolution finds
- *   the graph vertex at the point (for vertex annotations) or the
- *   sub-edge containing the point (for edge annotations).
- */
-export type Target =
-  | {
-      on: "Grid";
-      region: RegionId;
-      axis: "X" | "Y";
-      coord: number;
-      range: [GridStop, GridStop] | null;
-    }
-  | { on: "DriveLine"; id: number; t: number }
-  | { on: "Perimeter"; loop: PerimeterLoop; arc: number };
-
-export type GridStop =
-  | { at: "Lattice"; other: number }
-  | { at: "CrossesDriveLine"; id: number }
-  | { at: "CrossesPerimeter"; loop: PerimeterLoop };
-
-export type PerimeterLoop =
-  | { kind: "Outer" }
-  | { kind: "Hole"; index: number };
 
 /** True if the annotation is a direction annotation. */
 export function isDirectionAnnotation(
@@ -837,57 +737,4 @@ function projectOntoLoop(v: Vec2, poly: Vec2[], tol: number): number | null {
     if (!best || dist < best.dist) best = { arc, dist };
   }
   return best ? best.arc : null;
-}
-
-export interface GenerateInput {
-  boundary: Polygon;
-  aisle_graph: DriveAisleGraph | null;
-  drive_lines: DriveLine[];
-  annotations: Annotation[];
-  params: ParkingParams;
-  debug: DebugToggles;
-  regionOverrides?: RegionOverride[];
-}
-
-export interface ParkingLot {
-  id: string;
-  boundary: Polygon;
-  aisleGraph: DriveAisleGraph | null;
-  driveLines: DriveLine[];
-  annotations: Annotation[];
-  aisleVector: { start: Vec2; end: Vec2 };
-  /**
-   * Perpendicular projection of the aisle vector's midpoint at the
-   * time the lot was created (or the last time the vector was
-   * reoriented from scratch). Used to decouple the vector's visual
-   * world position from `params.aisle_offset`:
-   *
-   *   aisle_offset = midpoint.perpProj - aisleOffsetBaseline
-   *
-   * Without this, the first drag of the vector would jump the grid
-   * by (midpoint.perpProj - 0) because the vector's initial world
-   * position has a non-zero perpendicular projection.
-   */
-  aisleOffsetBaseline: number;
-  /**
-   * Region overrides keyed by RegionId (u64 encoded as a JS number —
-   * RegionIds are constrained to 53-bit safe integers on the engine
-   * side specifically so JS can hold them losslessly). The string key
-   * comes from `String(regionId)`.
-   */
-  regionOverrides: { [regionId: string]: { angle?: number; offset?: number } };
-  layout: ParkingLayout | null;
-}
-
-/**
- * Stable identifier for a region. Mirrors engine/src/types.rs::RegionId.
- * Values come from the engine; the UI never constructs them from raw
- * fields.
- */
-export type RegionId = number;
-
-export interface RegionOverride {
-  region_id: RegionId;
-  aisle_angle_deg?: number;
-  aisle_offset?: number;
 }

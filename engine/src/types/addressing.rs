@@ -9,6 +9,7 @@
 //!   `TrafficDirection` — substrate-keyed edits that survive regen.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::geom::Vec2;
 use super::io::ParkingParams;
@@ -42,7 +43,8 @@ pub struct AbstractFrame {
 }
 
 /// Real-valued point in an abstract frame.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct AbstractPoint2 {
     pub x: f64,
     pub y: f64,
@@ -129,8 +131,12 @@ impl AbstractFrame {
 // 20 bits per field gives up to ~1M hole vertices per hole and ~1M
 // holes per lot, comfortably beyond any realistic limit.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// `RegionId` stays in JavaScript's safe-integer range by construction
+/// (see `from_signature` packing), so we expose it to TS as `number`
+/// rather than ts-rs's default `bigint` mapping for `u64`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
+#[ts(export, type = "number")]
 pub struct RegionId(pub u64);
 
 impl RegionId {
@@ -172,8 +178,9 @@ impl RegionId {
 // Single dormancy rule: any referenced substrate or stop missing from the
 // current graph => annotation dormant this regen.
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "kind")]
+#[ts(export)]
 pub enum Annotation {
     DeleteVertex {
         target: Target,
@@ -187,7 +194,8 @@ pub enum Annotation {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub enum TrafficDirection {
     /// Traffic flows along the carrier's canonical direction (one lane).
     OneWay,
@@ -206,8 +214,9 @@ pub enum TrafficDirection {
 /// - DriveLine / Perimeter: a single parametric point. Vertex annotations
 ///   resolve to the graph vertex at the point (if one exists); edge
 ///   annotations resolve to the sub-edge containing the point.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "on")]
+#[ts(export)]
 pub enum Target {
     Grid {
         region: RegionId,
@@ -223,6 +232,7 @@ pub enum Target {
     },
     Perimeter {
         #[serde(rename = "loop")]
+        #[ts(rename = "loop")]
         loop_: PerimeterLoop,
         /// Normalized arc length ∈ [0, 1] along the loop.
         arc: f64,
@@ -233,8 +243,9 @@ pub enum Target {
 /// with another substrate. For crossings, resolution picks the first
 /// crossing along the carrier's canonical direction from the other stop
 /// (well-defined under the no-collinear-stretches constraint).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "at")]
+#[ts(export)]
 pub enum GridStop {
     Lattice {
         /// Integer coord on the axis the line runs along.
@@ -245,6 +256,7 @@ pub enum GridStop {
     },
     CrossesPerimeter {
         #[serde(rename = "loop")]
+        #[ts(rename = "loop")]
         loop_: PerimeterLoop,
     },
 }
@@ -252,8 +264,9 @@ pub enum GridStop {
 /// A perimeter loop on the sketch boundary: the unique outer boundary, or
 /// a specific hole. In the prototype, holes are identified positionally;
 /// the Arcol integration uses a stable member sketch-vertex id instead.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(tag = "kind")]
+#[ts(export)]
 pub enum PerimeterLoop {
     Outer,
     Hole {
@@ -264,7 +277,8 @@ pub enum PerimeterLoop {
 /// Which axis the grid line's fixed coordinate is on. `axis=X, coord=c` is
 /// the line x=c (fixed x; runs along Y). Canonical direction is +along the
 /// "run axis" (low → high) — i.e. +Y for axis=X, +X for axis=Y.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub enum Axis {
     X,
     Y,

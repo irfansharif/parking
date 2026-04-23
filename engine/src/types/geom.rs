@@ -5,12 +5,14 @@
 
 use serde::{Deserialize, Serialize};
 use std::ops::{Add, Mul, Sub};
+use ts_rs::TS;
 
 // ---------------------------------------------------------------------------
 // Vec2
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct Vec2 {
     pub x: f64,
     pub y: f64,
@@ -84,12 +86,14 @@ impl Mul<f64> for Vec2 {
 /// `bulge = sagitta / (chord_length / 2)` — `+1` is a semicircle on the
 /// CCW side of the edge direction, `-1` a semicircle on the CW side,
 /// `0` collapses to a straight line (and should be stored as `None`).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct EdgeArc {
     pub bulge: f64,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct Polygon {
     pub outer: Vec<Vec2>,
     pub holes: Vec<Vec<Vec2>>,

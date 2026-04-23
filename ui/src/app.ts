@@ -171,6 +171,8 @@ export class App {
             { x: 394.53, y: 512.33 },
           ],
         ],
+        outer_arcs: [],
+        hole_arcs: [],
       },
       aisleGraph: null,
       annotations: [
@@ -201,7 +203,7 @@ export class App {
         90,
       ),
       driveLines: [
-        { id: 1, start: { x: 930.76, y: 381.06 }, end: { x: -42.60, y: 512.33 } },
+        { id: 1, start: { x: 930.76, y: 381.06 }, end: { x: -42.60, y: 512.33 }, partitions: false },
         { id: 2, start: { x: 198.60, y: -53.66 }, end: { x: 475.79, y: 349.25 }, partitions: true },
         { id: 3, start: { x: 446.56, y: 335.61 }, end: { x: 930.76, y: 135.52 }, partitions: true },
       ],
@@ -348,6 +350,7 @@ export class App {
         aisle_angle_deg: v.angle,
         aisle_offset: v.offset,
       })),
+      stall_modifiers: [],
     };
     const inputJson = JSON.stringify(input);
     if (lot.id === this.state.activeLotId) {
@@ -416,6 +419,7 @@ export class App {
     l.aisleGraph = {
       vertices: resolved.vertices.map((v) => ({ ...v })),
       edges: resolved.edges.map((e) => ({ ...e })),
+      perim_vertex_count: resolved.perim_vertex_count,
     };
   }
 
@@ -774,14 +778,24 @@ export class App {
 
   commitPendingBoundary(): void {
     if (this.state.pendingBoundary.length >= 3) {
-      this.addLot({ outer: [...this.state.pendingBoundary], holes: [] });
+      this.addLot({
+        outer: [...this.state.pendingBoundary],
+        holes: [],
+        outer_arcs: [],
+        hole_arcs: [],
+      });
       this.generate();
     }
     this.state.pendingBoundary = [];
   }
 
   addDriveLine(start: Vec2, end: Vec2): void {
-    this.activeLot().driveLines.push({ id: this.newDriveLineId(), start, end });
+    this.activeLot().driveLines.push({
+      id: this.newDriveLineId(),
+      start,
+      end,
+      partitions: false,
+    });
     this.generate();
   }
 

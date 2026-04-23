@@ -34,7 +34,7 @@ export function createCommandAPI(app: App): CommandAPI {
       switch (cmd) {
         case "clear": {
           const lot = app.activeLot();
-          lot.boundary = { outer: [], holes: [] };
+          lot.boundary = { outer: [], holes: [], outer_arcs: [], hole_arcs: [] };
           lot.driveLines = [];
           lot.annotations = [];
           lot.aisleGraph = null;
@@ -43,7 +43,7 @@ export function createCommandAPI(app: App): CommandAPI {
 
         case "new-lot": {
           // Create a new empty lot and switch to it.
-          const newLot = app.addLot({ outer: [], holes: [] });
+          const newLot = app.addLot({ outer: [], holes: [], outer_arcs: [], hole_arcs: [] });
           return `new-lot: ${newLot.id}`;
         }
 
@@ -117,10 +117,11 @@ export function createCommandAPI(app: App): CommandAPI {
             const coords = parts[2];
             const [x, y] = coords.split(",").map(Number);
             if (!lot.aisleGraph) {
-              lot.aisleGraph = { vertices: [], edges: [] };
+              lot.aisleGraph = { vertices: [], edges: [], perim_vertex_count: 0 };
             }
-            const idx = lot.aisleGraph.vertices.length;
-            lot.aisleGraph.vertices.push({ x, y });
+            const g = lot.aisleGraph;
+            const idx = g.vertices.length;
+            g.vertices.push({ x, y });
             return String(idx);
           } else if (action === "move") {
             const idx = parseInt(parts[2]);
@@ -141,12 +142,14 @@ export function createCommandAPI(app: App): CommandAPI {
             const coords = parts[2];
             const [v1, v2] = coords.split(",").map(Number);
             if (!lot.aisleGraph) {
-              lot.aisleGraph = { vertices: [], edges: [] };
+              lot.aisleGraph = { vertices: [], edges: [], perim_vertex_count: 0 };
             }
             lot.aisleGraph.edges.push({
               start: v1,
               end: v2,
               width: app.state.params.aisle_width / 2,
+              interior: false,
+              direction: "TwoWay",
             });
             return `edge ${v1}->${v2}`;
           }

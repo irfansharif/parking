@@ -5,6 +5,7 @@
 //! `ParkingLayout` — don't pull in pipeline internals.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::geom::Vec2;
 
@@ -12,7 +13,8 @@ use super::geom::Vec2;
 // Drive-aisle graph
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export)]
 pub enum AisleDirection {
     TwoWay,
     TwoWayOriented,
@@ -25,7 +27,8 @@ impl Default for AisleDirection {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct AisleEdge {
     pub start: usize,
     pub end: usize,
@@ -36,7 +39,8 @@ pub struct AisleEdge {
     pub direction: AisleDirection,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct DriveAisleGraph {
     pub vertices: Vec<Vec2>,
     pub edges: Vec<AisleEdge>,
@@ -48,12 +52,14 @@ pub struct DriveAisleGraph {
 // Drive lines (user-drawn cutting lines clipped to boundary)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct DriveLine {
     pub start: Vec2,
     pub end: Vec2,
     /// When set, this drive line is a separator pinned to a hole vertex.
     #[serde(default, rename = "holePin")]
+    #[ts(rename = "holePin", optional)]
     pub hole_pin: Option<HolePin>,
     /// Stable identifier assigned by the UI at creation time. Splice
     /// annotations key off this id + a fractional position along the
@@ -71,10 +77,13 @@ pub struct DriveLine {
     pub partitions: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct HolePin {
     #[serde(rename = "holeIndex")]
+    #[ts(rename = "holeIndex")]
     pub hole_index: usize,
     #[serde(rename = "vertexIndex")]
+    #[ts(rename = "vertexIndex")]
     pub vertex_index: usize,
 }

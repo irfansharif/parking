@@ -9,6 +9,7 @@
 //!   ParkingLayout     — what the engine hands back
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::addressing::{Annotation, RegionId};
 use super::geom::{Polygon, Vec2};
@@ -21,7 +22,8 @@ use super::output::{
 // ParkingParams
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct ParkingParams {
     pub stall_width: f64,
     pub stall_depth: f64,
@@ -85,7 +87,8 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct DebugToggles {
     // Corridor merging
     #[serde(default = "default_true")]
@@ -177,7 +180,8 @@ impl Default for DebugToggles {
 // Top-level input
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct GenerateInput {
     pub boundary: Polygon,
     pub aisle_graph: Option<DriveAisleGraph>,
@@ -189,6 +193,7 @@ pub struct GenerateInput {
     #[serde(default)]
     pub debug: DebugToggles,
     #[serde(default, rename = "regionOverrides")]
+    #[ts(rename = "regionOverrides")]
     pub region_overrides: Vec<RegionOverride>,
     /// User-drawn post-pass modifiers that retype or suppress overlapping
     /// stalls (DESIGN §1.4). Empty = no-op. Applied after placement by
@@ -205,16 +210,20 @@ pub struct GenerateInput {
 /// - Any other `kind` → retype overlapping stalls (ADA, EV, Compact,
 ///   etc.). A zero-length polyline (single point) places a single
 ///   retyped stall at that location.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct StallModifier {
     pub polyline: Vec<Vec2>,
     pub kind: StallKind,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct RegionOverride {
     pub region_id: RegionId,
+    #[ts(optional)]
     pub aisle_angle_deg: Option<f64>,
+    #[ts(optional)]
     pub aisle_offset: Option<f64>,
 }
 
@@ -222,7 +231,8 @@ pub struct RegionOverride {
 // Top-level output
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct ParkingLayout {
     pub aisle_polygons: Vec<Vec<Vec2>>,
     pub stalls: Vec<StallQuad>,

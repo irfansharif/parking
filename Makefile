@@ -1,6 +1,12 @@
-.PHONY: build-engine dev test test-update clean
+.PHONY: build-engine bindings dev test test-update clean
 
-build-engine:
+# Regenerate the TS type bindings (ts-rs-derived) consumed by the UI.
+# Kept as its own target so `cargo test` isn't serialized behind the
+# release-profile wasm-pack build. `build-engine` invokes it.
+bindings:
+	cd engine && TS_RS_EXPORT_DIR=$(CURDIR)/ui/src/bindings cargo test --lib export_bindings --quiet
+
+build-engine: bindings
 	cd engine && touch src/lib.rs && wasm-pack build --target web --release --out-dir ../ui/src/wasm
 
 dev: build-engine

@@ -1,4 +1,8 @@
 engine/target/
+# ts-rs default export dir — real bindings live in ui/src/bindings/
+# via TS_RS_EXPORT_DIR. If a cargo test is run without the Makefile
+# setting that var, ts-rs falls back here; ignore the stray output.
+engine/bindings/
 ui/dist/assets/
 test-results/
 ui/.vite/
