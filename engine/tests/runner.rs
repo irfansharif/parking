@@ -155,3 +155,68 @@ fn annotation_perimeter_direction() {
 fn stall_modifier_suppress() {
     run_fixture(&testdata_dir().join("stall-modifier-suppress.txt"));
 }
+
+#[test]
+fn basic_rectangle() {
+    run_fixture(&testdata_dir().join("basic-rectangle.txt"));
+}
+
+#[test]
+fn angled_stalls() {
+    run_fixture(&testdata_dir().join("angled-stalls.txt"));
+}
+
+#[test]
+fn cross_aisle_spacing() {
+    run_fixture(&testdata_dir().join("cross-aisle-spacing.txt"));
+}
+
+#[test]
+fn corner_islands() {
+    run_fixture(&testdata_dir().join("corner-islands.txt"));
+}
+
+#[test]
+fn hole_building() {
+    run_fixture(&testdata_dir().join("hole-building.txt"));
+}
+
+#[test]
+fn hole_stalls() {
+    run_fixture(&testdata_dir().join("hole-stalls.txt"));
+}
+
+#[test]
+fn drive_line_long() {
+    run_fixture(&testdata_dir().join("drive-line-long.txt"));
+}
+
+#[test]
+fn drive_line_intersection() {
+    run_fixture(&testdata_dir().join("drive-line-intersection.txt"));
+}
+
+#[test]
+fn partitioning_two_regions() {
+    run_fixture(&testdata_dir().join("partitioning-two-regions.txt"));
+}
+
+#[test]
+fn partitioning_dangling() {
+    run_fixture(&testdata_dir().join("partitioning-dangling.txt"));
+}
+
+#[test]
+fn half_hull() {
+    run_fixture(&testdata_dir().join("half-hull.txt"));
+}
+
+#[test]
+fn manual_aisle_graph() {
+    run_fixture(&testdata_dir().join("manual-aisle-graph.txt"));
+}
+
+#[test]
+fn hole_boundary_face() {
+    run_fixture(&testdata_dir().join("hole-boundary-face.txt"));
+}

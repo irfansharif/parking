@@ -1,0 +1,26 @@
+# Regression: stalls missing around a hole and in the face to its left.
+# The face surrounding the hole should have stalls along its aisle-facing
+# edges, and the face whose top-left corner touches the hole should still
+# have stalls on the top half.
+
+polygon outer
+0,0
+750,0
+750,500
+0,500
+----
+polygon outer: 4 vertices
+
+polygon hole
+275.43,152.80
+475,150
+375,350
+----
+hole: 3 vertices
+
+generate
+----
+total_stalls: 820
+
+snapshot
+----

@@ -9,8 +9,9 @@
 
 use parking_lot_engine::pipeline::generate::generate;
 use parking_lot_engine::types::{
-    AisleDirection, DebugToggles, EdgeArc, GenerateInput, ParkingLayout, ParkingParams, Polygon,
-    Vec2,
+    AisleDirection, AisleEdge, Annotation, Axis, DebugToggles, DriveAisleGraph, DriveLine,
+    EdgeArc, GenerateInput, GridStop, HolePin, ParkingLayout, ParkingParams, PerimeterLoop,
+    Polygon, RegionId, Target, TrafficDirection, Vec2,
 };
 use std::path::{Path, PathBuf};
 
@@ -26,6 +27,10 @@ pub struct FixtureCtx {
     pub default_snapshot_name: String,
     /// When set, `snapshot` writes the golden instead of comparing.
     pub update_snapshots: bool,
+    /// Monotonic drive-line id allocator for `drive-line` directives
+    /// that don't specify `id=N` explicitly. Starts at 1 so the
+    /// default 0 stays reserved as the "no id" sentinel.
+    next_drive_line_id: u32,
 }
 
 impl FixtureCtx {
@@ -39,12 +44,13 @@ impl FixtureCtx {
                 params: ParkingParams::default(),
                 debug: DebugToggles::default(),
                 region_overrides: Vec::new(),
-            stall_modifiers: Vec::new(),
+                stall_modifiers: Vec::new(),
             },
             last_layout: None,
             snapshot_root,
             default_snapshot_name,
             update_snapshots: update,
+            next_drive_line_id: 1,
         }
     }
 }
@@ -72,8 +78,12 @@ pub fn execute(ctx: &mut FixtureCtx, command: &str, body: &str) -> Result<Outcom
         "graph" => graph_cmd(ctx, rest),
         "faces" => faces_cmd(ctx, rest),
         "annotation-json" => annotation_json(ctx, body),
+        "annotation" => annotation_cmd(ctx, rest),
         "annotations" => annotations_cmd(ctx),
         "stall-modifier-json" => stall_modifier_json(ctx, body),
+        "drive-line" => drive_line_cmd(ctx, rest, body),
+        "vertex" => vertex_cmd(ctx, rest),
+        "edge" => edge_cmd(ctx, rest),
         "snapshot" => snapshot(ctx, rest),
         _ => Err(format!("unknown directive: {}", verb)),
     }
@@ -522,4 +532,329 @@ fn snapshot_diff(label: &str, expected: &str, actual: &str) -> String {
     }
     out.push_str("(rerun with UPDATE_SNAPSHOTS=1 to accept)\n");
     out
+}
+
+// ---------------------------------------------------------------------------
+// drive-line / vertex / edge / annotation — mirror the UI's one-line DSL.
+// ---------------------------------------------------------------------------
+
+/// Accept optional `id=N`, `partitions`, and `hole-pin=h,v` tokens in
+/// any order. Body is exactly two `x,y` lines (start and end).
+fn drive_line_cmd(ctx: &mut FixtureCtx, args: &str, body: &str) -> Result<Outcome, String> {
+    let (points, _) = parse_vertex_block(body)?;
+    if points.len() != 2 {
+        return Err(format!(
+            "drive-line body requires exactly two x,y lines (got {})",
+            points.len()
+        ));
+    }
+    let start = points[0];
+    let end = points[1];
+
+    let mut explicit_id: Option<u32> = None;
+    let mut partitions_flag = false;
+    let mut hole_pin: Option<(usize, usize)> = None;
+    for tok in args.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("id=") {
+            explicit_id = Some(v.parse::<u32>().map_err(|e| format!("id: {}", e))?);
+        } else if tok == "partitions" {
+            partitions_flag = true;
+        } else if let Some(v) = tok.strip_prefix("hole-pin=") {
+            let (h, i) = v
+                .split_once(',')
+                .ok_or_else(|| "hole-pin requires h,i".to_string())?;
+            hole_pin = Some((
+                h.parse::<usize>().map_err(|e| format!("hole-pin h: {}", e))?,
+                i.parse::<usize>().map_err(|e| format!("hole-pin i: {}", e))?,
+            ));
+        } else if !tok.is_empty() {
+            return Err(format!("drive-line: unknown token {:?}", tok));
+        }
+    }
+
+    let id = match explicit_id {
+        Some(n) => {
+            if n >= ctx.next_drive_line_id {
+                ctx.next_drive_line_id = n + 1;
+            }
+            n
+        }
+        None => {
+            let n = ctx.next_drive_line_id;
+            ctx.next_drive_line_id += 1;
+            n
+        }
+    };
+
+    let partitions = partitions_flag || hole_pin.is_some();
+    ctx.input.drive_lines.push(DriveLine {
+        start,
+        end,
+        hole_pin: hole_pin.map(|(h, i)| HolePin {
+            hole_index: h,
+            vertex_index: i,
+        }),
+        id,
+        partitions,
+    });
+
+    // Echo the request back in the same shape as debug::format_fixture
+    // so round-tripping stays stable.
+    let id_suffix = if explicit_id.is_some() {
+        format!(" id={}", id)
+    } else {
+        String::new()
+    };
+    let pin_suffix = match (hole_pin, partitions_flag) {
+        (Some((h, i)), _) => format!(" hole-pin={},{}", h, i),
+        (None, true) => " partitions".to_string(),
+        (None, false) => String::new(),
+    };
+    Ok(Outcome {
+        output: format!(
+            "drive-line: {},{} -> {},{}{}{}",
+            fmt_xy(start.x),
+            fmt_xy(start.y),
+            fmt_xy(end.x),
+            fmt_xy(end.y),
+            id_suffix,
+            pin_suffix,
+        ),
+        ..Default::default()
+    })
+}
+
+fn fmt_xy(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-6 {
+        format!("{}", v.round() as i64)
+    } else {
+        format!("{:.2}", v)
+    }
+}
+
+fn vertex_cmd(ctx: &mut FixtureCtx, args: &str) -> Result<Outcome, String> {
+    let mut parts = args.splitn(2, char::is_whitespace);
+    let action = parts.next().unwrap_or("").trim();
+    let tail = parts.next().unwrap_or("").trim();
+    match action {
+        "add" => {
+            let p = parse_xy(tail)?;
+            let graph = ctx.input.aisle_graph.get_or_insert_with(|| DriveAisleGraph {
+                vertices: Vec::new(),
+                edges: Vec::new(),
+                perim_vertex_count: 0,
+            });
+            let idx = graph.vertices.len();
+            graph.vertices.push(p);
+            Ok(Outcome {
+                output: format!("{}", idx),
+                ..Default::default()
+            })
+        }
+        other => Err(format!("vertex: unknown action {:?}", other)),
+    }
+}
+
+fn edge_cmd(ctx: &mut FixtureCtx, args: &str) -> Result<Outcome, String> {
+    let mut parts = args.splitn(2, char::is_whitespace);
+    let action = parts.next().unwrap_or("").trim();
+    let tail = parts.next().unwrap_or("").trim();
+    match action {
+        "add" => {
+            let (s, e) = tail
+                .split_once(',')
+                .ok_or_else(|| "edge add requires i,j".to_string())?;
+            let start = s
+                .trim()
+                .parse::<usize>()
+                .map_err(|e| format!("edge start: {}", e))?;
+            let end = e
+                .trim()
+                .parse::<usize>()
+                .map_err(|e| format!("edge end: {}", e))?;
+            let width = ctx.input.params.aisle_width / 2.0;
+            let graph = ctx.input.aisle_graph.get_or_insert_with(|| DriveAisleGraph {
+                vertices: Vec::new(),
+                edges: Vec::new(),
+                perim_vertex_count: 0,
+            });
+            graph.edges.push(AisleEdge {
+                start,
+                end,
+                width,
+                interior: false,
+                direction: AisleDirection::TwoWay,
+            });
+            Ok(Outcome {
+                output: format!("edge {}->{}", start, end),
+                ..Default::default()
+            })
+        }
+        other => Err(format!("edge: unknown action {:?}", other)),
+    }
+}
+
+/// Parse the UI's one-line annotation DSL:
+///   annotation <kind> on=<substrate> [axis=...] [coord=...]
+///              [range=whole | at=<stop> | range=<s1>,<s2>] [traffic=...]
+/// where <kind> ∈ {delete-vertex, delete-edge, direction}.
+/// Echoes the parsed annotation back through the canonical
+/// `debug::format_annotation_line` so fixtures round-trip verbatim.
+fn annotation_cmd(ctx: &mut FixtureCtx, args: &str) -> Result<Outcome, String> {
+    let mut parts = args.split_whitespace();
+    let kind = parts
+        .next()
+        .ok_or_else(|| "annotation requires a kind".to_string())?;
+    let mut kv: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for p in parts {
+        if let Some(eq) = p.find('=') {
+            kv.insert(&p[..eq], &p[eq + 1..]);
+        }
+    }
+    let target = parse_annotation_target(&kv)?;
+    let ann = match kind {
+        "delete-vertex" => Annotation::DeleteVertex { target },
+        "delete-edge" => Annotation::DeleteEdge { target },
+        "direction" => {
+            let traffic = kv
+                .get("traffic")
+                .ok_or_else(|| "direction requires traffic=<...>".to_string())?;
+            Annotation::Direction {
+                target,
+                traffic: parse_traffic(traffic)?,
+            }
+        }
+        other => return Err(format!("unknown annotation kind {:?}", other)),
+    };
+    let line = parking_lot_engine::debug::format_annotation_line(&ann);
+    ctx.input.annotations.push(ann);
+    Ok(Outcome {
+        output: format!("annotation {}", line),
+        ..Default::default()
+    })
+}
+
+fn parse_annotation_target(
+    kv: &std::collections::HashMap<&str, &str>,
+) -> Result<Target, String> {
+    let on = kv
+        .get("on")
+        .ok_or_else(|| "annotation: missing on=<substrate>".to_string())?;
+    match *on {
+        "grid" => {
+            let region = kv
+                .get("region")
+                .ok_or_else(|| "grid: missing region=<id>".to_string())?;
+            let region = parse_region_id(region)?;
+            let axis = match kv.get("axis").copied() {
+                Some("x") => Axis::X,
+                Some("y") => Axis::Y,
+                _ => return Err("grid: axis must be x or y".to_string()),
+            };
+            let coord = kv
+                .get("coord")
+                .ok_or_else(|| "grid: missing coord=<n>".to_string())?
+                .parse::<i32>()
+                .map_err(|e| format!("grid coord: {}", e))?;
+            let range = if kv.get("range").copied() == Some("whole") {
+                None
+            } else if let Some(at) = kv.get("at") {
+                let s = parse_stop(at)?;
+                Some((s.clone(), s))
+            } else if let Some(r) = kv.get("range") {
+                let (a, b) = r
+                    .split_once(',')
+                    .ok_or_else(|| "grid range=<s1>,<s2> needs two stops".to_string())?;
+                Some((parse_stop(a)?, parse_stop(b)?))
+            } else {
+                return Err("grid: need range=whole|<s1>,<s2> or at=<stop>".to_string());
+            };
+            Ok(Target::Grid {
+                region,
+                axis,
+                coord,
+                range,
+            })
+        }
+        "drive-line" => {
+            let id = kv
+                .get("id")
+                .ok_or_else(|| "drive-line: missing id".to_string())?
+                .parse::<u32>()
+                .map_err(|e| format!("drive-line id: {}", e))?;
+            let t = kv
+                .get("t")
+                .ok_or_else(|| "drive-line: missing t".to_string())?
+                .parse::<f64>()
+                .map_err(|e| format!("drive-line t: {}", e))?;
+            Ok(Target::DriveLine { id, t })
+        }
+        "perimeter" => {
+            let loop_ = parse_loop(
+                kv.get("loop")
+                    .ok_or_else(|| "perimeter: missing loop".to_string())?,
+            )?;
+            let arc = kv
+                .get("arc")
+                .ok_or_else(|| "perimeter: missing arc".to_string())?
+                .parse::<f64>()
+                .map_err(|e| format!("perimeter arc: {}", e))?;
+            Ok(Target::Perimeter { loop_, arc })
+        }
+        other => Err(format!("unknown substrate 'on={}'", other)),
+    }
+}
+
+fn parse_region_id(s: &str) -> Result<RegionId, String> {
+    let n = if let Some(hex) = s.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16).map_err(|e| format!("region id hex: {}", e))?
+    } else {
+        s.parse::<u64>()
+            .map_err(|e| format!("region id dec: {}", e))?
+    };
+    Ok(RegionId(n))
+}
+
+fn parse_stop(s: &str) -> Result<GridStop, String> {
+    let (head, tail) = s
+        .split_once(':')
+        .ok_or_else(|| format!("stop {:?} missing ':'", s))?;
+    match head {
+        "lattice" => Ok(GridStop::Lattice {
+            other: tail
+                .parse::<i32>()
+                .map_err(|e| format!("lattice: {}", e))?,
+        }),
+        "crosses-drive-line" => Ok(GridStop::CrossesDriveLine {
+            id: tail
+                .parse::<u32>()
+                .map_err(|e| format!("crosses-drive-line: {}", e))?,
+        }),
+        "crosses-perimeter" => Ok(GridStop::CrossesPerimeter {
+            loop_: parse_loop(tail)?,
+        }),
+        other => Err(format!("unknown stop head {:?}", other)),
+    }
+}
+
+fn parse_loop(s: &str) -> Result<PerimeterLoop, String> {
+    if s == "outer" {
+        return Ok(PerimeterLoop::Outer);
+    }
+    if let Some(i) = s.strip_prefix("hole:") {
+        return Ok(PerimeterLoop::Hole {
+            index: i.parse::<usize>().map_err(|e| format!("hole: {}", e))?,
+        });
+    }
+    Err(format!("unknown loop {:?}", s))
+}
+
+fn parse_traffic(s: &str) -> Result<TrafficDirection, String> {
+    match s {
+        "one-way" => Ok(TrafficDirection::OneWay),
+        "one-way-reverse" => Ok(TrafficDirection::OneWayReverse),
+        "two-way-oriented" => Ok(TrafficDirection::TwoWayOriented),
+        "two-way-oriented-reverse" => Ok(TrafficDirection::TwoWayOrientedReverse),
+        other => Err(format!("unknown traffic {:?}", other)),
+    }
 }

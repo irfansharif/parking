@@ -1,0 +1,21 @@
+# Rectangle at 45° — with angled stalls the strip doesn't reach the face
+# corners, so the four corners should emit landscape island triangles.
+
+polygon outer
+0,0
+750,0
+750,500
+0,500
+----
+polygon outer: 4 vertices
+
+set stall-angle=45
+----
+set stall_angle_deg=45
+
+generate
+----
+total_stalls: 856
+
+snapshot
+----

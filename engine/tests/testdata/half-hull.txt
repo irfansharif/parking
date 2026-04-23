@@ -1,0 +1,30 @@
+# Irregular quad with a rectangular hole and a long diagonal drive line.
+
+polygon outer
+-48.47,0
+750,0
+782.80,654.85
+0,654.85
+----
+polygon outer: 4 vertices
+
+polygon hole
+394.53,251.80
+611.14,251.80
+613.91,512.33
+394.53,512.33
+----
+hole: 4 vertices
+
+drive-line
+471.79,-42.94
+139.44,696.35
+----
+drive-line: 471.79,-42.94 -> 139.44,696.35
+
+generate
+----
+total_stalls: 910
+
+snapshot
+----

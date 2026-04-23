@@ -1,0 +1,21 @@
+# Basic rectangular lot at 60° stall angle. Complements smoke-rectangle
+# (90° + hole) with the other common angle and no hole.
+
+polygon outer
+0,0
+200,0
+200,150
+0,150
+----
+polygon outer: 4 vertices
+
+set stall-angle=60
+----
+set stall_angle_deg=60
+
+generate
+----
+total_stalls: 132
+
+snapshot
+----

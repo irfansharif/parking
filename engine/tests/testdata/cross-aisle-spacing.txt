@@ -1,0 +1,21 @@
+# Irregular quad with stalls_per_face=3 — stresses cross-aisle insertion
+# on a non-axis-aligned boundary.
+
+polygon outer
+566.27,188.01
+750,0
+718.58,459.19
+513.49,459.19
+----
+polygon outer: 4 vertices
+
+set stalls_per_face=3
+----
+set stalls_per_face=3
+
+generate
+----
+total_stalls: 144
+
+snapshot
+----

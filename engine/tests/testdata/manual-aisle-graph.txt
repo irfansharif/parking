@@ -1,0 +1,29 @@
+# Manual aisle-graph construction: `vertex add` + `edge add` directly
+# populate the aisle_graph, replacing the auto-generated layout.
+
+polygon outer
+0,0
+200,0
+200,150
+0,150
+----
+polygon outer: 4 vertices
+
+vertex add 0,75
+----
+0
+
+vertex add 200,75
+----
+1
+
+edge add 0,1
+----
+edge 0->1
+
+generate
+----
+total_stalls: 146
+
+snapshot
+----
