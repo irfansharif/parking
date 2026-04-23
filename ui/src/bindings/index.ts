@@ -6,6 +6,7 @@
 // Keep this index in sync when new exported types land in the engine —
 // the failing import is the signal.
 
+export type { AbstractFrame } from "./AbstractFrame";
 export type { AbstractPoint2 } from "./AbstractPoint2";
 export type { AisleDirection } from "./AisleDirection";
 export type { AisleEdge } from "./AisleEdge";

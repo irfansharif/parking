@@ -32,7 +32,8 @@ use super::io::ParkingParams;
 //
 // Frames are derived fresh on every generate and never serialized.
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct AbstractFrame {
     pub origin_world: Vec2,
     pub x_dir: Vec2,          // unit, perpendicular to parallel aisle

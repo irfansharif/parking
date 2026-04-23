@@ -14,6 +14,7 @@ i_overlay = "1"
 geo = "0.29"
 polylabel = "3"
 ts-rs = { version = "12.0.1", features = ["serde-compat"] }
+serde-wasm-bindgen = "0.6.5"
 
 [profile.release]
 opt-level = "s"

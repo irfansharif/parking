@@ -89,6 +89,50 @@ pub fn arc_length(p0: Vec2, p1: Vec2, bulge: f64) -> f64 {
     arc.radius * arc.sweep.abs()
 }
 
+/// Sample a point at parameter `t ∈ [0, 1]` along an arc edge. For a
+/// near-straight edge this is just linear interpolation; otherwise
+/// samples `start_angle + t·sweep` on the derived arc circle.
+pub fn eval_arc_at(p0: Vec2, p1: Vec2, bulge: f64, t: f64) -> Vec2 {
+    if bulge.abs() < STRAIGHT_EPS {
+        return p0 + (p1 - p0) * t;
+    }
+    let arc = bulge_to_arc(p0, p1, bulge);
+    let a = arc.start_angle + arc.sweep * t;
+    Vec2::new(
+        arc.center.x + arc.radius * a.cos(),
+        arc.center.y + arc.radius * a.sin(),
+    )
+}
+
+/// Closest point on an arc edge to `pt`, returned as the parameter `t`
+/// and the projected position. Closed form: project onto the circle,
+/// compute the angular offset from `start_angle` along `sweep`, clamp
+/// to `[0, 1]`. Falls back to line-segment projection on near-straight
+/// edges.
+pub fn project_to_arc(p0: Vec2, p1: Vec2, bulge: f64, pt: Vec2) -> (Vec2, f64) {
+    if bulge.abs() < STRAIGHT_EPS {
+        let ab = p1 - p0;
+        let len_sq = ab.dot(ab);
+        if len_sq < 1e-24 {
+            return (p0, 0.0);
+        }
+        let t = (((pt - p0).dot(ab)) / len_sq).clamp(0.0, 1.0);
+        return (p0 + ab * t, t);
+    }
+    let arc = bulge_to_arc(p0, p1, bulge);
+    let d = pt - arc.center;
+    let pt_angle = d.y.atan2(d.x);
+    // Angular offset from start_angle in the sweep direction, wrapped
+    // to [0, 2π). Divided by |sweep|, the arc occupies t ∈ [0, 1];
+    // overshoot clamps to the nearer endpoint.
+    let sweep_sign = if arc.sweep >= 0.0 { 1.0 } else { -1.0 };
+    let mut delta = (pt_angle - arc.start_angle) * sweep_sign;
+    delta = delta.rem_euclid(std::f64::consts::TAU);
+    let t_raw = delta / arc.sweep.abs();
+    let t = t_raw.clamp(0.0, 1.0);
+    (eval_arc_at(p0, p1, bulge, t), t)
+}
+
 /// Discretize a single curved edge into a polyline.
 /// Returns `[p0, s_1, …, s_{N-1}]` — endpoint `p1` is excluded because
 /// it's the next edge's start vertex (matches the ring-walk contract).

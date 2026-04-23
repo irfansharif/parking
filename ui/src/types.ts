@@ -1,14 +1,30 @@
 // Engine types are generated from Rust via ts-rs — the sole source of
-// truth lives in engine/src/types/*.rs. This file only declares
-// UI-session types (ParkingLot, AbstractFrame for now) plus math
-// helpers that haven't yet moved into the wasm surface (step 2 of the
-// audit will).
+// truth lives in engine/src/types/*.rs. This file re-exports those
+// types and adds a thin layer of UI-session glue: `ParkingLot` (the
+// lot + its layout + editing state), and intersection types for the
+// UI-only fields engine serde tolerates (`DriveLine.boundaryPin`,
+// `Annotation._active`).
 //
-// Re-export the engine types so existing UI imports (`from "./types"`)
-// keep working without caring whether a symbol is hand-written or
-// generated.
+// The math helpers below are TypeScript wrappers around wasm exports.
+// Each wrapper preserves the ergonomic `(Vec2, Vec2, bulge)`-style
+// signature the rest of the UI expects; the wasm boundary passes flat
+// `f64`s to stay cheap in hot render/event paths.
+
+import {
+  arc_apex_js,
+  bulge_from_apex_js,
+  compute_region_frame_js,
+  effective_depth_js,
+  eval_arc_at_js,
+  frame_forward_js,
+  frame_inverse_js,
+  project_to_arc_js,
+  stall_pitch_js,
+} from "./wasm/parking_lot_engine";
 
 import type {
+  AbstractFrame,
+  AbstractPoint2,
   EdgeArc,
   GridStop,
   ParkingLayout,
@@ -24,6 +40,7 @@ import type {
 } from "./bindings";
 
 export type {
+  AbstractFrame,
   AbstractPoint2,
   AisleDirection,
   AisleEdge,
@@ -57,19 +74,17 @@ export type {
 // ---------------------------------------------------------------------------
 // UI extensions of engine types.
 //
-// `DriveLine` carries a `boundaryPin` — UI-only state pairing a
-// hole-pinned drive line's far endpoint back to a boundary edge so it
-// tracks when the user drags the outer polygon. The engine ignores
-// the field (serde tolerates unknown fields by default).
+// `DriveLine.boundaryPin` — UI-only pairing of a hole-pinned drive
+// line's far endpoint back to a boundary edge so it tracks when the
+// user drags the outer polygon. The engine ignores the field (serde
+// tolerates unknown fields by default).
 //
-// `Annotation` carries `_active` — UI-only tombstone flag used while
-// cycling through direction states before committing or discarding an
-// annotation. Again the engine ignores it (and the UI filters active
-// annotations out before sending in `generateLot`).
+// `Annotation._active` — UI-only tombstone flag used while cycling
+// direction states before committing or discarding. The UI filters
+// inactive annotations out before handing input to the engine.
 //
-// Neither field lives in the engine types, so we extend the generated
-// shapes here via intersection rather than polluting the Rust side
-// with UI-session concepts.
+// Both ride on engine shapes via intersection rather than polluting
+// the Rust side with UI-session concepts.
 // ---------------------------------------------------------------------------
 
 export type DriveLine = EngineDriveLine & {
@@ -81,12 +96,11 @@ export type Target = EngineTarget;
 export type Annotation = EngineAnnotation & { _active?: boolean };
 
 // ---------------------------------------------------------------------------
-// ParkingLot — UI session aggregate. Holds one engine input (+ its last
-// layout) together with the UI-only state that goes with editing it
-// (aisle vector for the drag handle, cached baseline for the
-// aisle-offset delta, per-region overrides keyed for lookup in lot
-// state). Intentionally NOT generated from Rust; the engine has no
-// analog.
+// ParkingLot — UI session aggregate. Holds one engine input (+ its
+// last layout) together with the UI-only state that goes with editing
+// it (aisle vector for the drag handle, cached baseline for the
+// aisle-offset delta, per-region overrides keyed for lookup).
+// Intentionally NOT generated from Rust; the engine has no analog.
 // ---------------------------------------------------------------------------
 
 export interface ParkingLot {
@@ -120,40 +134,17 @@ export interface ParkingLot {
 }
 
 // ---------------------------------------------------------------------------
-// AbstractFrame — TEMPORARY TS mirror of the engine's per-region
-// frame. The engine struct is never serialized (derived fresh each
-// generate), so ts-rs doesn't cover it. Step 2 of the audit moves this
-// behind a wasm-exposed function and this declaration goes away.
+// Math helpers — wasm wrappers.
+//
+// Arc primitives pass flat `f64` args through wasm_bindgen and get
+// back `[x, y]` / `[t, x, y]` Float64Arrays. Frame math uses a
+// serde-wasm-bindgen round-trip for the compound `AbstractFrame` /
+// `ParkingParams` structs.
 // ---------------------------------------------------------------------------
-
-export interface AbstractFrame {
-  origin_world: Vec2;
-  x_dir: Vec2; // unit, perpendicular to parallel aisle
-  y_dir: Vec2; // unit, along parallel aisle
-  dx: number; // 2*effective_depth + 2*aisle_width
-  dy: number; // stalls_per_face * stall_pitch
-  stalls_per_face: number;
-}
-
-// ---------------------------------------------------------------------------
-// Math helpers (duplicated from engine geom/arc/addressing). Step 2
-// swaps these out for wasm calls; kept here so step 1 is a pure types
-// refactor.
-// ---------------------------------------------------------------------------
-
-function stallPitch(p: ParkingParams): number {
-  const sinA = Math.sin((p.stall_angle_deg * Math.PI) / 180);
-  return Math.abs(sinA) > 1e-12 ? p.stall_width / sinA : p.stall_width;
-}
-
-function effectiveDepth(p: ParkingParams): number {
-  const rad = (p.stall_angle_deg * Math.PI) / 180;
-  return p.stall_depth * Math.sin(rad) + Math.cos(rad) * p.stall_width / 2;
-}
 
 /** Compute the root (lot-wide) abstract frame from params. */
 export function computeRootFrame(params: ParkingParams): AbstractFrame {
-  return computeFrameForAngle(params, params.aisle_angle_deg, params.aisle_offset);
+  return compute_region_frame_js(params, params.aisle_angle_deg, params.aisle_offset) as AbstractFrame;
 }
 
 /**
@@ -166,36 +157,131 @@ export function computeRegionFrame(
   aisleAngleDeg: number,
   aisleOffset: number = params.aisle_offset,
 ): AbstractFrame {
-  return computeFrameForAngle(params, aisleAngleDeg, aisleOffset);
+  return compute_region_frame_js(params, aisleAngleDeg, aisleOffset) as AbstractFrame;
 }
 
-function computeFrameForAngle(
-  params: ParkingParams,
-  aisleAngleDeg: number,
-  aisleOffset: number,
-): AbstractFrame {
-  const rad = (aisleAngleDeg * Math.PI) / 180;
-  const y_dir: Vec2 = { x: Math.cos(rad), y: Math.sin(rad) };
-  const x_dir: Vec2 = { x: -Math.sin(rad), y: Math.cos(rad) };
-  const dx = 2 * effectiveDepth(params) + 2 * params.aisle_width;
-  const stalls_per_face = Math.max(1, Math.round(params.stalls_per_face));
-  const dy = stalls_per_face * stallPitch(params);
-  // Shift canvas-anchored origin along the perpendicular axis by
-  // aisle_offset. Dragging the aisle vector in the UI slides the
-  // entire grid (and abstract annotations with it).
-  const origin_world: Vec2 = {
-    x: x_dir.x * aisleOffset,
-    y: x_dir.y * aisleOffset,
-  };
-  return {
-    origin_world,
-    x_dir,
-    y_dir,
-    dx,
-    dy,
-    stalls_per_face,
-  };
+/** Forward transform: abstract → world. */
+export function frameForward(frame: AbstractFrame, p: AbstractPoint2): Vec2 {
+  const [x, y] = frame_forward_js(frame, p.x, p.y);
+  return { x, y };
 }
+
+/**
+ * Inverse transform: world → abstract. Relies on x_dir and y_dir being
+ * orthonormal, so the inverse is just a projection onto each axis
+ * followed by a division by the corresponding scale.
+ */
+export function frameInverse(frame: AbstractFrame, w: Vec2): AbstractPoint2 {
+  const [x, y] = frame_inverse_js(frame, w.x, w.y);
+  return { x, y };
+}
+
+export function arcApex(p0: Vec2, p1: Vec2, bulge: number): Vec2 {
+  const [x, y] = arc_apex_js(p0.x, p0.y, p1.x, p1.y, bulge);
+  return { x, y };
+}
+
+export function bulgeFromApex(p0: Vec2, p1: Vec2, apex: Vec2): number {
+  return bulge_from_apex_js(p0.x, p0.y, p1.x, p1.y, apex.x, apex.y);
+}
+
+/** Sample a point at parameter `t` ∈ [0, 1] along an arc edge. */
+export function evalArcAt(p0: Vec2, p1: Vec2, bulge: number, t: number): Vec2 {
+  const [x, y] = eval_arc_at_js(p0.x, p0.y, p1.x, p1.y, bulge, t);
+  return { x, y };
+}
+
+/**
+ * Closest point on an arc edge to `pt`, returned as the parameter `t`
+ * and the projected position. Closed-form solve in the engine; this
+ * wrapper unpacks the flat `[t, x, y]` triple into the struct the rest
+ * of the UI expects.
+ */
+export function projectToArc(
+  p0: Vec2, p1: Vec2, bulge: number, pt: Vec2,
+): { pos: Vec2; t: number } {
+  const [t, x, y] = project_to_arc_js(p0.x, p0.y, p1.x, p1.y, bulge, pt.x, pt.y);
+  return { pos: { x, y }, t };
+}
+
+/** Evaluate a point at parameter `t` along boundary edge `edgeIndex`. */
+export function evalBoundaryEdge(
+  outer: Vec2[], edgeIndex: number, t: number, arcs?: (EdgeArc | null)[],
+): Vec2 {
+  const a = outer[edgeIndex];
+  const b = outer[(edgeIndex + 1) % outer.length];
+  const arc = arcs?.[edgeIndex];
+  if (arc) return evalArcAt(a, b, arc.bulge, t);
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
+/** Project a world point onto the nearest outer boundary edge. */
+export function computeBoundaryPin(
+  pt: Vec2, outer: Vec2[], arcs?: (EdgeArc | null)[],
+): { pos: Vec2; edgeIndex: number; t: number } {
+  let bestDist = Infinity;
+  let bestProj: Vec2 = pt;
+  let bestEdge = 0;
+  let bestT = 0;
+  for (let i = 0; i < outer.length; i++) {
+    const a = outer[i];
+    const b = outer[(i + 1) % outer.length];
+    const arc = arcs?.[i];
+    const proj = arc
+      ? projectToArc(a, b, arc.bulge, pt)
+      : projectToArc(a, b, 0, pt);
+    const dx = pt.x - proj.pos.x, dy = pt.y - proj.pos.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestProj = proj.pos;
+      bestEdge = i;
+      bestT = proj.t;
+    }
+  }
+  return { pos: bestProj, edgeIndex: bestEdge, t: bestT };
+}
+
+// ---------------------------------------------------------------------------
+// Arc rendering — the one piece of arc math that stays TS-side for
+// now. The renderer calls `bulgeToArc` per curved edge per frame to
+// draw Canvas arcs (center/radius/startAngle/sweep are the native
+// CanvasRenderingContext2D inputs). Moving it through wasm each frame
+// would add per-call marshaling cost to the hot path for zero benefit
+// — the engine's `bulge_to_arc` and this one produce identical output.
+// Step 3+ may revisit.
+// ---------------------------------------------------------------------------
+
+const STRAIGHT_EPS = 1e-9;
+
+export interface ArcDef {
+  center: Vec2;
+  radius: number;
+  startAngle: number;
+  sweep: number;
+}
+
+export function bulgeToArc(p0: Vec2, p1: Vec2, bulge: number): ArcDef {
+  const cx = p1.x - p0.x, cy = p1.y - p0.y;
+  const l = Math.sqrt(cx * cx + cy * cy);
+  const midX = (p0.x + p1.x) * 0.5;
+  const midY = (p0.y + p1.y) * 0.5;
+  const perpX = -cy / l;
+  const perpY = cx / l;
+  const radius = l * (1 + bulge * bulge) / (4 * Math.abs(bulge));
+  const offset = (bulge * bulge - 1) * l / (4 * bulge);
+  const center = { x: midX + perpX * offset, y: midY + perpY * offset };
+  const startAngle = Math.atan2(p0.y - center.y, p0.x - center.x);
+  const sweep = -4 * Math.atan(bulge);
+  return { center, radius, startAngle, sweep };
+}
+
+// ---------------------------------------------------------------------------
+// UI-layer math that still lives TS-side (step 3+ of the audit moves
+// these into the engine). Each one operates on world-space inputs +
+// engine-produced layout data (region_debug frames, drive-line
+// parametric t's, perimeter polygons).
+// ---------------------------------------------------------------------------
 
 /**
  * Point-in-polygon test. Even-odd rule. Used by the abstract-handle
@@ -387,177 +473,6 @@ export function worldToSpliceVertex(
   return best ? { drive_line_id: best.id, t: best.t } : null;
 }
 
-/** Forward transform: abstract → world. */
-export function frameForward(
-  frame: AbstractFrame,
-  p: { x: number; y: number },
-): Vec2 {
-  return {
-    x:
-      frame.origin_world.x +
-      p.x * frame.dx * frame.x_dir.x +
-      p.y * frame.dy * frame.y_dir.x,
-    y:
-      frame.origin_world.y +
-      p.x * frame.dx * frame.x_dir.y +
-      p.y * frame.dy * frame.y_dir.y,
-  };
-}
-
-/**
- * Inverse transform: world → abstract. Relies on x_dir and y_dir being
- * orthonormal, so the inverse is just a projection onto each axis
- * followed by a division by the corresponding scale.
- */
-export function frameInverse(
-  frame: AbstractFrame,
-  w: Vec2,
-): { x: number; y: number } {
-  const rx = w.x - frame.origin_world.x;
-  const ry = w.y - frame.origin_world.y;
-  return {
-    x: (rx * frame.x_dir.x + ry * frame.x_dir.y) / frame.dx,
-    y: (rx * frame.y_dir.x + ry * frame.y_dir.y) / frame.dy,
-  };
-}
-
-// Shared arc-math helpers — mirror engine/src/geom/arc.rs. Bulges with
-// magnitude below this are treated as straight lines.
-const STRAIGHT_EPS = 1e-9;
-
-/**
- * Concrete arc geometry derived from endpoints + bulge. `sweep` is
- * signed; traversing `startAngle → startAngle + sweep` walks the short
- * path through the apex, not the long way around the circle.
- */
-export interface ArcDef {
-  center: Vec2;
-  radius: number;
-  startAngle: number;
-  sweep: number;
-}
-
-export function bulgeToArc(p0: Vec2, p1: Vec2, bulge: number): ArcDef {
-  const cx = p1.x - p0.x, cy = p1.y - p0.y;
-  const l = Math.sqrt(cx * cx + cy * cy);
-  const midX = (p0.x + p1.x) * 0.5;
-  const midY = (p0.y + p1.y) * 0.5;
-  const perpX = -cy / l;
-  const perpY = cx / l;
-  const radius = l * (1 + bulge * bulge) / (4 * Math.abs(bulge));
-  const offset = (bulge * bulge - 1) * l / (4 * bulge);
-  const center = { x: midX + perpX * offset, y: midY + perpY * offset };
-  const startAngle = Math.atan2(p0.y - center.y, p0.x - center.x);
-  const sweep = -4 * Math.atan(bulge);
-  return { center, radius, startAngle, sweep };
-}
-
-export function arcApex(p0: Vec2, p1: Vec2, bulge: number): Vec2 {
-  const cx = p1.x - p0.x, cy = p1.y - p0.y;
-  const l = Math.sqrt(cx * cx + cy * cy);
-  if (l < 1e-12) return { x: p0.x, y: p0.y };
-  const midX = (p0.x + p1.x) * 0.5;
-  const midY = (p0.y + p1.y) * 0.5;
-  const perpX = -cy / l;
-  const perpY = cx / l;
-  const k = bulge * l * 0.5;
-  return { x: midX + perpX * k, y: midY + perpY * k };
-}
-
-export function bulgeFromApex(p0: Vec2, p1: Vec2, apex: Vec2): number {
-  const cx = p1.x - p0.x, cy = p1.y - p0.y;
-  const l = Math.sqrt(cx * cx + cy * cy);
-  if (l < 1e-12) return 0;
-  const midX = (p0.x + p1.x) * 0.5;
-  const midY = (p0.y + p1.y) * 0.5;
-  const perpX = -cy / l;
-  const perpY = cx / l;
-  const signed = (apex.x - midX) * perpX + (apex.y - midY) * perpY;
-  return (2 * signed) / l;
-}
-
-/** Sample a point at parameter `t` ∈ [0, 1] along an arc edge. */
-export function evalArcAt(p0: Vec2, p1: Vec2, bulge: number, t: number): Vec2 {
-  if (Math.abs(bulge) < STRAIGHT_EPS) {
-    return { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t };
-  }
-  const arc = bulgeToArc(p0, p1, bulge);
-  const a = arc.startAngle + arc.sweep * t;
-  return {
-    x: arc.center.x + arc.radius * Math.cos(a),
-    y: arc.center.y + arc.radius * Math.sin(a),
-  };
-}
-
-/**
- * Closest point on an arc edge to `pt`, returned as the parameter `t`
- * and the projected position. Closed form: project onto the circle,
- * compute the angular offset from `startAngle` along `sweep`, clamp to
- * [0, 1]. Falls back to line-segment projection for near-straight edges.
- */
-export function projectToArc(
-  p0: Vec2, p1: Vec2, bulge: number, pt: Vec2,
-): { pos: Vec2; t: number } {
-  if (Math.abs(bulge) < STRAIGHT_EPS) {
-    const abx = p1.x - p0.x, aby = p1.y - p0.y;
-    const lenSq = abx * abx + aby * aby;
-    if (lenSq < 1e-24) return { pos: p0, t: 0 };
-    const t = Math.max(0, Math.min(1, ((pt.x - p0.x) * abx + (pt.y - p0.y) * aby) / lenSq));
-    return { pos: { x: p0.x + abx * t, y: p0.y + aby * t }, t };
-  }
-  const arc = bulgeToArc(p0, p1, bulge);
-  const dx = pt.x - arc.center.x, dy = pt.y - arc.center.y;
-  const ptAngle = Math.atan2(dy, dx);
-  // Angular offset from startAngle in the direction of the sweep, in
-  // the range [0, 2π). Dividing by sweep puts t on a line where the
-  // arc occupies t ∈ [0, 1]; everything outside that is "overshoot"
-  // and gets clamped to the nearer endpoint.
-  const sweepSign = arc.sweep >= 0 ? 1 : -1;
-  let delta = (ptAngle - arc.startAngle) * sweepSign;
-  delta = ((delta % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-  const tRaw = delta / Math.abs(arc.sweep);
-  const t = Math.max(0, Math.min(1, tRaw));
-  return { pos: evalArcAt(p0, p1, bulge, t), t };
-}
-
-/** Evaluate a point at parameter `t` along boundary edge `edgeIndex`. */
-export function evalBoundaryEdge(
-  outer: Vec2[], edgeIndex: number, t: number, arcs?: (EdgeArc | null)[],
-): Vec2 {
-  const a = outer[edgeIndex];
-  const b = outer[(edgeIndex + 1) % outer.length];
-  const arc = arcs?.[edgeIndex];
-  if (arc) return evalArcAt(a, b, arc.bulge, t);
-  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-}
-
-/** Project a world point onto the nearest outer boundary edge. */
-export function computeBoundaryPin(
-  pt: Vec2, outer: Vec2[], arcs?: (EdgeArc | null)[],
-): { pos: Vec2; edgeIndex: number; t: number } {
-  let bestDist = Infinity;
-  let bestProj: Vec2 = pt;
-  let bestEdge = 0;
-  let bestT = 0;
-  for (let i = 0; i < outer.length; i++) {
-    const a = outer[i];
-    const b = outer[(i + 1) % outer.length];
-    const arc = arcs?.[i];
-    const proj = arc
-      ? projectToArc(a, b, arc.bulge, pt)
-      : projectToArc(a, b, 0, pt);
-    const dx = pt.x - proj.pos.x, dy = pt.y - proj.pos.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < bestDist) {
-      bestDist = dist;
-      bestProj = proj.pos;
-      bestEdge = i;
-      bestT = proj.t;
-    }
-  }
-  return { pos: bestProj, edgeIndex: bestEdge, t: bestT };
-}
-
 /** True if the annotation is a direction annotation. */
 export function isDirectionAnnotation(
   ann: Annotation,
@@ -737,4 +652,18 @@ function projectOntoLoop(v: Vec2, poly: Vec2[], tol: number): number | null {
     if (!best || dist < best.dist) best = { arc, dist };
   }
   return best ? best.arc : null;
+}
+
+// ---------------------------------------------------------------------------
+// `stallPitch` / `effectiveDepth` — thin wasm wrappers over
+// `ParkingParams::{stall_pitch, effective_depth}`. Used by the chain/
+// frame math above and nowhere else today.
+// ---------------------------------------------------------------------------
+
+export function stallPitch(params: ParkingParams): number {
+  return stall_pitch_js(params);
+}
+
+export function effectiveDepth(params: ParkingParams): number {
+  return effective_depth_js(params);
 }
