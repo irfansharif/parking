@@ -783,3 +783,228 @@ fn loops_equal(a: &PerimeterLoop, b: &PerimeterLoop) -> bool {
 // resolvers. Cheap enough that dropping them reintroduces churn.
 #[allow(dead_code)]
 fn _touch_parking_layout(_l: &ParkingLayout) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AisleEdge, AisleDirection};
+
+    // Build a minimal 2x2 aisle graph: 4 outer vertices at unit coords,
+    // plus the four edges wrapping them. Canonical edge indices
+    // 0:(0→1), 1:(1→2), 2:(2→3), 3:(3→0) after dedup.
+    fn square_graph() -> DriveAisleGraph {
+        DriveAisleGraph {
+            vertices: vec![
+                Vec2::new(0.0, 0.0),
+                Vec2::new(10.0, 0.0),
+                Vec2::new(10.0, 10.0),
+                Vec2::new(0.0, 10.0),
+            ],
+            edges: vec![
+                AisleEdge { start: 0, end: 1, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
+                AisleEdge { start: 1, end: 2, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
+                AisleEdge { start: 2, end: 3, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
+                AisleEdge { start: 3, end: 0, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
+            ],
+            perim_vertex_count: 4,
+        }
+    }
+
+    #[test]
+    fn hit_test_edge_picks_nearest() {
+        let g = square_graph();
+        // (5, 0.1) sits on the bottom edge (edge 0).
+        assert_eq!(hit_test_edge(Vec2::new(5.0, 0.1), &g, 1.0), Some(0));
+        // (10.1, 5) on the right edge (edge 1).
+        assert_eq!(hit_test_edge(Vec2::new(10.1, 5.0), &g, 1.0), Some(1));
+        // (5, 5) inside the square, outside any edge's radius — None.
+        assert_eq!(hit_test_edge(Vec2::new(5.0, 5.0), &g, 0.5), None);
+    }
+
+    #[test]
+    fn find_collinear_chain_collinear_run() {
+        // Three colinear segments along y=0: (0,0)-(5,0), (5,0)-(10,0),
+        // (10,0)-(15,0). Chain from any seed should return all three.
+        let g = DriveAisleGraph {
+            vertices: vec![
+                Vec2::new(0.0, 0.0),
+                Vec2::new(5.0, 0.0),
+                Vec2::new(10.0, 0.0),
+                Vec2::new(15.0, 0.0),
+            ],
+            edges: vec![
+                AisleEdge { start: 0, end: 1, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
+                AisleEdge { start: 1, end: 2, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
+                AisleEdge { start: 2, end: 3, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
+            ],
+            perim_vertex_count: 0,
+        };
+        let chain = find_collinear_chain(&g, 1);
+        assert_eq!(chain.len(), 3);
+        // All three deduped indices covered.
+        let mut sorted = chain.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn find_collinear_chain_stops_at_corner() {
+        let g = square_graph();
+        // Seeded on bottom edge (0→1). Right edge (1→2) is
+        // perpendicular — shouldn't be in the chain.
+        let chain = find_collinear_chain(&g, 0);
+        assert_eq!(chain, vec![0]);
+    }
+
+    #[test]
+    fn loop_arc_to_world_at_endpoints() {
+        let poly = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(10.0, 0.0),
+            Vec2::new(10.0, 10.0),
+            Vec2::new(0.0, 10.0),
+        ];
+        // arc=0 is the first vertex.
+        let p0 = loop_arc_to_world(&poly, 0.0);
+        assert!((p0 - poly[0]).length() < 1e-9);
+        // arc=0.25 on a 40-unit-perimeter square is at (10, 0) — the
+        // next vertex.
+        let p = loop_arc_to_world(&poly, 0.25);
+        assert!((p - poly[1]).length() < 1e-9);
+        // arc=0.5 is halfway around — (10, 10).
+        let p = loop_arc_to_world(&poly, 0.5);
+        assert!((p - poly[2]).length() < 1e-9);
+    }
+
+    #[test]
+    fn world_to_perimeter_pos_projects_onto_loop() {
+        let boundary = Polygon {
+            outer: vec![
+                Vec2::new(0.0, 0.0),
+                Vec2::new(10.0, 0.0),
+                Vec2::new(10.0, 10.0),
+                Vec2::new(0.0, 10.0),
+            ],
+            holes: vec![],
+            outer_arcs: vec![],
+            hole_arcs: vec![],
+        };
+        // Point just above the bottom edge projects onto outer.
+        let r = world_to_perimeter_pos(Vec2::new(5.0, 0.3), &boundary, 1.0).unwrap();
+        assert!(matches!(r.loop_, PerimeterLoop::Outer));
+        // arc ≈ 0.125 (halfway along the bottom of a 40-unit perimeter).
+        assert!((r.arc - 0.125).abs() < 1e-9);
+        // Point far from any edge — None within tol=1.
+        assert!(world_to_perimeter_pos(Vec2::new(5.0, 5.0), &boundary, 1.0).is_none());
+    }
+
+    #[test]
+    fn grid_target_single_point() {
+        let t = grid_target_from_scope(ChainLatticeEdge {
+            region: RegionId::single_region_fallback(),
+            xa: 2,
+            ya: 3,
+            xb: 2,
+            yb: 3,
+        })
+        .unwrap();
+        match t {
+            Target::Grid { axis, coord, range, .. } => {
+                assert_eq!(axis, Axis::X);
+                assert_eq!(coord, 2);
+                let (s1, s2) = range.unwrap();
+                assert!(matches!(s1, GridStop::Lattice { other: 3 }));
+                assert!(matches!(s2, GridStop::Lattice { other: 3 }));
+            }
+            _ => panic!("expected Target::Grid"),
+        }
+    }
+
+    #[test]
+    fn grid_target_span_varies_along_y() {
+        // xa == xb, ya != yb — line fixed at x=5, spanning y=0..3.
+        let t = grid_target_from_scope(ChainLatticeEdge {
+            region: RegionId::single_region_fallback(),
+            xa: 5,
+            ya: 0,
+            xb: 5,
+            yb: 3,
+        })
+        .unwrap();
+        match t {
+            Target::Grid { axis, coord, range, .. } => {
+                assert_eq!(axis, Axis::X);
+                assert_eq!(coord, 5);
+                let (s1, s2) = range.unwrap();
+                assert!(matches!(s1, GridStop::Lattice { other: 0 }));
+                assert!(matches!(s2, GridStop::Lattice { other: 3 }));
+            }
+            _ => panic!("expected Target::Grid"),
+        }
+    }
+
+    #[test]
+    fn targets_equal_ignores_stop_order() {
+        let a = Target::Grid {
+            region: RegionId::single_region_fallback(),
+            axis: Axis::X,
+            coord: 2,
+            range: Some((
+                GridStop::Lattice { other: 0 },
+                GridStop::Lattice { other: 6 },
+            )),
+        };
+        let b = Target::Grid {
+            region: RegionId::single_region_fallback(),
+            axis: Axis::X,
+            coord: 2,
+            range: Some((
+                GridStop::Lattice { other: 6 },
+                GridStop::Lattice { other: 0 },
+            )),
+        };
+        assert!(targets_equal(&a, &b));
+    }
+
+    #[test]
+    fn targets_equal_rejects_different_coord() {
+        let a = Target::Grid {
+            region: RegionId::single_region_fallback(),
+            axis: Axis::X,
+            coord: 2,
+            range: None,
+        };
+        let b = Target::Grid {
+            region: RegionId::single_region_fallback(),
+            axis: Axis::X,
+            coord: 3,
+            range: None,
+        };
+        assert!(!targets_equal(&a, &b));
+    }
+
+    #[test]
+    fn targets_equal_drive_line_epsilon() {
+        let a = Target::DriveLine { id: 1, t: 0.5 };
+        let b = Target::DriveLine { id: 1, t: 0.5005 };
+        assert!(targets_equal(&a, &b)); // within 1e-3
+        let c = Target::DriveLine { id: 1, t: 0.52 };
+        assert!(!targets_equal(&a, &c)); // outside 1e-3
+    }
+
+    #[test]
+    fn world_to_splice_vertex_projects_onto_drive_line() {
+        let dls = vec![DriveLine {
+            start: Vec2::new(0.0, 0.0),
+            end: Vec2::new(10.0, 0.0),
+            hole_pin: None,
+            id: 7,
+            partitions: false,
+        }];
+        let r = world_to_splice_vertex(Vec2::new(5.0, 0.1), &dls, 1.0).unwrap();
+        assert_eq!(r.drive_line_id, 7);
+        assert!((r.t - 0.5).abs() < 1e-9);
+        // Outside tolerance.
+        assert!(world_to_splice_vertex(Vec2::new(5.0, 5.0), &dls, 1.0).is_none());
+    }
+}
