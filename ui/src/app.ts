@@ -1,6 +1,6 @@
 import {
   Vec2,
-  EdgeCurve,
+  EdgeArc,
   Polygon,
   DriveLine,
   DriveAisleGraph,
@@ -15,11 +15,15 @@ import {
   Target,
   TrafficDirection,
   RegionId,
+  arcApex,
+  bulgeFromApex,
   computeBoundaryPin,
   computeRegionFrame,
+  evalArcAt,
   evalBoundaryEdge,
   frameInverse,
   annotationWorldPos,
+  projectToArc,
   worldToPerimeterPos,
   chainExtentsInRegion,
   chainToAbstractLatticeEdge,
@@ -31,74 +35,30 @@ import { findCollinearChain } from "./interaction";
 import { showToast } from "./toast";
 
 // ---------------------------------------------------------------------------
-// Bezier helpers for curve editing
+// Arc helpers for boundary-edge editing
 // ---------------------------------------------------------------------------
 
-function evalCubic(p0: Vec2, cp1: Vec2, cp2: Vec2, p3: Vec2, t: number): Vec2 {
-  const s = 1 - t;
-  return {
-    x: s * s * s * p0.x + 3 * s * s * t * cp1.x + 3 * s * t * t * cp2.x + t * t * t * p3.x,
-    y: s * s * s * p0.y + 3 * s * s * t * cp1.y + 3 * s * t * t * cp2.y + t * t * t * p3.y,
-  };
-}
-
-function splitCubicAt(
-  p0: Vec2, cp1: Vec2, cp2: Vec2, p3: Vec2, t: number,
-): [EdgeCurve | null, EdgeCurve | null] {
-  const lerp = (a: Vec2, b: Vec2, t: number): Vec2 => ({
-    x: a.x + (b.x - a.x) * t,
-    y: a.y + (b.y - a.y) * t,
-  });
-  const m01 = lerp(p0, cp1, t);
-  const m12 = lerp(cp1, cp2, t);
-  const m23 = lerp(cp2, p3, t);
-  const m012 = lerp(m01, m12, t);
-  const m123 = lerp(m12, m23, t);
+/**
+ * Split an arc at parameter `t` into two sub-arcs that together cover
+ * the original. Uses tan-half-angle identities: sweep = −4·atan(b), so a
+ * fraction-t sub-arc has bulge = tan(t · atan(b)).
+ */
+function splitArcAt(bulge: number, t: number): [EdgeArc | null, EdgeArc | null] {
+  const half = Math.atan(bulge);
+  const b1 = Math.tan(t * half);
+  const b2 = Math.tan((1 - t) * half);
   return [
-    { cp1: m01, cp2: m012 },
-    { cp1: m123, cp2: m23 },
+    Math.abs(b1) < 1e-6 ? null : { bulge: b1 },
+    Math.abs(b2) < 1e-6 ? null : { bulge: b2 },
   ];
 }
 
-function nearestTOnCubic(p0: Vec2, cp1: Vec2, cp2: Vec2, p3: Vec2, pt: Vec2): number {
-  // Sample the curve at N points, find closest, then refine with bisection.
-  const N = 20;
-  let bestT = 0;
-  let bestDist = Infinity;
-  for (let i = 0; i <= N; i++) {
-    const t = i / N;
-    const p = evalCubic(p0, cp1, cp2, p3, t);
-    const d = (p.x - pt.x) ** 2 + (p.y - pt.y) ** 2;
-    if (d < bestDist) { bestDist = d; bestT = t; }
-  }
-  // Refine with bisection.
-  let lo = Math.max(0, bestT - 1 / N);
-  let hi = Math.min(1, bestT + 1 / N);
-  for (let i = 0; i < 16; i++) {
-    const t1 = (2 * lo + hi) / 3;
-    const t2 = (lo + 2 * hi) / 3;
-    const p1 = evalCubic(p0, cp1, cp2, p3, t1);
-    const p2 = evalCubic(p0, cp1, cp2, p3, t2);
-    const d1 = (p1.x - pt.x) ** 2 + (p1.y - pt.y) ** 2;
-    const d2 = (p2.x - pt.x) ** 2 + (p2.y - pt.y) ** 2;
-    if (d1 < d2) hi = t2; else lo = t1;
-  }
-  return (lo + hi) / 2;
-}
-
-function defaultCurveForEdge(verts: Vec2[], edgeIndex: number): EdgeCurve {
-  const a = verts[edgeIndex];
-  const b = verts[(edgeIndex + 1) % verts.length];
-  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-  const dx = b.x - a.x, dy = b.y - a.y;
-  // Perpendicular offset scaled to 30% of edge length — gives a visible
-  // outward bulge. Both control points share the same offset so the
-  // default is a symmetric C-shape, not an S.
-  const nx = -dy * 0.3, ny = dx * 0.3;
-  return {
-    cp1: { x: mx + nx - dx * 0.15, y: my + ny - dy * 0.15 },
-    cp2: { x: mx + nx + dx * 0.15, y: my + ny + dy * 0.15 },
-  };
+/** Default bulge applied when the user first turns an edge into an arc. */
+function defaultArcForEdge(): EdgeArc {
+  // +0.3 is a visible-but-gentle bulge (≈34° sweep, sagitta ≈ 15% of
+  // chord length). Sign follows arcol convention: positive = CCW-perp
+  // side of start→end.
+  return { bulge: 0.3 };
 }
 
 export interface Camera {
@@ -108,12 +68,11 @@ export interface Camera {
 }
 
 export interface VertexRef {
-  type: "boundary-outer" | "boundary-hole" | "aisle" | "drive-line" | "annotation" | "aisle-vector" | "region-vector" | "curve-cp" | "edge-midpoint";
+  type: "boundary-outer" | "boundary-hole" | "aisle" | "drive-line" | "annotation" | "aisle-vector" | "region-vector" | "edge-midpoint";
   index: number;
   holeIndex?: number;
   endpoint?: "start" | "end" | "body";
   lotId?: string;
-  cpIndex?: 0 | 1;
   cpTarget?: "outer" | "hole";
 }
 
@@ -508,31 +467,20 @@ export class App {
         });
       });
       // Edge midpoint handles — highest priority, shown on every edge.
-      // Dragging creates/adjusts curves.
+      // Dragging creates or adjusts the edge's arc (apex follows the
+      // drag; snapping back to the chord removes the arc).
       for (let i = 0; i < lot.boundary.outer.length; i++) {
         const a = lot.boundary.outer[i];
         const b = lot.boundary.outer[(i + 1) % lot.boundary.outer.length];
-        const c = lot.boundary.outer_curves?.[i];
-        const pos = c
-          ? evalCubic(a, c.cp1, c.cp2, b, 0.5)
+        const arc = lot.boundary.outer_arcs?.[i];
+        const pos = arc
+          ? arcApex(a, b, arc.bulge)
           : { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
         result.push({
           ref: { type: "edge-midpoint", index: i, cpTarget: "outer", lotId: lid },
           pos,
         });
       }
-      // Curve control points (ghost handles, only for curved edges).
-      lot.boundary.outer_curves?.forEach((c, i) => {
-        if (!c) return;
-        result.push({
-          ref: { type: "curve-cp", index: i, cpIndex: 0, cpTarget: "outer", lotId: lid },
-          pos: c.cp1,
-        });
-        result.push({
-          ref: { type: "curve-cp", index: i, cpIndex: 1, cpTarget: "outer", lotId: lid },
-          pos: c.cp2,
-        });
-      });
       // Boundary vertices.
       lot.boundary.outer.forEach((v, i) => {
         result.push({ ref: { type: "boundary-outer", index: i, lotId: lid }, pos: v });
@@ -542,27 +490,15 @@ export class App {
         for (let i = 0; i < hole.length; i++) {
           const a = hole[i];
           const b = hole[(i + 1) % hole.length];
-          const c = lot.boundary.hole_curves?.[hi]?.[i];
-          const pos = c
-            ? evalCubic(a, c.cp1, c.cp2, b, 0.5)
+          const arc = lot.boundary.hole_arcs?.[hi]?.[i];
+          const pos = arc
+            ? arcApex(a, b, arc.bulge)
             : { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
           result.push({
             ref: { type: "edge-midpoint", index: i, cpTarget: "hole", holeIndex: hi, lotId: lid },
             pos,
           });
         }
-        // Curve control points for hole edges.
-        lot.boundary.hole_curves?.[hi]?.forEach((c, i) => {
-          if (!c) return;
-          result.push({
-            ref: { type: "curve-cp", index: i, cpIndex: 0, cpTarget: "hole", holeIndex: hi, lotId: lid },
-            pos: c.cp1,
-          });
-          result.push({
-            ref: { type: "curve-cp", index: i, cpIndex: 1, cpTarget: "hole", holeIndex: hi, lotId: lid },
-            pos: c.cp2,
-          });
-        });
         // Hole vertices.
         hole.forEach((v, vi) => {
           result.push({
@@ -584,100 +520,53 @@ export class App {
   moveVertex(ref: VertexRef, pos: Vec2): void {
     const lot = this.lotForRef(ref);
     if (ref.type === "edge-midpoint") {
-      // Drag edge midpoint → create or adjust curve so bezier(0.5) = pos.
-      // For a cubic bezier, B(0.5) = (p0 + 3*cp1 + 3*cp2 + p3) / 8.
-      // We want B(0.5) = pos, with cp1 and cp2 symmetric around the
-      // chord midpoint's perpendicular. We solve for the shared offset.
+      // Drag edge midpoint → update the edge's arc bulge so its apex
+      // lands at `pos` (projected onto the chord-perpendicular bisector;
+      // off-axis drag is ignored). Snap back to straight if the apex
+      // returns near the chord.
       const verts = ref.cpTarget === "outer" ? lot.boundary.outer : lot.boundary.holes[ref.holeIndex!];
       const n = verts.length;
       const a = verts[ref.index];
       const b = verts[(ref.index + 1) % n];
-      const chordMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      const distFromChord = Math.sqrt((pos.x - chordMid.x) ** 2 + (pos.y - chordMid.y) ** 2);
+      const bulge = bulgeFromApex(a, b, pos);
+      const SNAP_EPS = 0.02;
 
-      // Snap to straight if dragged back near the chord midpoint.
-      if (distFromChord < 2) {
-        if (ref.cpTarget === "outer") {
-          lot.boundary.outer_curves?.[ref.index] && (lot.boundary.outer_curves[ref.index] = null);
+      if (ref.cpTarget === "outer") {
+        if (Math.abs(bulge) < SNAP_EPS) {
+          if (lot.boundary.outer_arcs?.[ref.index]) lot.boundary.outer_arcs[ref.index] = null;
         } else {
-          const hc = lot.boundary.hole_curves?.[ref.holeIndex!];
-          if (hc?.[ref.index]) hc[ref.index] = null;
+          if (!lot.boundary.outer_arcs) lot.boundary.outer_arcs = new Array(n).fill(null);
+          lot.boundary.outer_arcs[ref.index] = { bulge };
         }
       } else {
-        // Position CPs so bezier(0.5) = pos with symmetric C-shape.
-        // B(0.5) = (p0 + 3*cp1 + 3*cp2 + p3) / 8 = chordMid + 0.75*offset.
-        const scale = 1 / 0.75;
-        const ox = (pos.x - chordMid.x) * scale;
-        const oy = (pos.y - chordMid.y) * scale;
-        const dx = (b.x - a.x) * 0.15;
-        const dy = (b.y - a.y) * 0.15;
-        const curve: EdgeCurve = {
-          cp1: { x: chordMid.x + ox - dx, y: chordMid.y + oy - dy },
-          cp2: { x: chordMid.x + ox + dx, y: chordMid.y + oy + dy },
-        };
-        if (ref.cpTarget === "outer") {
-          if (!lot.boundary.outer_curves) lot.boundary.outer_curves = new Array(n).fill(null);
-          lot.boundary.outer_curves[ref.index] = curve;
+        const hi = ref.holeIndex!;
+        if (Math.abs(bulge) < SNAP_EPS) {
+          const ha = lot.boundary.hole_arcs?.[hi];
+          if (ha?.[ref.index]) ha[ref.index] = null;
         } else {
-          if (!lot.boundary.hole_curves) lot.boundary.hole_curves = [];
-          if (!lot.boundary.hole_curves[ref.holeIndex!]) {
-            lot.boundary.hole_curves[ref.holeIndex!] = new Array(n).fill(null);
+          if (!lot.boundary.hole_arcs) lot.boundary.hole_arcs = [];
+          if (!lot.boundary.hole_arcs[hi]) {
+            lot.boundary.hole_arcs[hi] = new Array(n).fill(null);
           }
-          lot.boundary.hole_curves[ref.holeIndex!][ref.index] = curve;
+          lot.boundary.hole_arcs[hi][ref.index] = { bulge };
         }
       }
       lot.aisleGraph = null;
     } else if (ref.type === "boundary-outer") {
-      const old = lot.boundary.outer[ref.index];
-      const dx = pos.x - old.x;
-      const dy = pos.y - old.y;
+      // Arc bulges are stored as a signed scalar independent of
+      // endpoint positions, so moving an endpoint automatically
+      // reshapes adjacent arcs — no bookkeeping needed here.
       lot.boundary.outer[ref.index] = pos;
-      // Drag adjacent curve control points with the vertex.
-      const oc = lot.boundary.outer_curves;
-      if (oc) {
-        const n = lot.boundary.outer.length;
-        const prevEdge = (ref.index - 1 + n) % n;
-        if (oc[prevEdge]) {
-          oc[prevEdge]!.cp2 = { x: oc[prevEdge]!.cp2.x + dx, y: oc[prevEdge]!.cp2.y + dy };
-        }
-        if (oc[ref.index]) {
-          oc[ref.index]!.cp1 = { x: oc[ref.index]!.cp1.x + dx, y: oc[ref.index]!.cp1.y + dy };
-        }
-      }
       for (const dl of lot.driveLines) {
         this.resolveBoundaryPin(dl, lot);
       }
       lot.aisleGraph = null;
     } else if (ref.type === "boundary-hole" && ref.holeIndex !== undefined) {
-      const old = lot.boundary.holes[ref.holeIndex][ref.index];
-      const dx = pos.x - old.x;
-      const dy = pos.y - old.y;
       lot.boundary.holes[ref.holeIndex][ref.index] = pos;
-      // Drag adjacent hole curve control points with the vertex.
-      const hc = lot.boundary.hole_curves?.[ref.holeIndex];
-      if (hc) {
-        const n = lot.boundary.holes[ref.holeIndex].length;
-        const prevEdge = (ref.index - 1 + n) % n;
-        if (hc[prevEdge]) {
-          hc[prevEdge]!.cp2 = { x: hc[prevEdge]!.cp2.x + dx, y: hc[prevEdge]!.cp2.y + dy };
-        }
-        if (hc[ref.index]) {
-          hc[ref.index]!.cp1 = { x: hc[ref.index]!.cp1.x + dx, y: hc[ref.index]!.cp1.y + dy };
-        }
-      }
       for (const dl of lot.driveLines) {
         if (dl.holePin?.holeIndex === ref.holeIndex && dl.holePin?.vertexIndex === ref.index) {
           dl.start = pos;
         }
-      }
-      lot.aisleGraph = null;
-    } else if (ref.type === "curve-cp") {
-      const curves = ref.cpTarget === "outer"
-        ? lot.boundary.outer_curves
-        : lot.boundary.hole_curves?.[ref.holeIndex!];
-      if (curves?.[ref.index]) {
-        if (ref.cpIndex === 0) curves[ref.index]!.cp1 = pos;
-        else curves[ref.index]!.cp2 = pos;
       }
       lot.aisleGraph = null;
     } else if (ref.type === "annotation") {
@@ -769,28 +658,20 @@ export class App {
     this.generate();
   }
 
-  toggleEdgeCurve(edgeIndex: number, target: "outer" | "hole", holeIndex?: number): void {
+  toggleEdgeArc(edgeIndex: number, target: "outer" | "hole", holeIndex?: number): void {
     const lot = this.activeLot();
     const verts = target === "outer" ? lot.boundary.outer : lot.boundary.holes[holeIndex!];
     if (target === "outer") {
-      if (!lot.boundary.outer_curves) lot.boundary.outer_curves = new Array(verts.length).fill(null);
-      const curves = lot.boundary.outer_curves;
-      if (curves[edgeIndex]) {
-        curves[edgeIndex] = null;
-      } else {
-        curves[edgeIndex] = defaultCurveForEdge(verts, edgeIndex);
-      }
+      if (!lot.boundary.outer_arcs) lot.boundary.outer_arcs = new Array(verts.length).fill(null);
+      const arcs = lot.boundary.outer_arcs;
+      arcs[edgeIndex] = arcs[edgeIndex] ? null : defaultArcForEdge();
     } else {
-      if (!lot.boundary.hole_curves) lot.boundary.hole_curves = [];
-      if (!lot.boundary.hole_curves[holeIndex!]) {
-        lot.boundary.hole_curves[holeIndex!] = new Array(verts.length).fill(null);
+      if (!lot.boundary.hole_arcs) lot.boundary.hole_arcs = [];
+      if (!lot.boundary.hole_arcs[holeIndex!]) {
+        lot.boundary.hole_arcs[holeIndex!] = new Array(verts.length).fill(null);
       }
-      const curves = lot.boundary.hole_curves[holeIndex!];
-      if (curves[edgeIndex]) {
-        curves[edgeIndex] = null;
-      } else {
-        curves[edgeIndex] = defaultCurveForEdge(verts, edgeIndex);
-      }
+      const arcs = lot.boundary.hole_arcs[holeIndex!];
+      arcs[edgeIndex] = arcs[edgeIndex] ? null : defaultArcForEdge();
     }
     lot.aisleGraph = null;
     this.generate();
@@ -799,18 +680,18 @@ export class App {
   insertBoundaryVertex(index: number, pos: Vec2, lotId?: string): void {
     const lot = lotId ? this.lotById(lotId)! : this.activeLot();
     lot.boundary.outer.splice(index + 1, 0, pos);
-    // Maintain curve array: split the edge's curve or insert null.
-    if (lot.boundary.outer_curves && lot.boundary.outer_curves.length > 0) {
-      const oldCurve = lot.boundary.outer_curves[index];
-      if (oldCurve) {
-        // Split the bezier at the nearest t to the insertion point.
+    // Maintain arc array: split the edge's arc at the insertion point,
+    // or insert a straight-edge slot.
+    if (lot.boundary.outer_arcs && lot.boundary.outer_arcs.length > 0) {
+      const oldArc = lot.boundary.outer_arcs[index];
+      if (oldArc) {
         const a = lot.boundary.outer[index];
         const b = lot.boundary.outer[(index + 2) % lot.boundary.outer.length];
-        const t = nearestTOnCubic(a, oldCurve.cp1, oldCurve.cp2, b, pos);
-        const [left, right] = splitCubicAt(a, oldCurve.cp1, oldCurve.cp2, b, t);
-        lot.boundary.outer_curves.splice(index, 1, left, right);
+        const { t } = projectToArc(a, b, oldArc.bulge, pos);
+        const [left, right] = splitArcAt(oldArc.bulge, t);
+        lot.boundary.outer_arcs.splice(index, 1, left, right);
       } else {
-        lot.boundary.outer_curves.splice(index + 1, 0, null);
+        lot.boundary.outer_arcs.splice(index + 1, 0, null);
       }
     }
     lot.aisleGraph = null;
@@ -821,14 +702,15 @@ export class App {
     const lot = lotId ? this.lotById(lotId)! : this.activeLot();
     if (lot.boundary.outer.length <= 3) return false;
     lot.boundary.outer.splice(index, 1);
-    // Maintain curve array: remove the edge entry and revert the merged edge to straight.
-    if (lot.boundary.outer_curves && lot.boundary.outer_curves.length > 0) {
-      const n = lot.boundary.outer_curves.length;
+    // Maintain arc array: remove the edge entry and revert the merged
+    // edge to straight (the pre-deletion bulge on the prior edge is no
+    // longer meaningful — its chord just changed).
+    if (lot.boundary.outer_arcs && lot.boundary.outer_arcs.length > 0) {
+      const n = lot.boundary.outer_arcs.length;
       const prevEdge = (index - 1 + n) % n;
-      // Remove curve at the deleted vertex's edge and revert the previous edge to straight.
-      lot.boundary.outer_curves.splice(index, 1);
-      if (lot.boundary.outer_curves[prevEdge % lot.boundary.outer_curves.length]) {
-        lot.boundary.outer_curves[prevEdge % lot.boundary.outer_curves.length] = null;
+      lot.boundary.outer_arcs.splice(index, 1);
+      if (lot.boundary.outer_arcs[prevEdge % lot.boundary.outer_arcs.length]) {
+        lot.boundary.outer_arcs[prevEdge % lot.boundary.outer_arcs.length] = null;
       }
     }
     lot.aisleGraph = null;
@@ -841,10 +723,10 @@ export class App {
     const hole = lot.boundary.holes[holeIndex];
     if (hole.length <= 3) {
       lot.boundary.holes.splice(holeIndex, 1);
-      lot.boundary.hole_curves?.splice(holeIndex, 1);
+      lot.boundary.hole_arcs?.splice(holeIndex, 1);
     } else {
       hole.splice(vertexIndex, 1);
-      const hc = lot.boundary.hole_curves?.[holeIndex];
+      const hc = lot.boundary.hole_arcs?.[holeIndex];
       if (hc && hc.length > 0) {
         const n = hc.length;
         const prevEdge = (vertexIndex - 1 + n) % n;
@@ -862,15 +744,15 @@ export class App {
   insertHoleVertex(holeIndex: number, afterIndex: number, pos: Vec2, lotId?: string): void {
     const lot = lotId ? this.lotById(lotId)! : this.activeLot();
     lot.boundary.holes[holeIndex].splice(afterIndex + 1, 0, pos);
-    const hc = lot.boundary.hole_curves?.[holeIndex];
+    const hc = lot.boundary.hole_arcs?.[holeIndex];
     if (hc && hc.length > 0) {
-      const oldCurve = hc[afterIndex];
-      if (oldCurve) {
+      const oldArc = hc[afterIndex];
+      if (oldArc) {
         const hole = lot.boundary.holes[holeIndex];
         const a = hole[afterIndex];
         const b = hole[(afterIndex + 2) % hole.length];
-        const t = nearestTOnCubic(a, oldCurve.cp1, oldCurve.cp2, b, pos);
-        const [left, right] = splitCubicAt(a, oldCurve.cp1, oldCurve.cp2, b, t);
+        const { t } = projectToArc(a, b, oldArc.bulge, pos);
+        const [left, right] = splitArcAt(oldArc.bulge, t);
         hc.splice(afterIndex, 1, left, right);
       } else {
         hc.splice(afterIndex + 1, 0, null);
@@ -949,7 +831,7 @@ export class App {
   /** Project a point onto the nearest outer boundary edge. */
   private nearestBoundaryProjection(pt: Vec2, lot?: ParkingLot): { pos: Vec2; edgeIndex: number; t: number } {
     const l = lot ?? this.activeLot();
-    return computeBoundaryPin(pt, l.boundary.outer, l.boundary.outer_curves);
+    return computeBoundaryPin(pt, l.boundary.outer, l.boundary.outer_arcs);
   }
 
   /** Recompute the end position of a drive line from its boundaryPin. */
@@ -961,7 +843,7 @@ export class App {
       dl.boundaryPin = { edgeIndex: proj.edgeIndex, t: proj.t };
     }
     const { edgeIndex, t } = dl.boundaryPin;
-    dl.end = evalBoundaryEdge(lot.boundary.outer, edgeIndex, t, lot.boundary.outer_curves);
+    dl.end = evalBoundaryEdge(lot.boundary.outer, edgeIndex, t, lot.boundary.outer_arcs);
   }
 
   cycleAnnotationDirection(index: number, lotId?: string): void {

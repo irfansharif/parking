@@ -1,7 +1,7 @@
 //! Geometric primitives: 2D vector, polygon (with holes + per-edge
-//! curves), and oriented bounding box. Parking-agnostic — this module
-//! knows nothing about aisles, stalls, or annotations and could be
-//! lifted into a standalone `geom` crate later without churn.
+//! circular arcs), and oriented bounding box. Parking-agnostic — this
+//! module knows nothing about aisles, stalls, or annotations and could
+//! be lifted into a standalone `geom` crate later without churn.
 
 use serde::{Deserialize, Serialize};
 use std::ops::{Add, Mul, Sub};
@@ -79,25 +79,26 @@ impl Mul<f64> for Vec2 {
 // Polygon
 // ---------------------------------------------------------------------------
 
-/// Cubic bezier control points for a polygon edge.
-/// Edge i goes from vertex[i] to vertex[(i+1) % n].
-/// The full curve is: vertex[i], cp1, cp2, vertex[(i+1) % n].
+/// Circular arc along a polygon edge, AutoCAD-style bulge
+/// parameterization. Edge i goes from `vertex[i]` to `vertex[(i+1) % n]`.
+/// `bulge = sagitta / (chord_length / 2)` — `+1` is a semicircle on the
+/// CCW side of the edge direction, `-1` a semicircle on the CW side,
+/// `0` collapses to a straight line (and should be stored as `None`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EdgeCurve {
-    pub cp1: Vec2,
-    pub cp2: Vec2,
+pub struct EdgeArc {
+    pub bulge: f64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Polygon {
     pub outer: Vec<Vec2>,
     pub holes: Vec<Vec<Vec2>>,
-    /// Per-edge curve data for outer boundary. Parallel to `outer` edges.
+    /// Per-edge arc data for outer boundary. Parallel to `outer` edges.
     #[serde(default)]
-    pub outer_curves: Vec<Option<EdgeCurve>>,
-    /// Per-hole per-edge curve data. Outer index = hole index.
+    pub outer_arcs: Vec<Option<EdgeArc>>,
+    /// Per-hole per-edge arc data. Outer index = hole index.
     #[serde(default)]
-    pub hole_curves: Vec<Vec<Option<EdgeCurve>>>,
+    pub hole_arcs: Vec<Vec<Option<EdgeArc>>>,
 }
 
 impl Polygon {
@@ -240,8 +241,8 @@ mod tests {
                 Vec2::new(1.5, 1.5),
                 Vec2::new(1.5, 0.5),
             ]],
-            outer_curves: Vec::new(),
-            hole_curves: Vec::new(),
+            outer_arcs: Vec::new(),
+            hole_arcs: Vec::new(),
         };
         assert!(p.outer_is_ccw());
         assert!(p.holes_are_cw());

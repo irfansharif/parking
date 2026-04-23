@@ -1,6 +1,6 @@
 import { App, VertexRef, EdgeRef } from "./app";
 import { Renderer } from "./renderer";
-import { Vec2, EdgeCurve, DriveAisleGraph, annotationWorldPos } from "./types";
+import { Vec2, EdgeArc, DriveAisleGraph, annotationWorldPos, projectToArc } from "./types";
 import { computeSnap, emptySnapState } from "./snap";
 
 export function setupInteraction(
@@ -284,9 +284,9 @@ export function setupInteraction(
       for (let i = 0; i < outer.length; i++) {
         const a = outer[i];
         const b = outer[(i + 1) % outer.length];
-        const curve = lot.boundary.outer_curves?.[i];
-        const dist = curve
-          ? pointToCurveDist(worldPos, a, curve, b)
+        const arc = lot.boundary.outer_arcs?.[i];
+        const dist = arc
+          ? pointToArcDist(worldPos, a, arc, b)
           : pointToSegmentDist(worldPos, a, b);
         if (dist < bestDist) {
           bestDist = dist;
@@ -300,9 +300,9 @@ export function setupInteraction(
         for (let i = 0; i < hole.length; i++) {
           const a = hole[i];
           const b = hole[(i + 1) % hole.length];
-          const curve = lot.boundary.hole_curves?.[hi]?.[i];
-          const dist = curve
-            ? pointToCurveDist(worldPos, a, curve, b)
+          const arc = lot.boundary.hole_arcs?.[hi]?.[i];
+          const dist = arc
+            ? pointToArcDist(worldPos, a, arc, b)
             : pointToSegmentDist(worldPos, a, b);
           if (dist < bestDist) {
             bestDist = dist;
@@ -406,18 +406,9 @@ function pointToSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
   return Math.sqrt((p.x - projX) ** 2 + (p.y - projY) ** 2);
 }
 
-function pointToCurveDist(p: Vec2, a: Vec2, curve: EdgeCurve, b: Vec2): number {
-  const N = 20;
-  let best = Infinity;
-  for (let i = 0; i <= N; i++) {
-    const t = i / N;
-    const s = 1 - t;
-    const x = s * s * s * a.x + 3 * s * s * t * curve.cp1.x + 3 * s * t * t * curve.cp2.x + t * t * t * b.x;
-    const y = s * s * s * a.y + 3 * s * s * t * curve.cp1.y + 3 * s * t * t * curve.cp2.y + t * t * t * b.y;
-    const d = Math.sqrt((p.x - x) ** 2 + (p.y - y) ** 2);
-    if (d < best) best = d;
-  }
-  return best;
+function pointToArcDist(p: Vec2, a: Vec2, arc: EdgeArc, b: Vec2): number {
+  const { pos } = projectToArc(a, b, arc.bulge, p);
+  return Math.sqrt((p.x - pos.x) ** 2 + (p.y - pos.y) ** 2);
 }
 
 /// Hit-test against aisle graph edges in world space.

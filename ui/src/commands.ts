@@ -439,42 +439,34 @@ export function createCommandAPI(app: App): CommandAPI {
           return spec;
         }
 
-        case "curve": {
-          // Set a cubic bezier curve on a boundary edge.
-          // Usage: curve outer 1 cp1x,cp1y cp2x,cp2y
-          //        curve hole 0 2 cp1x,cp1y cp2x,cp2y
+        case "arc": {
+          // Set a circular arc (bulge) on a boundary edge.
+          // Usage: arc outer <edgeIdx> <bulge>
+          //        arc hole <holeIdx> <edgeIdx> <bulge>
           const target = parts[1]; // "outer" or "hole"
           const lot = app.activeLot();
           if (target === "outer") {
             const edgeIdx = parseInt(parts[2]);
-            const [cp1x, cp1y] = parts[3].split(",").map(Number);
-            const [cp2x, cp2y] = parts[4].split(",").map(Number);
-            if (!lot.boundary.outer_curves) {
-              lot.boundary.outer_curves = new Array(lot.boundary.outer.length).fill(null);
+            const bulge = parseFloat(parts[3]);
+            if (!lot.boundary.outer_arcs) {
+              lot.boundary.outer_arcs = new Array(lot.boundary.outer.length).fill(null);
             }
-            lot.boundary.outer_curves[edgeIdx] = {
-              cp1: { x: cp1x, y: cp1y },
-              cp2: { x: cp2x, y: cp2y },
-            };
+            lot.boundary.outer_arcs[edgeIdx] = { bulge };
             lot.aisleGraph = null;
-            return `curve outer edge ${edgeIdx}`;
+            return `arc outer edge ${edgeIdx}`;
           } else if (target === "hole") {
             const holeIdx = parseInt(parts[2]);
             const edgeIdx = parseInt(parts[3]);
-            const [cp1x, cp1y] = parts[4].split(",").map(Number);
-            const [cp2x, cp2y] = parts[5].split(",").map(Number);
-            if (!lot.boundary.hole_curves) lot.boundary.hole_curves = [];
-            if (!lot.boundary.hole_curves[holeIdx]) {
-              lot.boundary.hole_curves[holeIdx] = new Array(lot.boundary.holes[holeIdx].length).fill(null);
+            const bulge = parseFloat(parts[4]);
+            if (!lot.boundary.hole_arcs) lot.boundary.hole_arcs = [];
+            if (!lot.boundary.hole_arcs[holeIdx]) {
+              lot.boundary.hole_arcs[holeIdx] = new Array(lot.boundary.holes[holeIdx].length).fill(null);
             }
-            lot.boundary.hole_curves[holeIdx][edgeIdx] = {
-              cp1: { x: cp1x, y: cp1y },
-              cp2: { x: cp2x, y: cp2y },
-            };
+            lot.boundary.hole_arcs[holeIdx][edgeIdx] = { bulge };
             lot.aisleGraph = null;
-            return `curve hole ${holeIdx} edge ${edgeIdx}`;
+            return `arc hole ${holeIdx} edge ${edgeIdx}`;
           }
-          return "error: curve target must be 'outer' or 'hole'";
+          return "error: arc target must be 'outer' or 'hole'";
         }
 
         case "layers": {

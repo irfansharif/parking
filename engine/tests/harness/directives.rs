@@ -9,7 +9,7 @@
 
 use parking_lot_engine::pipeline::generate::generate;
 use parking_lot_engine::types::{
-    AisleDirection, DebugToggles, EdgeCurve, GenerateInput, ParkingLayout, ParkingParams, Polygon,
+    AisleDirection, DebugToggles, EdgeArc, GenerateInput, ParkingLayout, ParkingParams, Polygon,
     Vec2,
 };
 use std::path::{Path, PathBuf};
@@ -134,11 +134,11 @@ fn num(v: f64) -> String {
 }
 
 fn polygon(ctx: &mut FixtureCtx, kind: &str, body: &str) -> Result<Outcome, String> {
-    let (verts, curves) = parse_vertex_block(body)?;
+    let (verts, arcs) = parse_vertex_block(body)?;
     match kind {
         "outer" => {
             ctx.input.boundary.outer = verts;
-            ctx.input.boundary.outer_curves = curves;
+            ctx.input.boundary.outer_arcs = arcs;
             Ok(Outcome {
                 output: format!(
                     "polygon outer: {} vertices",
@@ -150,7 +150,7 @@ fn polygon(ctx: &mut FixtureCtx, kind: &str, body: &str) -> Result<Outcome, Stri
         "hole" => {
             let n = verts.len();
             ctx.input.boundary.holes.push(verts);
-            ctx.input.boundary.hole_curves.push(curves);
+            ctx.input.boundary.hole_arcs.push(arcs);
             Ok(Outcome {
                 output: format!("hole: {} vertices", n),
                 ..Default::default()
@@ -160,35 +160,35 @@ fn polygon(ctx: &mut FixtureCtx, kind: &str, body: &str) -> Result<Outcome, Stri
     }
 }
 
-fn parse_vertex_block(body: &str) -> Result<(Vec<Vec2>, Vec<Option<EdgeCurve>>), String> {
+fn parse_vertex_block(body: &str) -> Result<(Vec<Vec2>, Vec<Option<EdgeArc>>), String> {
     let mut verts = Vec::new();
-    let mut curves: Vec<Option<EdgeCurve>> = Vec::new();
+    let mut arcs: Vec<Option<EdgeArc>> = Vec::new();
     for line in body.lines() {
         let t = line.trim();
         if t.is_empty() {
             continue;
         }
-        if let Some(rest) = t.strip_prefix("curve ") {
+        if let Some(rest) = t.strip_prefix("arc ") {
             // Attach to the previous vertex's outgoing edge.
             if verts.is_empty() {
-                return Err("curve line before any vertex".to_string());
+                return Err("arc line before any vertex".to_string());
             }
-            let c = parse_curve(rest)?;
+            let a = parse_arc(rest)?;
             let idx = verts.len() - 1;
-            while curves.len() <= idx {
-                curves.push(None);
+            while arcs.len() <= idx {
+                arcs.push(None);
             }
-            curves[idx] = Some(c);
+            arcs[idx] = Some(a);
             continue;
         }
         verts.push(parse_xy(t)?);
     }
-    // Pad curves to parallel edge count so downstream code doesn't have
+    // Pad arcs to parallel edge count so downstream code doesn't have
     // to guard against length mismatch.
-    while curves.len() < verts.len() {
-        curves.push(None);
+    while arcs.len() < verts.len() {
+        arcs.push(None);
     }
-    Ok((verts, curves))
+    Ok((verts, arcs))
 }
 
 fn parse_xy(s: &str) -> Result<Vec2, String> {
@@ -205,14 +205,12 @@ fn parse_xy(s: &str) -> Result<Vec2, String> {
     ))
 }
 
-fn parse_curve(rest: &str) -> Result<EdgeCurve, String> {
-    let (cp1, cp2) = rest
-        .split_once(' ')
-        .ok_or_else(|| format!("curve expects 'cp1x,cp1y cp2x,cp2y', got {:?}", rest))?;
-    Ok(EdgeCurve {
-        cp1: parse_xy(cp1)?,
-        cp2: parse_xy(cp2)?,
-    })
+fn parse_arc(rest: &str) -> Result<EdgeArc, String> {
+    let bulge = rest
+        .trim()
+        .parse::<f64>()
+        .map_err(|e| format!("arc expects a bulge number, got {:?}: {}", rest, e))?;
+    Ok(EdgeArc { bulge })
 }
 
 fn set_param(ctx: &mut FixtureCtx, rest: &str) -> Result<Outcome, String> {

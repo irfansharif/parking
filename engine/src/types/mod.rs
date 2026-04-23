@@ -1,6 +1,6 @@
 //! Public type surface for the engine, grouped by purpose.
 //!
-//!   geom       — Vec2, Polygon, EdgeCurve, Obb
+//!   geom       — Vec2, Polygon, EdgeArc, Obb
 //!   graph      — drive-aisle graph (DriveAisleGraph, AisleEdge, ...)
 //!                and user-drawn drive lines
 //!   addressing — abstract grid (AbstractFrame, RegionId) and

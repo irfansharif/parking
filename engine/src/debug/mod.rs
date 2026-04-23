@@ -15,6 +15,17 @@ fn fmt_coord(v: f64) -> String {
     }
 }
 
+fn fmt_bulge(v: f64) -> String {
+    // Bulges are small (|b| ≤ 1), so three decimals is a better default
+    // than `fmt_coord`'s two. Integers (e.g. 0, 1) still round-trip
+    // cleanly.
+    if (v - v.round()).abs() < 1e-6 {
+        format!("{}", v.round() as i64)
+    } else {
+        format!("{:.3}", v)
+    }
+}
+
 pub fn format_fixture(input: &GenerateInput) -> String {
     let mut out = String::new();
 
@@ -22,10 +33,8 @@ pub fn format_fixture(input: &GenerateInput) -> String {
     out.push_str("polygon outer\n");
     for (i, v) in input.boundary.outer.iter().enumerate() {
         out.push_str(&format!("{},{}\n", fmt_coord(v.x), fmt_coord(v.y)));
-        if let Some(Some(c)) = input.boundary.outer_curves.get(i) {
-            out.push_str(&format!("curve {},{} {},{}\n",
-                fmt_coord(c.cp1.x), fmt_coord(c.cp1.y),
-                fmt_coord(c.cp2.x), fmt_coord(c.cp2.y)));
+        if let Some(Some(a)) = input.boundary.outer_arcs.get(i) {
+            out.push_str(&format!("arc {}\n", fmt_bulge(a.bulge)));
         }
     }
     out.push_str("----\n");
@@ -34,13 +43,11 @@ pub fn format_fixture(input: &GenerateInput) -> String {
     // Boundary holes.
     for (hi, hole) in input.boundary.holes.iter().enumerate() {
         out.push_str("\npolygon hole\n");
-        let hole_curves = input.boundary.hole_curves.get(hi);
+        let hole_arcs = input.boundary.hole_arcs.get(hi);
         for (i, v) in hole.iter().enumerate() {
             out.push_str(&format!("{},{}\n", fmt_coord(v.x), fmt_coord(v.y)));
-            if let Some(Some(c)) = hole_curves.and_then(|hc| hc.get(i)) {
-                out.push_str(&format!("curve {},{} {},{}\n",
-                    fmt_coord(c.cp1.x), fmt_coord(c.cp1.y),
-                    fmt_coord(c.cp2.x), fmt_coord(c.cp2.y)));
+            if let Some(Some(a)) = hole_arcs.and_then(|ha| ha.get(i)) {
+                out.push_str(&format!("arc {}\n", fmt_bulge(a.bulge)));
             }
         }
         out.push_str("----\n");
@@ -178,7 +185,7 @@ pub fn format_fixture(input: &GenerateInput) -> String {
 ///   perimeter loop=<loop> arc=<arc>
 /// and <stop> is lattice:<n> | crosses-drive-line:<id> | crosses-perimeter:<loop>
 /// and <loop> is outer | hole:<n>
-pub(crate) fn format_annotation_line(ann: &crate::types::Annotation) -> String {
+pub fn format_annotation_line(ann: &crate::types::Annotation) -> String {
     use crate::types::Annotation;
     match ann {
         Annotation::DeleteVertex { target } => format!("delete-vertex {}", format_target(target)),

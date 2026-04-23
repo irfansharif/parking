@@ -5,7 +5,7 @@
 //! designed to be extractable as a standalone `geom` crate without
 //! churn; no `i_overlay` types escape `boolean.rs`.
 
-pub mod bezier;
+pub mod arc;
 pub mod boolean;
 pub mod clip;
 pub mod inset;

@@ -47,7 +47,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     // Discretize curved boundary edges into dense polylines so the
     // entire downstream pipeline works on straight-line segments.
     let mut input = input;
-    input.boundary = crate::geom::bezier::discretize_polygon(&input.boundary);
+    input.boundary = crate::geom::arc::discretize_polygon(&input.boundary);
 
     // Partitioning drive lines contribute to the planar-arrangement
     // face enumeration (regions). During the migration we accept

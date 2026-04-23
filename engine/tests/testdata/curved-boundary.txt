@@ -1,12 +1,12 @@
 # Phase 1 — boundary with one curved edge. Exercises:
-#   - curve directive inside a polygon body
-#   - bezier discretization during pipeline run
+#   - arc directive inside a polygon body
+#   - arc discretization during pipeline run
 #   - polygon-info assertion against the pre-discretized sketch
 
 polygon outer
 0,0
 200,0
-curve 240,50 240,110
+arc -0.375
 200,160
 0,160
 ----

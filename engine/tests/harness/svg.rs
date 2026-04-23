@@ -4,7 +4,7 @@
 //! by kind). Every coordinate is `{:.3}` and geometry is emitted in a
 //! fixed order so goldens are byte-stable across runs.
 
-use parking_lot_engine::geom::bezier::discretize_polygon;
+use parking_lot_engine::geom::arc::discretize_polygon;
 use parking_lot_engine::types::{
     AisleDirection, DriveAisleGraph, ParkingLayout, Polygon, StallKind, StallQuad, Vec2,
 };
@@ -23,10 +23,9 @@ impl Default for SvgOptions {
 
 pub fn render(boundary: &Polygon, layout: &ParkingLayout, opts: &SvgOptions) -> String {
     // Render the boundary the engine actually sees — the sketch's
-    // curves are discretized before the pipeline runs (see
-    // `pipeline/generate.rs`), so showing the raw control-point
-    // polygon would hide the curve and desync from the generated
-    // aisles.
+    // arcs are discretized before the pipeline runs (see
+    // `pipeline/generate.rs`), so showing the raw arc polygon would
+    // hide the curvature and desync from the generated aisles.
     let discretized = discretize_polygon(boundary);
 
     let (min, max) = bbox(&discretized);
