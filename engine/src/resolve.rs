@@ -20,8 +20,8 @@ use ts_rs::TS;
 use crate::geom::clip::point_in_polygon;
 use crate::geom::poly::point_to_segment_dist;
 use crate::types::{
-    AbstractFrame, Annotation, Axis, DriveAisleGraph, DriveLine, GridStop, ParkingLayout,
-    ParkingParams, PerimeterLoop, Polygon, RegionDebug, RegionId, RegionInfo, Target, Vec2,
+    AbstractFrame, Annotation, Axis, DriveAisleGraph, DriveLine, GridStop, ParkingParams,
+    PerimeterLoop, Polygon, RegionDebug, RegionId, RegionInfo, Target, Vec2,
 };
 
 // ---------------------------------------------------------------------------
@@ -778,11 +778,6 @@ fn loops_equal(a: &PerimeterLoop, b: &PerimeterLoop) -> bool {
         _ => false,
     }
 }
-
-// Touch imports that aren't read yet but document intent for future
-// resolvers. Cheap enough that dropping them reintroduces churn.
-#[allow(dead_code)]
-fn _touch_parking_layout(_l: &ParkingLayout) {}
 
 #[cfg(test)]
 mod tests {
