@@ -1,7 +1,12 @@
 import { App, VertexRef, EdgeRef } from "./app";
 import { Renderer } from "./renderer";
-import { Vec2, EdgeArc, DriveAisleGraph, annotationWorldPos, projectToArc } from "./types";
+import { Vec2, EdgeArc, annotationWorldPos, projectToArc } from "./types";
 import { computeSnap, emptySnapState } from "./snap";
+import {
+  find_collinear_chain_js,
+  hit_test_edge_js,
+  point_to_segment_dist_js,
+} from "./wasm/parking_lot_engine";
 
 export function setupInteraction(
   canvas: HTMLCanvasElement,
@@ -394,16 +399,7 @@ export function setupInteraction(
 }
 
 function pointToSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq === 0)
-    return Math.sqrt((p.x - a.x) ** 2 + (p.y - a.y) ** 2);
-  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
-  t = Math.max(0, Math.min(1, t));
-  const projX = a.x + t * dx;
-  const projY = a.y + t * dy;
-  return Math.sqrt((p.x - projX) ** 2 + (p.y - projY) ** 2);
+  return point_to_segment_dist_js(p.x, p.y, a.x, a.y, b.x, b.y);
 }
 
 function pointToArcDist(p: Vec2, a: Vec2, arc: EdgeArc, b: Vec2): number {
@@ -411,81 +407,26 @@ function pointToArcDist(p: Vec2, a: Vec2, arc: EdgeArc, b: Vec2): number {
   return Math.sqrt((p.x - pos.x) ** 2 + (p.y - pos.y) ** 2);
 }
 
-/// Hit-test against aisle graph edges in world space.
+/// Hit-test against aisle graph edges in world space. Returns the seed
+/// edge + its collinear chain for chain-mode selection.
 function hitTestEdge(worldPos: Vec2, app: App, worldRadius: number): EdgeRef | null {
   const graph = app.getEffectiveAisleGraph();
   if (!graph) return null;
-
-  // Deduplicate bidirectional edges so clicking picks a canonical one.
-  const seen = new Set<string>();
-  let best: { index: number; dist: number } | null = null;
-
-  for (let i = 0; i < graph.edges.length; i++) {
-    const edge = graph.edges[i];
-    const key = Math.min(edge.start, edge.end) + "," + Math.max(edge.start, edge.end);
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const a = graph.vertices[edge.start];
-    const b = graph.vertices[edge.end];
-    const dist = pointToSegmentDist(worldPos, a, b);
-    if (dist < worldRadius && (!best || dist < best.dist)) {
-      best = { index: i, dist };
-    }
-  }
-
-  if (!best) return null;
-  return { index: best.index, chain: findCollinearChain(graph, best.index), mode: "chain" };
+  const seed = hit_test_edge_js(worldPos.x, worldPos.y, graph, worldRadius) as number | null;
+  if (seed == null) return null;
+  // `find_collinear_chain_js` returns a `Uint32Array`; copy to a plain
+  // `number[]` so downstream chain math (splice/slice/concat) works
+  // without TypedArray gotchas.
+  const chain = Array.from(find_collinear_chain_js(graph, seed));
+  return { index: seed, chain, mode: "chain" };
 }
 
 /// Find all deduplicated edge indices in the same collinear chain as the seed.
-export function findCollinearChain(graph: DriveAisleGraph, seedIdx: number): number[] {
-  const seed = graph.edges[seedIdx];
-  const s = graph.vertices[seed.start];
-  const e = graph.vertices[seed.end];
-  const dx = e.x - s.x, dy = e.y - s.y;
-  const len = Math.sqrt(dx * dx + dy * dy);
-  if (len < 1e-9) return [seedIdx];
-  const seedDir = { x: dx / len, y: dy / len };
-
-  // Build adjacency: vertex → [(edgeIdx, otherVertex, dir)]
-  // Deduplicate bidirectional edges.
-  const adj = new Map<number, { ei: number; other: number; dx: number; dy: number }[]>();
-  const seen = new Set<string>();
-  for (let i = 0; i < graph.edges.length; i++) {
-    const edge = graph.edges[i];
-    const key = Math.min(edge.start, edge.end) + "," + Math.max(edge.start, edge.end);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const a = graph.vertices[edge.start];
-    const b = graph.vertices[edge.end];
-    const edx = b.x - a.x, edy = b.y - a.y;
-    const elen = Math.sqrt(edx * edx + edy * edy);
-    if (elen < 1e-9) continue;
-    const ndx = edx / elen, ndy = edy / elen;
-    if (!adj.has(edge.start)) adj.set(edge.start, []);
-    if (!adj.has(edge.end)) adj.set(edge.end, []);
-    adj.get(edge.start)!.push({ ei: i, other: edge.end, dx: ndx, dy: ndy });
-    adj.get(edge.end)!.push({ ei: i, other: edge.start, dx: -ndx, dy: -ndy });
-  }
-
-  // BFS along collinear edges.
-  const chain = [seedIdx];
-  const visited = new Set<number>();
-  visited.add(seedIdx);
-  const frontier = [seed.start, seed.end];
-  while (frontier.length > 0) {
-    const v = frontier.pop()!;
-    for (const n of adj.get(v) ?? []) {
-      if (visited.has(n.ei)) continue;
-      const dot = Math.abs(n.dx * seedDir.x + n.dy * seedDir.y);
-      if (dot < 0.99) continue;
-      visited.add(n.ei);
-      chain.push(n.ei);
-      frontier.push(n.other);
-    }
-  }
-  return chain;
+export function findCollinearChain(
+  graph: import("./types").DriveAisleGraph,
+  seedIdx: number,
+): number[] {
+  return Array.from(find_collinear_chain_js(graph, seedIdx));
 }
 
 /// Hit-test against region vector line segments (body, not endpoints).

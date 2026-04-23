@@ -13,11 +13,12 @@ use wasm_bindgen::prelude::*;
 
 use crate::debug::format_fixture;
 use crate::geom::arc::{arc_apex, bulge_from_apex, eval_arc_at, project_to_arc};
+use crate::geom::poly::point_to_segment_dist;
 use crate::pipeline::generate::generate;
 use crate::resolve;
 use crate::types::{
-    AbstractFrame, AbstractPoint2, Annotation, DriveLine, GenerateInput, ParkingParams,
-    Polygon, RegionDebug, RegionInfo, Target, Vec2,
+    AbstractFrame, AbstractPoint2, Annotation, DriveAisleGraph, DriveLine, GenerateInput,
+    ParkingParams, Polygon, RegionDebug, RegionInfo, Target, Vec2,
 };
 
 #[wasm_bindgen]
@@ -277,4 +278,37 @@ pub fn point_in_polygon_js(px: f64, py: f64, poly: JsValue) -> Result<bool, JsVa
         &Vec2::new(px, py),
         &poly,
     ))
+}
+
+/// Distance from point `(px, py)` to the segment `(ax, ay) → (bx, by)`.
+#[wasm_bindgen]
+pub fn point_to_segment_dist_js(
+    px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64,
+) -> f64 {
+    point_to_segment_dist(Vec2::new(px, py), Vec2::new(ax, ay), Vec2::new(bx, by))
+}
+
+/// `resolve::hit_test_edge` — returns the deduplicated edge index
+/// or `null` if no edge is within `world_radius`.
+#[wasm_bindgen]
+pub fn hit_test_edge_js(
+    wx: f64,
+    wy: f64,
+    graph: JsValue,
+    world_radius: f64,
+) -> Result<JsValue, JsValue> {
+    let graph: DriveAisleGraph = serde_wasm_bindgen::from_value(graph)?;
+    let result = resolve::hit_test_edge(Vec2::new(wx, wy), &graph, world_radius);
+    Ok(serde_wasm_bindgen::to_value(&result)?)
+}
+
+/// `resolve::find_collinear_chain` — deduplicated edge indices on the
+/// same collinear run as `seed_idx`.
+#[wasm_bindgen]
+pub fn find_collinear_chain_js(
+    graph: JsValue,
+    seed_idx: usize,
+) -> Result<Vec<usize>, JsValue> {
+    let graph: DriveAisleGraph = serde_wasm_bindgen::from_value(graph)?;
+    Ok(resolve::find_collinear_chain(&graph, seed_idx))
 }

@@ -18,9 +18,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::geom::clip::point_in_polygon;
+use crate::geom::poly::point_to_segment_dist;
 use crate::types::{
-    AbstractFrame, Annotation, Axis, DriveLine, GridStop, ParkingLayout, ParkingParams,
-    PerimeterLoop, Polygon, RegionDebug, RegionId, RegionInfo, Target, Vec2,
+    AbstractFrame, Annotation, Axis, DriveAisleGraph, DriveLine, GridStop, ParkingLayout,
+    ParkingParams, PerimeterLoop, Polygon, RegionDebug, RegionId, RegionInfo, Target, Vec2,
 };
 
 // ---------------------------------------------------------------------------
@@ -501,9 +502,96 @@ fn minmax<I: Iterator<Item = f64>>(iter: I) -> (f64, f64) {
     (min, max)
 }
 
-// Unused-import silencer: ParkingLayout isn't referenced yet but the
-// resolve module is the natural home for future functions that take a
-// whole layout (e.g. hit_test_edge). Keeping the import documents
-// intent without slowing the build noticeably.
+// ---------------------------------------------------------------------------
+// Aisle-graph edge hit-testing and collinear-chain expansion. Both
+// operate on the deduplicated edge set — i.e. the canonical edge for
+// each unordered `(u, v)` pair, not the two directed halves serde
+// emits. A click picks one canonical edge; the chain walks outward
+// from it along collinear neighbours.
+// ---------------------------------------------------------------------------
+
+/// Index of the canonical (lower-id-first) deduplicated edge nearest
+/// to `world` that lies within `world_radius`. Returns `None` if no
+/// edge is within radius or the graph is empty.
+pub fn hit_test_edge(world: Vec2, graph: &DriveAisleGraph, world_radius: f64) -> Option<usize> {
+    let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    let mut best: Option<(usize, f64)> = None;
+    for (i, edge) in graph.edges.iter().enumerate() {
+        let key = (edge.start.min(edge.end), edge.start.max(edge.end));
+        if !seen.insert(key) {
+            continue;
+        }
+        let a = graph.vertices[edge.start];
+        let b = graph.vertices[edge.end];
+        let dist = point_to_segment_dist(world, a, b);
+        if dist < world_radius && best.map(|(_, bd)| dist < bd).unwrap_or(true) {
+            best = Some((i, dist));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// All deduplicated edge indices that lie on the same collinear run as
+/// `seed_idx`. Starts at the seed and BFS-expands through vertices
+/// whose incident edges share the seed's direction (dot ≥ 0.99).
+pub fn find_collinear_chain(graph: &DriveAisleGraph, seed_idx: usize) -> Vec<usize> {
+    let seed = match graph.edges.get(seed_idx) {
+        Some(e) => e,
+        None => return vec![],
+    };
+    let s = graph.vertices[seed.start];
+    let e = graph.vertices[seed.end];
+    let seed_d = e - s;
+    let seed_len = seed_d.length();
+    if seed_len < 1e-9 {
+        return vec![seed_idx];
+    }
+    let seed_dir = Vec2::new(seed_d.x / seed_len, seed_d.y / seed_len);
+
+    // Adjacency over deduplicated edges.
+    let mut adj: std::collections::HashMap<usize, Vec<(usize, usize, Vec2)>> =
+        std::collections::HashMap::new();
+    let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    for (i, edge) in graph.edges.iter().enumerate() {
+        let key = (edge.start.min(edge.end), edge.start.max(edge.end));
+        if !seen.insert(key) {
+            continue;
+        }
+        let a = graph.vertices[edge.start];
+        let b = graph.vertices[edge.end];
+        let d = b - a;
+        let len = d.length();
+        if len < 1e-9 {
+            continue;
+        }
+        let n = Vec2::new(d.x / len, d.y / len);
+        adj.entry(edge.start).or_default().push((i, edge.end, n));
+        adj.entry(edge.end).or_default().push((i, edge.start, n * -1.0));
+    }
+
+    let mut chain = vec![seed_idx];
+    let mut visited: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    visited.insert(seed_idx);
+    let mut frontier = vec![seed.start, seed.end];
+    while let Some(v) = frontier.pop() {
+        if let Some(neighbours) = adj.get(&v) {
+            for (ei, other, dir) in neighbours.iter() {
+                if visited.contains(ei) {
+                    continue;
+                }
+                if (dir.dot(seed_dir)).abs() < 0.99 {
+                    continue;
+                }
+                visited.insert(*ei);
+                chain.push(*ei);
+                frontier.push(*other);
+            }
+        }
+    }
+    chain
+}
+
+// Touch imports that aren't read yet but document intent for future
+// resolvers. Cheap enough that dropping them reintroduces churn.
 #[allow(dead_code)]
 fn _touch_parking_layout(_l: &ParkingLayout) {}

@@ -1290,12 +1290,3 @@ function midpointPerpProj(
   const my = (vec.start.y + vec.end.y) / 2;
   return mx * perpX + my * perpY;
 }
-
-function pointToSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
-  const dx = b.x - a.x, dy = b.y - a.y;
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq === 0) return Math.sqrt((p.x - a.x) ** 2 + (p.y - a.y) ** 2);
-  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq));
-  const px = a.x + t * dx, py = a.y + t * dy;
-  return Math.sqrt((p.x - px) ** 2 + (p.y - py) ** 2);
-}

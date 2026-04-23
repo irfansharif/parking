@@ -9,6 +9,7 @@ import {
   computeBoundaryPin,
 } from "./types";
 import { findCollinearChain } from "./interaction";
+import { point_to_segment_dist_js } from "./wasm/parking_lot_engine";
 
 export interface CommandAPI {
   execute(command: string, body?: string): string;
@@ -497,15 +498,7 @@ export function createCommandAPI(app: App): CommandAPI {
 }
 
 function pointToSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq === 0) return Math.sqrt((p.x - a.x) ** 2 + (p.y - a.y) ** 2);
-  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
-  t = Math.max(0, Math.min(1, t));
-  const projX = a.x + t * dx;
-  const projY = a.y + t * dy;
-  return Math.sqrt((p.x - projX) ** 2 + (p.y - projY) ** 2);
+  return point_to_segment_dist_js(p.x, p.y, a.x, a.y, b.x, b.y);
 }
 
 function formatAnnotation(a: Annotation): string {
