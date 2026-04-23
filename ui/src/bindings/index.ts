@@ -8,6 +8,10 @@
 
 export type { AbstractFrame } from "./AbstractFrame";
 export type { AbstractPoint2 } from "./AbstractPoint2";
+export type { AbstractVertexResult } from "./AbstractVertexResult";
+export type { ChainLatticeEdge } from "./ChainLatticeEdge";
+export type { PerimeterPosResult } from "./PerimeterPosResult";
+export type { SpliceVertexResult } from "./SpliceVertexResult";
 export type { AisleDirection } from "./AisleDirection";
 export type { AisleEdge } from "./AisleEdge";
 export type { Annotation } from "./Annotation";

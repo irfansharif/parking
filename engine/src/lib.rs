@@ -10,6 +10,7 @@
 //!                 filter, islands, placement, spines, tagging) and
 //!                 the `generate` orchestrator
 //!   skeleton    — weighted straight skeleton
+//!   resolve     — substrate address ↔ world translation
 //!   debug       — human-readable dumps for the wasm debug route and
 //!                 the native test harness
 //!   wasm        — `#[wasm_bindgen]` entry points
@@ -19,6 +20,7 @@ pub mod debug;
 pub mod geom;
 pub mod graph;
 pub mod pipeline;
+pub mod resolve;
 pub mod skeleton;
 pub mod types;
 pub mod wasm;

@@ -11,28 +11,39 @@
 // `f64`s to stay cheap in hot render/event paths.
 
 import {
+  annotation_world_pos_js,
   arc_apex_js,
   bulge_from_apex_js,
+  chain_extents_in_region_js,
+  chain_to_abstract_lattice_edge_js,
   compute_region_frame_js,
   effective_depth_js,
   eval_arc_at_js,
   frame_forward_js,
   frame_inverse_js,
+  point_in_polygon_js,
   project_to_arc_js,
   stall_pitch_js,
+  target_world_pos_js,
+  world_to_abstract_vertex_js,
+  world_to_perimeter_pos_js,
+  world_to_splice_vertex_js,
 } from "./wasm/parking_lot_engine";
 
 import type {
   AbstractFrame,
   AbstractPoint2,
+  AbstractVertexResult,
+  ChainLatticeEdge,
   EdgeArc,
-  GridStop,
   ParkingLayout,
   ParkingParams,
   PerimeterLoop,
   Polygon,
   RegionDebug,
-  RegionId,
+  RegionInfo,
+  SpliceVertexResult,
+  PerimeterPosResult,
   Vec2,
   Annotation as EngineAnnotation,
   DriveLine as EngineDriveLine,
@@ -42,9 +53,11 @@ import type {
 export type {
   AbstractFrame,
   AbstractPoint2,
+  AbstractVertexResult,
   AisleDirection,
   AisleEdge,
   Axis,
+  ChainLatticeEdge,
   DebugToggles,
   DriveAisleGraph,
   EdgeArc,
@@ -57,6 +70,7 @@ export type {
   ParkingLayout,
   ParkingParams,
   PerimeterLoop,
+  PerimeterPosResult,
   Polygon,
   RegionDebug,
   RegionId,
@@ -64,6 +78,7 @@ export type {
   RegionOverride,
   SkeletonDebug,
   SpineLine,
+  SpliceVertexResult,
   StallKind,
   StallModifier,
   StallQuad,
@@ -277,200 +292,72 @@ export function bulgeToArc(p0: Vec2, p1: Vec2, bulge: number): ArcDef {
 }
 
 // ---------------------------------------------------------------------------
-// UI-layer math that still lives TS-side (step 3+ of the audit moves
-// these into the engine). Each one operates on world-space inputs +
-// engine-produced layout data (region_debug frames, drive-line
-// parametric t's, perimeter polygons).
+// Substrate resolution — all delegate to `engine/src/resolve.rs` via
+// wasm. The TS wrappers exist only to preserve the ergonomic
+// signatures callers already use (e.g. `worldToPerimeterPos(v,
+// boundary)` versus explicit coordinate unpacking on every call).
 // ---------------------------------------------------------------------------
 
-/**
- * Point-in-polygon test. Even-odd rule. Used by the abstract-handle
- * converter below to figure out which region a world point sits in.
- */
+/** Point-in-polygon test (ray-casting, even-odd rule). */
 export function pointInPolygon(p: Vec2, poly: Vec2[]): boolean {
-  let inside = false;
-  const n = poly.length;
-  for (let i = 0, j = n - 1; i < n; j = i++) {
-    const a = poly[i];
-    const b = poly[j];
-    if (
-      a.y > p.y !== b.y > p.y &&
-      p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y + 1e-12) + a.x
-    ) {
-      inside = !inside;
-    }
-  }
-  return inside;
+  return point_in_polygon_js(p.x, p.y, poly);
 }
 
 /**
- * Try to convert a world position into a `(region, xi, yi)` triple
- * that names a grid intersection in a region's abstract frame. Used by
- * the UI when placing annotations under the abstract-stamp path — a
- * click on a grid vertex becomes an abstract annotation that survives
- * future parameter changes.
- *
- * Returns null if no region contains the point, or if the nearest
- * abstract (xi, yi) is farther than `snap_tol_world` from the point
- * (i.e., the click didn't land on the grid).
+ * Convert a world position into a `(region, xi, yi)` triple naming a
+ * grid-lattice intersection. Returns null if the point lies outside
+ * every region's clip polygon, or the nearest integer lattice point is
+ * farther than `snap_tol_world` from the query in world units.
  */
 export function worldToAbstractVertex(
   world: Vec2,
   params: ParkingParams,
   regionDebug: RegionDebug | undefined,
   snapTolWorld: number = 0.5,
-): { region: RegionId; xi: number; yi: number } | null {
-  if (!regionDebug) return null;
-  for (const region of regionDebug.regions) {
-    if (!pointInPolygon(world, region.clip_poly)) continue;
-    const frame = computeRegionFrame(
-      params,
-      region.aisle_angle_deg,
-      region.aisle_offset,
-    );
-    const abs = frameInverse(frame, world);
-    const xi = Math.round(abs.x);
-    const yi = Math.round(abs.y);
-    const dx = Math.abs(abs.x - xi) * frame.dx;
-    const dy = Math.abs(abs.y - yi) * frame.dy;
-    if (dx > snapTolWorld || dy > snapTolWorld) continue;
-    return { region: region.id, xi, yi };
-  }
-  return null;
+): AbstractVertexResult | null {
+  return world_to_abstract_vertex_js(
+    world.x,
+    world.y,
+    params,
+    regionDebug ?? null,
+    snapTolWorld,
+  ) as AbstractVertexResult | null;
 }
 
-/**
- * Resolve a world-space chain of collinear aisle sub-edges to the
- * **lattice-edge extents** in some region's abstract frame. Returns
- * (region, xa, ya, xb, yb) describing the unit/multi-cell lattice edge
- * that bounds the chain.
- *
- * Used to address chains that have been split by drive-line or boundary
- * intersections: the chain endpoints land on integer lattice
- * intersections (junctions), while interior break points are fractional.
- * The bounding lattice extents are the rounded min/max of all chain
- * endpoints along the varying axis.
- *
- * Returns null if the chain isn't collinear, no region contains its
- * midpoint, or the rounded extents collapse (degenerate edge).
- */
+/** Strict chain → lattice-edge extents (see `resolve::chain_to_abstract_lattice_edge`). */
 export function chainToAbstractLatticeEdge(
   chainPoints: Vec2[],
   params: ParkingParams,
   regionDebug: RegionDebug | undefined,
-): { region: RegionId; xa: number; ya: number; xb: number; yb: number } | null {
-  if (!regionDebug || chainPoints.length < 2) return null;
-  const mid = {
-    x: chainPoints.reduce((a, p) => a + p.x, 0) / chainPoints.length,
-    y: chainPoints.reduce((a, p) => a + p.y, 0) / chainPoints.length,
-  };
-  for (const region of regionDebug.regions) {
-    if (!pointInPolygon(mid, region.clip_poly)) continue;
-    const frame = computeRegionFrame(
-      params,
-      region.aisle_angle_deg,
-      region.aisle_offset,
-    );
-    const abs = chainPoints.map((p) => frameInverse(frame, p));
-    const xs = abs.map((p) => p.x);
-    const ys = abs.map((p) => p.y);
-    const xRange = Math.max(...xs) - Math.min(...xs);
-    const yRange = Math.max(...ys) - Math.min(...ys);
-    // Reject chains that aren't actually axis-aligned in this frame
-    // (e.g. drive-line chains at arbitrary angles). The "constant"
-    // axis must lie within snap tolerance of an integer grid line,
-    // otherwise we'd silently project the chain onto the nearest
-    // lattice edge and anchor the annotation there.
-    const snapTol = 0.5;
-    if (xRange > yRange) {
-      const yi = Math.round(ys.reduce((a, b) => a + b, 0) / ys.length);
-      const yDev = Math.max(...ys.map((y) => Math.abs(y - yi))) * frame.dy;
-      if (yDev > snapTol) return null;
-      const xa = Math.floor(Math.min(...xs));
-      const xb = Math.ceil(Math.max(...xs));
-      if (xa === xb) return null;
-      return { region: region.id, xa, ya: yi, xb, yb: yi };
-    } else {
-      const xi = Math.round(xs.reduce((a, b) => a + b, 0) / xs.length);
-      const xDev = Math.max(...xs.map((x) => Math.abs(x - xi))) * frame.dx;
-      if (xDev > snapTol) return null;
-      const ya = Math.floor(Math.min(...ys));
-      const yb = Math.ceil(Math.max(...ys));
-      if (ya === yb) return null;
-      return { region: region.id, xa: xi, ya, xb: xi, yb };
-    }
-  }
-  return null;
+): ChainLatticeEdge | null {
+  return chain_to_abstract_lattice_edge_js(
+    chainPoints,
+    params,
+    regionDebug ?? null,
+  ) as ChainLatticeEdge | null;
 }
 
-/**
- * Compute the lattice-edge extents of a world-space chain in a *given*
- * region's abstract frame — like `chainToAbstractLatticeEdge` but
- * without the tolerance rejection. The caller has already decided
- * which region the scope should live in (typically the seed sub-edge's
- * region); this helper just floors/ceils the chain's min/max along
- * the varying axis and snaps the fixed axis to the nearest integer.
- *
- * Used for chain-mode annotations that cross region boundaries — the
- * strict variant returns null in that case, silently collapsing chain
- * mode into segment mode.
- */
+/** Lenient chain extents in a specified region (see `resolve::chain_extents_in_region`). */
 export function chainExtentsInRegion(
   chainPoints: Vec2[],
   params: ParkingParams,
-  region: { id: RegionId; aisle_angle_deg: number; aisle_offset: number },
-): { region: RegionId; xa: number; ya: number; xb: number; yb: number } | null {
-  if (chainPoints.length < 2) return null;
-  const frame = computeRegionFrame(params, region.aisle_angle_deg, region.aisle_offset);
-  const abs = chainPoints.map((p) => frameInverse(frame, p));
-  const xs = abs.map((p) => p.x);
-  const ys = abs.map((p) => p.y);
-  const xRange = Math.max(...xs) - Math.min(...xs);
-  const yRange = Math.max(...ys) - Math.min(...ys);
-  if (xRange > yRange) {
-    const yi = Math.round(ys.reduce((a, b) => a + b, 0) / ys.length);
-    const xa = Math.floor(Math.min(...xs));
-    const xb = Math.ceil(Math.max(...xs));
-    if (xa === xb) return null;
-    return { region: region.id, xa, ya: yi, xb, yb: yi };
-  }
-  const xi = Math.round(xs.reduce((a, b) => a + b, 0) / xs.length);
-  const ya = Math.floor(Math.min(...ys));
-  const yb = Math.ceil(Math.max(...ys));
-  if (ya === yb) return null;
-  return { region: region.id, xa: xi, ya, xb: xi, yb };
+  region: RegionInfo,
+): ChainLatticeEdge | null {
+  return chain_extents_in_region_js(chainPoints, params, region) as ChainLatticeEdge | null;
 }
 
-/**
- * Project a world-space point onto the closest drive line and return its
- * stable splice anchor — `(drive_line_id, t)` where `t ∈ [0, 1]` is the
- * fractional position along the line. Returns null if no drive line is
- * within `snap_tol_world` of the point. Mirrors `worldToAbstractVertex`
- * for the splice axis.
- */
+/** Project a world point onto the closest drive line; returns `(id, t)` or null. */
 export function worldToSpliceVertex(
   world: Vec2,
   driveLines: DriveLine[],
   snapTolWorld: number = 0.5,
-): { drive_line_id: number; t: number } | null {
-  let best: { id: number; t: number; dist: number } | null = null;
-  for (const dl of driveLines) {
-    const dx = dl.end.x - dl.start.x;
-    const dy = dl.end.y - dl.start.y;
-    const len2 = dx * dx + dy * dy;
-    if (len2 < 1e-12) continue;
-    // Project onto infinite line; t may fall outside [0, 1] if the
-    // splice extends past the user-drawn endpoints.
-    const tRaw = ((world.x - dl.start.x) * dx + (world.y - dl.start.y) * dy) / len2;
-    const px = dl.start.x + dx * tRaw;
-    const py = dl.start.y + dy * tRaw;
-    const dist = Math.hypot(world.x - px, world.y - py);
-    if (dist > snapTolWorld) continue;
-    if (best === null || dist < best.dist) {
-      best = { id: dl.id, t: tRaw, dist };
-    }
-  }
-  return best ? { drive_line_id: best.id, t: best.t } : null;
+): SpliceVertexResult | null {
+  return world_to_splice_vertex_js(
+    world.x,
+    world.y,
+    driveLines,
+    snapTolWorld,
+  ) as SpliceVertexResult | null;
 }
 
 /** True if the annotation is a direction annotation. */
@@ -481,16 +368,23 @@ export function isDirectionAnnotation(
 }
 
 /**
- * Resolve an annotation's target to its current world-space anchor point,
- * for rendering the marker. Returns null when the target's substrate or
- * stops don't resolve — i.e. the annotation is dormant / off-screen.
+ * Resolve an annotation's target to its current world-space anchor
+ * point. Returns null when the substrate (region / drive line /
+ * perimeter loop) isn't present in the current generate — i.e. the
+ * annotation is dormant.
  */
 export function annotationWorldPos(
   ann: Annotation,
   lot: ParkingLot,
   params: ParkingParams,
 ): Vec2 | null {
-  return targetWorldPos(ann.target, lot, params);
+  return annotation_world_pos_js(
+    ann,
+    lot.boundary,
+    lot.driveLines,
+    lot.layout?.region_debug ?? null,
+    params,
+  ) as Vec2 | null;
 }
 
 export function targetWorldPos(
@@ -498,160 +392,22 @@ export function targetWorldPos(
   lot: ParkingLot,
   params: ParkingParams,
 ): Vec2 | null {
-  if (target.on === "DriveLine") {
-    const dl = lot.driveLines.find((d) => d.id === target.id);
-    if (!dl) return null;
-    return {
-      x: dl.start.x + (dl.end.x - dl.start.x) * target.t,
-      y: dl.start.y + (dl.end.y - dl.start.y) * target.t,
-    };
-  }
-  if (target.on === "Grid") {
-    const rd = lot.layout?.region_debug;
-    if (!rd) return null;
-    const region = rd.regions.find((r) => r.id === target.region);
-    if (!region) return null;
-    const frame = computeRegionFrame(
-      params,
-      region.aisle_angle_deg,
-      region.aisle_offset,
-    );
-    if (target.range == null) {
-      // Whole line — anchor at (coord, 0) on the fixed axis.
-      const abs = target.axis === "X"
-        ? { x: target.coord, y: 0 }
-        : { x: 0, y: target.coord };
-      return frameForward(frame, abs);
-    }
-    const [s1, s2] = target.range;
-    const c1 = gridStopCoord(s1);
-    const c2 = gridStopCoord(s2);
-    if (c1 == null || c2 == null) return null;
-    const mid = (c1 + c2) / 2;
-    const abs = target.axis === "X"
-      ? { x: target.coord, y: mid }
-      : { x: mid, y: target.coord };
-    return frameForward(frame, abs);
-  }
-  if (target.on === "Perimeter") {
-    const poly = perimeterLoopPolygon(lot.boundary, target.loop);
-    if (!poly || poly.length < 3) return null;
-    return loopArcToWorld(poly, target.arc);
-  }
-  return null;
+  return target_world_pos_js(
+    target,
+    lot.boundary,
+    lot.driveLines,
+    lot.layout?.region_debug ?? null,
+    params,
+  ) as Vec2 | null;
 }
 
-function gridStopCoord(s: GridStop): number | null {
-  return s.at === "Lattice" ? s.other : null;
-}
-
-/**
- * Return the polygon vertices of the named perimeter loop on this lot's
- * boundary. For `Outer`, returns the raw boundary outer. Hole loops come
- * from `boundary.holes[index]`.
- *
- * Note: the engine uses the INSET outer loop (by `site_offset`) as the
- * actual grid-bounding perimeter; for the prototype's rendering we accept
- * that the UI-side arc may drift by up to `site_offset` when the user
- * clicks on the raw polygon vs. the engine-resolved position. Re-anchor on
- * the next regen if needed.
- */
-export function perimeterLoopPolygon(
-  boundary: { outer: Vec2[]; holes: Vec2[][] },
-  loop: PerimeterLoop,
-): Vec2[] | null {
-  if (loop.kind === "Outer") return boundary.outer;
-  return boundary.holes[loop.index] ?? null;
-}
-
-/**
- * Compute the world position at a normalized arc length along a loop.
- * `arc ∈ [0, 1]` advances along the polygon in its stored winding.
- */
-export function loopArcToWorld(poly: Vec2[], arc: number): Vec2 {
-  const n = poly.length;
-  if (n < 2) return poly[0] ?? { x: 0, y: 0 };
-  const cum: number[] = [0];
-  for (let i = 0; i < n; i++) {
-    const a = poly[i];
-    const b = poly[(i + 1) % n];
-    cum.push(cum[cum.length - 1] + Math.hypot(b.x - a.x, b.y - a.y));
-  }
-  const total = cum[cum.length - 1];
-  if (total < 1e-9) return poly[0];
-  const target = Math.max(0, Math.min(1, arc)) * total;
-  for (let i = 0; i < n; i++) {
-    if (cum[i + 1] >= target) {
-      const segLen = cum[i + 1] - cum[i];
-      const t = segLen > 1e-9 ? (target - cum[i]) / segLen : 0;
-      const a = poly[i];
-      const b = poly[(i + 1) % n];
-      return { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) };
-    }
-  }
-  return poly[0];
-}
-
-/**
- * Project a world-space point onto the nearest perimeter loop, within the
- * given world-space tolerance. Returns `(loop, arc)` if successful, null
- * if the point isn't on any loop. Used by the UI to address grid ×
- * perimeter crossings (and any other perimeter-adjacent vertex) via a
- * `Target::Perimeter`.
- */
+/** Project a world point onto the nearest perimeter loop. */
 export function worldToPerimeterPos(
   v: Vec2,
   boundary: { outer: Vec2[]; holes: Vec2[][] },
   tol: number = 0.5,
-): { loop: PerimeterLoop; arc: number } | null {
-  const candidates: { loop: PerimeterLoop; poly: Vec2[] }[] = [];
-  if (boundary.outer.length >= 3) {
-    candidates.push({ loop: { kind: "Outer" }, poly: boundary.outer });
-  }
-  for (let i = 0; i < boundary.holes.length; i++) {
-    const h = boundary.holes[i];
-    if (h.length >= 3) candidates.push({ loop: { kind: "Hole", index: i }, poly: h });
-  }
-  let best: { loop: PerimeterLoop; arc: number; dist: number } | null = null;
-  for (const { loop, poly } of candidates) {
-    const arc = projectOntoLoop(v, poly, tol);
-    if (arc == null) continue;
-    const worldAt = loopArcToWorld(poly, arc);
-    const dist = Math.hypot(v.x - worldAt.x, v.y - worldAt.y);
-    if (!best || dist < best.dist) best = { loop, arc, dist };
-  }
-  return best ? { loop: best.loop, arc: best.arc } : null;
-}
-
-function projectOntoLoop(v: Vec2, poly: Vec2[], tol: number): number | null {
-  const n = poly.length;
-  let totalLen = 0;
-  const cum: number[] = [0];
-  for (let i = 0; i < n; i++) {
-    const a = poly[i];
-    const b = poly[(i + 1) % n];
-    totalLen += Math.hypot(b.x - a.x, b.y - a.y);
-    cum.push(totalLen);
-  }
-  if (totalLen < 1e-9) return null;
-  let best: { arc: number; dist: number } | null = null;
-  for (let i = 0; i < n; i++) {
-    const a = poly[i];
-    const b = poly[(i + 1) % n];
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const segLenSq = dx * dx + dy * dy;
-    if (segLenSq < 1e-12) continue;
-    let t = ((v.x - a.x) * dx + (v.y - a.y) * dy) / segLenSq;
-    t = Math.max(0, Math.min(1, t));
-    const projX = a.x + t * dx;
-    const projY = a.y + t * dy;
-    const dist = Math.hypot(v.x - projX, v.y - projY);
-    if (dist > tol) continue;
-    const arc = (cum[i] + t * (cum[i + 1] - cum[i])) / totalLen;
-    if (!best || dist < best.dist) best = { arc, dist };
-  }
-  return best ? best.arc : null;
+): PerimeterPosResult | null {
+  return world_to_perimeter_pos_js(v.x, v.y, boundary, tol) as PerimeterPosResult | null;
 }
 
 // ---------------------------------------------------------------------------

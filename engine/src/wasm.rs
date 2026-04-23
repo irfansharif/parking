@@ -14,7 +14,11 @@ use wasm_bindgen::prelude::*;
 use crate::debug::format_fixture;
 use crate::geom::arc::{arc_apex, bulge_from_apex, eval_arc_at, project_to_arc};
 use crate::pipeline::generate::generate;
-use crate::types::{AbstractFrame, AbstractPoint2, GenerateInput, ParkingParams, Vec2};
+use crate::resolve;
+use crate::types::{
+    AbstractFrame, AbstractPoint2, Annotation, DriveLine, GenerateInput, ParkingParams,
+    Polygon, RegionDebug, RegionInfo, Target, Vec2,
+};
 
 #[wasm_bindgen]
 pub fn generate_js(input_json: &str) -> String {
@@ -129,4 +133,148 @@ pub fn stall_pitch_js(params: JsValue) -> Result<f64, JsValue> {
 pub fn effective_depth_js(params: JsValue) -> Result<f64, JsValue> {
     let params: ParkingParams = serde_wasm_bindgen::from_value(params)?;
     Ok(params.effective_depth())
+}
+
+// ---------------------------------------------------------------------------
+// Substrate resolution (engine/src/resolve.rs). Target ↔ world,
+// world → substrate address, chain → lattice-edge extents.
+// ---------------------------------------------------------------------------
+
+/// `resolve::target_world_pos` — returns `{x, y}` or `null`.
+#[wasm_bindgen]
+pub fn target_world_pos_js(
+    target: JsValue,
+    boundary: JsValue,
+    drive_lines: JsValue,
+    region_debug: JsValue,
+    params: JsValue,
+) -> Result<JsValue, JsValue> {
+    let target: Target = serde_wasm_bindgen::from_value(target)?;
+    let boundary: Polygon = serde_wasm_bindgen::from_value(boundary)?;
+    let drive_lines: Vec<DriveLine> = serde_wasm_bindgen::from_value(drive_lines)?;
+    let region_debug: Option<RegionDebug> = serde_wasm_bindgen::from_value(region_debug)?;
+    let params: ParkingParams = serde_wasm_bindgen::from_value(params)?;
+    let pos = resolve::target_world_pos(
+        &target,
+        &boundary,
+        &drive_lines,
+        region_debug.as_ref(),
+        &params,
+    );
+    Ok(serde_wasm_bindgen::to_value(&pos)?)
+}
+
+/// `resolve::annotation_world_pos` — thin wrapper that pulls the
+/// annotation's target and forwards to target_world_pos_js.
+#[wasm_bindgen]
+pub fn annotation_world_pos_js(
+    ann: JsValue,
+    boundary: JsValue,
+    drive_lines: JsValue,
+    region_debug: JsValue,
+    params: JsValue,
+) -> Result<JsValue, JsValue> {
+    let ann: Annotation = serde_wasm_bindgen::from_value(ann)?;
+    let boundary: Polygon = serde_wasm_bindgen::from_value(boundary)?;
+    let drive_lines: Vec<DriveLine> = serde_wasm_bindgen::from_value(drive_lines)?;
+    let region_debug: Option<RegionDebug> = serde_wasm_bindgen::from_value(region_debug)?;
+    let params: ParkingParams = serde_wasm_bindgen::from_value(params)?;
+    let pos = resolve::annotation_world_pos(
+        &ann,
+        &boundary,
+        &drive_lines,
+        region_debug.as_ref(),
+        &params,
+    );
+    Ok(serde_wasm_bindgen::to_value(&pos)?)
+}
+
+/// `resolve::world_to_abstract_vertex` — returns
+/// `{region, xi, yi}` or `null`.
+#[wasm_bindgen]
+pub fn world_to_abstract_vertex_js(
+    wx: f64,
+    wy: f64,
+    params: JsValue,
+    region_debug: JsValue,
+    snap_tol_world: f64,
+) -> Result<JsValue, JsValue> {
+    let params: ParkingParams = serde_wasm_bindgen::from_value(params)?;
+    let region_debug: Option<RegionDebug> = serde_wasm_bindgen::from_value(region_debug)?;
+    let result = resolve::world_to_abstract_vertex(
+        Vec2::new(wx, wy),
+        &params,
+        region_debug.as_ref(),
+        snap_tol_world,
+    );
+    Ok(serde_wasm_bindgen::to_value(&result)?)
+}
+
+/// `resolve::world_to_splice_vertex` — returns
+/// `{drive_line_id, t}` or `null`.
+#[wasm_bindgen]
+pub fn world_to_splice_vertex_js(
+    wx: f64,
+    wy: f64,
+    drive_lines: JsValue,
+    snap_tol_world: f64,
+) -> Result<JsValue, JsValue> {
+    let drive_lines: Vec<DriveLine> = serde_wasm_bindgen::from_value(drive_lines)?;
+    let result = resolve::world_to_splice_vertex(Vec2::new(wx, wy), &drive_lines, snap_tol_world);
+    Ok(serde_wasm_bindgen::to_value(&result)?)
+}
+
+/// `resolve::world_to_perimeter_pos` — returns
+/// `{loop, arc}` or `null`.
+#[wasm_bindgen]
+pub fn world_to_perimeter_pos_js(
+    wx: f64,
+    wy: f64,
+    boundary: JsValue,
+    tol: f64,
+) -> Result<JsValue, JsValue> {
+    let boundary: Polygon = serde_wasm_bindgen::from_value(boundary)?;
+    let result = resolve::world_to_perimeter_pos(Vec2::new(wx, wy), &boundary, tol);
+    Ok(serde_wasm_bindgen::to_value(&result)?)
+}
+
+#[wasm_bindgen]
+pub fn chain_to_abstract_lattice_edge_js(
+    chain_points: JsValue,
+    params: JsValue,
+    region_debug: JsValue,
+) -> Result<JsValue, JsValue> {
+    let chain_points: Vec<Vec2> = serde_wasm_bindgen::from_value(chain_points)?;
+    let params: ParkingParams = serde_wasm_bindgen::from_value(params)?;
+    let region_debug: Option<RegionDebug> = serde_wasm_bindgen::from_value(region_debug)?;
+    let result =
+        resolve::chain_to_abstract_lattice_edge(&chain_points, &params, region_debug.as_ref());
+    Ok(serde_wasm_bindgen::to_value(&result)?)
+}
+
+#[wasm_bindgen]
+pub fn chain_extents_in_region_js(
+    chain_points: JsValue,
+    params: JsValue,
+    region: JsValue,
+) -> Result<JsValue, JsValue> {
+    let chain_points: Vec<Vec2> = serde_wasm_bindgen::from_value(chain_points)?;
+    let params: ParkingParams = serde_wasm_bindgen::from_value(params)?;
+    let region: RegionInfo = serde_wasm_bindgen::from_value(region)?;
+    let result = resolve::chain_extents_in_region(&chain_points, &params, &region);
+    Ok(serde_wasm_bindgen::to_value(&result)?)
+}
+
+// ---------------------------------------------------------------------------
+// Point-in-polygon primitive. Pure geometry; exposed so the UI can
+// drop its hand-rolled copy.
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+pub fn point_in_polygon_js(px: f64, py: f64, poly: JsValue) -> Result<bool, JsValue> {
+    let poly: Vec<Vec2> = serde_wasm_bindgen::from_value(poly)?;
+    Ok(crate::geom::clip::point_in_polygon(
+        &Vec2::new(px, py),
+        &poly,
+    ))
 }
