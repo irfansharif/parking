@@ -884,11 +884,9 @@ pub fn generate_from_spines(
     };
 
     // Clip stalls to face interiors. A stall that protrudes past the face
-    // boundary into a corridor (at miter-fill corners) is removed. When
-    // `back_half_face_clipping` is on, only the spine-side half of the
-    // stall is tested — the entrance half is allowed to overhang.
+    // boundary into a corridor (at miter-fill corners) is removed.
     let tagged_stalls = if debug.stall_face_clipping {
-        clip_stalls_to_faces(tagged_stalls, &faces, debug.back_half_face_clipping)
+        clip_stalls_to_faces(tagged_stalls, &faces)
     } else {
         tagged_stalls
     };

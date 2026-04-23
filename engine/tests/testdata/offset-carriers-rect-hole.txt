@@ -1,0 +1,32 @@
+# Offset-carrier regression: same rect-with-hole geometry as
+# rect-rect-hole.txt, but with the offset_carriers path on. Every
+# aisle-facing boundary edge should get a spine emitted directly
+# from its own offset — no weighted skeleton wavefront, no
+# asymmetric truncation between sides.
+
+polygon outer
+0,0
+800,0
+800,800
+0,800
+----
+polygon outer: 4 vertices
+
+polygon hole
+300,300
+500,300
+500,500
+300,500
+----
+hole: 4 vertices
+
+debug offset_carriers=true
+----
+debug offset_carriers=true
+
+generate
+----
+total_stalls: 1312
+
+snapshot
+----

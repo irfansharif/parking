@@ -250,7 +250,7 @@ mod tests {
         let (tagged_stalls_3, _) = place_stalls_on_spines(&all_spines, &params, true, None);
         let tagged_stalls: Vec<(StallQuad, usize)> = tagged_stalls_3.iter()
             .map(|(s, fi, _)| (s.clone(), *fi)).collect();
-        let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces, false);
+        let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces);
         let tagged_stalls = remove_conflicting_stalls(tagged_stalls, &[], &[]);
         let islands = compute_islands(&faces, &tagged_stalls, 10.0, true);
 

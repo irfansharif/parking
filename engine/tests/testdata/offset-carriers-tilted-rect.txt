@@ -1,0 +1,24 @@
+# Reproduces image 1: a slightly-tilted rectangular lot where the
+# weighted-skeleton path produces spines on only some sides. With the
+# offset_carriers flag on, every aisle-facing boundary edge should
+# get a spine derived from its own offset, independent of wavefront
+# truncation.
+
+polygon outer
+10,0
+400,30
+380,300
+-10,280
+----
+polygon outer: 4 vertices
+
+debug offset_carriers=true
+----
+debug offset_carriers=true
+
+generate
+----
+total_stalls: 272
+
+snapshot
+----

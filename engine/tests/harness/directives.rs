@@ -90,6 +90,7 @@ pub fn execute(ctx: &mut FixtureCtx, command: &str, body: &str) -> Result<Outcom
         "polygon" => polygon(ctx, rest, body),
         "polygon-info" => polygon_info(ctx),
         "set" => set_param(ctx, rest),
+        "debug" => set_debug(ctx, rest),
         "generate" => generate_cmd(ctx),
         "graph" => graph_cmd(ctx, rest),
         "faces" => faces_cmd(ctx, rest),
@@ -251,6 +252,46 @@ fn set_param(ctx: &mut FixtureCtx, rest: &str) -> Result<Outcome, String> {
         output: format!("set {}={}", key, raw_val),
         ..Default::default()
     })
+}
+
+fn set_debug(ctx: &mut FixtureCtx, rest: &str) -> Result<Outcome, String> {
+    let (raw_key, raw_val) = rest
+        .split_once('=')
+        .ok_or_else(|| "debug requires key=value".to_string())?;
+    let key = raw_key.trim().replace('-', "_");
+    let val = parse_bool(raw_val.trim())?;
+    apply_debug(&mut ctx.input.debug, &key, val)?;
+    Ok(Outcome {
+        output: format!("debug {}={}", key, val),
+        ..Default::default()
+    })
+}
+
+fn apply_debug(d: &mut DebugToggles, key: &str, v: bool) -> Result<(), String> {
+    match key {
+        "miter_fills" => d.miter_fills = v,
+        "boundary_only_miters" => d.boundary_only_miters = v,
+        "spike_removal" => d.spike_removal = v,
+        "contour_simplification" => d.contour_simplification = v,
+        "hole_filtering" => d.hole_filtering = v,
+        "face_simplification" => d.face_simplification = v,
+        "edge_classification" => d.edge_classification = v,
+        "spine_clipping" => d.spine_clipping = v,
+        "offset_carriers" => d.offset_carriers = v,
+        "spine_dedup" => d.spine_dedup = v,
+        "spine_merging" => d.spine_merging = v,
+        "paired_spine_normalization" => d.paired_spine_normalization = v,
+        "short_spine_filter" => d.short_spine_filter = v,
+        "spine_extensions" => d.spine_extensions = v,
+        "stall_centering" => d.stall_centering = v,
+        "stall_face_clipping" => d.stall_face_clipping = v,
+        "entrance_on_face_filter" => d.entrance_on_face_filter = v,
+        "conflict_removal" => d.conflict_removal = v,
+        "island_stall_dilation" => d.island_stall_dilation = v,
+        "skeleton_debug" => d.skeleton_debug = v,
+        other => return Err(format!("unknown debug flag: {}", other)),
+    }
+    Ok(())
 }
 
 /// Mirrors `ui/src/commands.ts::KEY_ALIASES` + dash→underscore so the

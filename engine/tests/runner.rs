@@ -229,3 +229,28 @@ fn annotation_chain_vs_segment() {
 fn default_app_layout() {
     run_fixture(&testdata_dir().join("default-app-layout.txt"));
 }
+
+#[test]
+fn offset_carriers_rect_hole() {
+    run_fixture(&testdata_dir().join("offset-carriers-rect-hole.txt"));
+}
+
+#[test]
+fn offset_carriers_basic_rect() {
+    run_fixture(&testdata_dir().join("offset-carriers-basic-rect.txt"));
+}
+
+#[test]
+fn offset_carriers_tilted_rect() {
+    run_fixture(&testdata_dir().join("offset-carriers-tilted-rect.txt"));
+}
+
+#[test]
+fn offset_carriers_tilted_rect_off() {
+    run_fixture(&testdata_dir().join("offset-carriers-tilted-rect-off.txt"));
+}
+
+#[test]
+fn offset_carriers_arc() {
+    run_fixture(&testdata_dir().join("offset-carriers-arc.txt"));
+}

@@ -223,6 +223,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
         { key: "face_simplification", label: "Face Simplification" },
         { key: "edge_classification", label: "Edge Classification" },
         { key: "spine_clipping", label: "Spine Clipping" },
+        { key: "offset_carriers", label: "Offset Carriers" },
       ],
     },
     {
@@ -240,7 +241,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       toggles: [
         { key: "stall_centering", label: "Stall Centering" },
         { key: "stall_face_clipping", label: "Stall-to-Face Clipping" },
-        { key: "back_half_face_clipping", label: "Back-Half Only Clipping" },
         { key: "entrance_on_face_filter", label: "Entrance-on-Face Filter" },
         { key: "island_stall_dilation", label: "Island Stall Dilation" },
       ],

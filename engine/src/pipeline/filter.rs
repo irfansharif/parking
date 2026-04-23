@@ -43,13 +43,10 @@ const ENTRANCE_MIN_COVERAGE: f64 = 0.9;
 /// interior).
 const ENTRANCE_SAMPLES: usize = 11;
 
-/// Drop stalls that aren't fully contained in their tagged face. When
-/// `back_half_only` is true, only the spine-side half of each stall is
-/// tested — the entrance half is allowed to overhang the face boundary.
+/// Drop stalls that aren't fully contained in their tagged face.
 pub(crate) fn clip_stalls_to_faces(
     stalls: Vec<(StallQuad, usize)>,
     faces: &[Vec<Vec<Vec2>>],
-    back_half_only: bool,
 ) -> Vec<(StallQuad, usize)> {
     stalls
         .into_iter()
@@ -57,24 +54,9 @@ pub(crate) fn clip_stalls_to_faces(
             if *face_idx >= faces.len() {
                 return false;
             }
-            let probe = if back_half_only {
-                back_half_quad(&stall.corners)
-            } else {
-                stall.corners
-            };
-            quad_fully_in_face(&probe, &faces[*face_idx])
+            quad_fully_in_face(&stall.corners, &faces[*face_idx])
         })
         .collect()
-}
-
-/// Build the back half of a stall quad: the two back corners plus the
-/// midpoints of each side edge. Corners are `[back_left, back_right,
-/// aisle_right, aisle_left]`; the back half wraps `back_left →
-/// back_right → mid(back_right, aisle_right) → mid(aisle_left, back_left)`.
-fn back_half_quad(corners: &[Vec2; 4]) -> [Vec2; 4] {
-    let mid_right = (corners[1] + corners[2]) * 0.5;
-    let mid_left = (corners[3] + corners[0]) * 0.5;
-    [corners[0], corners[1], mid_right, mid_left]
 }
 
 /// True when the stall quad is contained in the face: the boolean

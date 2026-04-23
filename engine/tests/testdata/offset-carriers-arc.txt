@@ -1,0 +1,29 @@
+# Offset-carrier path against a boundary with a curved edge. Mirrors
+# curved-boundary.txt but with offset_carriers on. Phase-1 expectation:
+# the curved side's discretized chord-spines produce many short per-edge
+# spines; most fail `MIN_STALLS_PER_SPINE`. Path grouping in a follow-up
+# task will merge them into a single placement path.
+
+polygon outer
+0,0
+200,0
+arc -0.375
+200,160
+0,160
+----
+polygon outer: 4 vertices
+
+set stall-angle=90
+----
+set stall_angle_deg=90
+
+debug offset_carriers=true
+----
+debug offset_carriers=true
+
+generate
+----
+total_stalls: 131
+
+snapshot
+----

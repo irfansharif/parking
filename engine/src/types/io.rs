@@ -119,6 +119,14 @@ pub struct DebugToggles {
     pub edge_classification: bool,
     #[serde(default = "default_true")]
     pub spine_clipping: bool,
+    /// Experimental: skip the weighted straight skeleton for boundary
+    /// faces and emit spines by offsetting each aisle-facing edge inward
+    /// by effective_depth, clipped to the face. Adjacent offset spines
+    /// whose tangents are close are grouped into placement paths so
+    /// discretized-arc aisles produce continuous stall rows instead of
+    /// per-chord spines that get filtered. Off = current behavior.
+    #[serde(default)]
+    pub offset_carriers: bool,
 
     // Spine post-processing
     #[serde(default)]
@@ -139,12 +147,6 @@ pub struct DebugToggles {
     pub stall_centering: bool,
     #[serde(default = "default_true")]
     pub stall_face_clipping: bool,
-    /// When `stall_face_clipping` is on, only check the back half of each
-    /// stall (spine-side) against the face. The entrance half is allowed
-    /// to overhang the face boundary, which is fine for stalls whose
-    /// entrances naturally sit on or just past the aisle-side face edge.
-    #[serde(default)]
-    pub back_half_face_clipping: bool,
     #[serde(default = "default_true")]
     pub entrance_on_face_filter: bool,
 
@@ -172,6 +174,7 @@ impl Default for DebugToggles {
             face_simplification: false,
             edge_classification: true,
             spine_clipping: true,
+            offset_carriers: false,
             spine_dedup: false,
             spine_merging: true,
             paired_spine_normalization: true,
@@ -179,7 +182,6 @@ impl Default for DebugToggles {
             spine_extensions: true,
             stall_centering: false,
             stall_face_clipping: true,
-            back_half_face_clipping: false,
             entrance_on_face_filter: true,
             conflict_removal: true,
             island_stall_dilation: true,

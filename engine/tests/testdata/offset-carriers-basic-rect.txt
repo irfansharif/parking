@@ -1,0 +1,25 @@
+# Offset-carrier regression: basic rectangle at 60°. Same geometry as
+# basic-rectangle.txt, flag on.
+
+polygon outer
+0,0
+200,0
+200,150
+0,150
+----
+polygon outer: 4 vertices
+
+set stall-angle=60
+----
+set stall_angle_deg=60
+
+debug offset_carriers=true
+----
+debug offset_carriers=true
+
+generate
+----
+total_stalls: 134
+
+snapshot
+----
