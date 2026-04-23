@@ -238,6 +238,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       toggles: [
         { key: "stall_centering", label: "Stall Centering" },
         { key: "stall_face_clipping", label: "Stall-to-Face Clipping" },
+        { key: "island_stall_dilation", label: "Island Stall Dilation" },
       ],
     },
     {

@@ -942,7 +942,7 @@ pub fn generate_from_spines(
         );
     }
 
-    let islands = compute_islands(&faces, &all_tagged, 10.0);
+    let islands = compute_islands(&faces, &all_tagged, 10.0, debug.island_stall_dilation);
     let all_stalls: Vec<StallQuad> = all_tagged.iter().map(|(s, _)| s.clone()).collect();
 
     // Build spine lines for visualization: primary + extension.

@@ -7,8 +7,13 @@
 //! island contours.
 
 use crate::geom::boolean::{self, FillRule};
-use crate::geom::inset::signed_area;
+use crate::geom::inset::{raw_inset_polygon, signed_area};
 use crate::types::*;
+
+/// Miter-outset applied to each non-island stall before face-subtraction.
+/// Gaps smaller than 2× this value collapse, removing sliver-island
+/// artifacts from braided back edges and oblique face corners.
+const STALL_DILATION: f64 = 0.25;
 
 pub(crate) fn stall_key(s: &StallQuad) -> [u64; 8] {
     [
@@ -99,6 +104,7 @@ pub(crate) fn compute_islands(
     faces: &[Vec<Vec<Vec2>>],
     tagged_stalls: &[(StallQuad, usize)],
     min_area: f64,
+    dilate_stalls: bool,
 ) -> Vec<Island> {
     let ensure_ccw = |pts: &[Vec2]| -> Vec<Vec2> {
         if signed_area(pts) >= 0.0 { pts.to_vec() }
@@ -113,7 +119,13 @@ pub(crate) fn compute_islands(
     for (stall, face_idx) in tagged_stalls {
         if stall.kind == StallKind::Island { continue; }
         if *face_idx >= faces.len() { continue; }
-        stalls_by_face[*face_idx].push(stall.corners.to_vec());
+        let poly = if dilate_stalls {
+            let dilated = raw_inset_polygon(&stall.corners, -STALL_DILATION);
+            if dilated.len() >= 3 { dilated } else { stall.corners.to_vec() }
+        } else {
+            stall.corners.to_vec()
+        };
+        stalls_by_face[*face_idx].push(poly);
     }
 
     let mut islands = Vec::new();

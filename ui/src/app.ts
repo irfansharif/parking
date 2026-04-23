@@ -217,6 +217,7 @@ export class App {
         boundary_clipping: false,
         conflict_removal: true,
         short_segment_filter: true,
+        island_stall_dilation: true,
         skeleton_debug: false,
       },
       selectedVertex: null,

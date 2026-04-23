@@ -145,6 +145,10 @@ pub struct DebugToggles {
     #[serde(default = "default_true")]
     pub edge_provenance: bool,
 
+    // Island stall dilation (close sliver gaps in face-minus-stalls subtraction)
+    #[serde(default = "default_true")]
+    pub island_stall_dilation: bool,
+
     // Skeleton debug visualization
     #[serde(default)]
     pub skeleton_debug: bool,
@@ -171,6 +175,7 @@ impl Default for DebugToggles {
             conflict_removal: true,
             short_segment_filter: true,
             edge_provenance: true,
+            island_stall_dilation: true,
             skeleton_debug: false,
         }
     }
