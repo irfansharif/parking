@@ -14,7 +14,8 @@ use crate::pipeline::placement::{
 };
 use crate::pipeline::spines::{
     compute_face_spines, dedup_overlapping_spines, extend_primary_with_extensions,
-    extend_spines_to_faces, merge_collinear_spines, normalize_paired_spines,
+    extend_spines_to_faces, group_spines_into_paths, merge_collinear_spines,
+    normalize_paired_spines,
 };
 use crate::pipeline::tagging::{classify_face_edges, tag_face_edges};
 use crate::skeleton;
@@ -630,6 +631,80 @@ mod tests {
 
 
 
+/// Compute per-spine centering shifts that tile stalls at cumulative
+/// arc-length along multi-member placement paths. Spines not in a
+/// multi-member path (singletons) get `None` and fall through to the
+/// default centering logic in `place_stalls_on_spines`.
+///
+/// The math: fill_strip computes stall k at local parameter
+/// `t_k = (k + 0.5) * pitch - offset_proj` along the spine's oriented
+/// direction, where
+/// `offset_proj = oriented_start · oriented_dir + centering_shift − grid_offset · pitch`.
+/// To place stalls at path arc-length `pad + (k + 0.5) * pitch`, we
+/// need `offset_proj = L_i − pad` where `L_i` is the cumulative arc
+/// length at this spine's start. Solving:
+/// `centering_shift = (L_i − pad) + grid_offset · pitch − oriented_start · oriented_dir`.
+///
+/// `pad = (total_len − n_stalls * pitch) / 2` centers the stall grid
+/// within the path, so trailing slack is split evenly across both ends.
+fn compute_path_centering_overrides(
+    spines: &[SpineSegment],
+    params: &ParkingParams,
+) -> Vec<Option<f64>> {
+    let mut overrides = vec![None; spines.len()];
+    // Endpoint tolerance 1.0 matches merge_collinear_spines. Tangent
+    // threshold 0.98 admits direction changes up to ~11° per chord,
+    // which covers typical 0.1-ft discretization on arcs down to
+    // ~25-ft radius.
+    // Endpoint tolerance must cover the offset-corner gap between
+    // adjacent aisle edges meeting at an angle: gap ≈ 2·ed·sin(θ/2).
+    // At ed=16ft and θ=20°, gap ≈ 5.6ft. 0.5·ed (≈8ft at typical ed)
+    // covers the discretization regime comfortably without bridging
+    // a sharp 90° corner (which has gap ≈ ed·√2).
+    // Tangent tolerance 0.90 (≈26°) lets coarse arc discretization
+    // group even when chord angle varies; at 26°+ we treat it as a
+    // genuine corner, not a curve.
+    let ed = params.effective_depth();
+    let endpoint_tol = (0.5 * ed).max(1.0);
+    let paths = group_spines_into_paths(spines, endpoint_tol, 0.90);
+    let default_pitch = params.stall_pitch();
+    for path in paths {
+        if path.len() < 2 {
+            continue;
+        }
+        let lens: Vec<f64> = path
+            .iter()
+            .map(|&i| (spines[i].end - spines[i].start).length())
+            .collect();
+        let total: f64 = lens.iter().sum();
+        // Boundary spines use stall_width as effective pitch (90° override);
+        // interior use stall_pitch. Kind is consistent within a path.
+        let eff_pitch = if spines[path[0]].is_interior {
+            default_pitch
+        } else {
+            params.stall_width
+        };
+        if eff_pitch <= 1e-12 || total < eff_pitch {
+            continue;
+        }
+        let n_stalls = (total / eff_pitch).floor();
+        let pad = (total - n_stalls * eff_pitch) / 2.0;
+        let mut cum = 0.0;
+        for (i, &idx) in path.iter().enumerate() {
+            let seg = &spines[idx];
+            let (start, end) = seg.oriented_endpoints();
+            let oriented_dir = (end - start).normalize();
+            let grid_offset = seg.travel_dir.map_or(0.0, |td| {
+                if td.cross(seg.outward_normal) >= 0.0 { 0.5 } else { 0.0 }
+            });
+            let shift = (cum - pad) + grid_offset * eff_pitch - start.dot(oriented_dir);
+            overrides[idx] = Some(shift);
+            cum += lens[i];
+        }
+    }
+    overrides
+}
+
 /// Generate stalls from positive-space face extraction + per-edge spine shifting.
 /// Returns (stalls, spine_lines, faces, miter_fills, skeleton_debugs, islands).
 pub fn generate_from_spines(
@@ -831,11 +906,23 @@ pub fn generate_from_spines(
         all_spines
     };
 
+    // Under offset_carriers, group chord-spine chains (e.g. a discretized
+    // arc aisle) into placement paths and precompute per-spine centering
+    // shifts so their stalls tile at cumulative arc-length. Per-spine
+    // centering would otherwise center each chord independently and the
+    // grid would jump at every chord boundary.
+    let path_centering_overrides: Vec<Option<f64>> = if debug.offset_carriers {
+        compute_path_centering_overrides(&all_spines, params)
+    } else {
+        vec![None; all_spines.len()]
+    };
+
     // Place stalls on merged spines (tagged with face_idx + spine_idx).
     // Pass extension spines so centering uses the full projected range.
     let ext_ref = if ext_spines_with_src.is_empty() { None } else { Some(ext_spines_with_src.as_slice()) };
     let (tagged_stalls_3, spine_shifts) = place_stalls_on_spines(
         &all_spines, params, debug.stall_centering, ext_ref,
+        Some(&path_centering_overrides),
     );
 
     // Drop boundary-spine stalls whose aisle-facing edge doesn't hug the

@@ -1,0 +1,29 @@
+# Tight-arc boundary: a quarter-circle sweep where the discretized
+# aisle produces many short chord-spines. Without path grouping,
+# per-chord centering leaves stalls mis-aligned across chord
+# boundaries; with grouping on, stalls tile continuously by
+# cumulative arc-length.
+
+polygon outer
+0,0
+200,0
+arc 1.0
+200,200
+0,200
+----
+polygon outer: 4 vertices
+
+set stall-angle=90
+----
+set stall_angle_deg=90
+
+debug offset_carriers=true
+----
+debug offset_carriers=true
+
+generate
+----
+total_stalls: 276
+
+snapshot
+----

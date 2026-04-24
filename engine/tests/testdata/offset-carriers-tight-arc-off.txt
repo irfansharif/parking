@@ -1,0 +1,21 @@
+# Flag-off baseline for the tight-arc quarter-circle.
+
+polygon outer
+0,0
+200,0
+arc 1.0
+200,200
+0,200
+----
+polygon outer: 4 vertices
+
+set stall-angle=90
+----
+set stall_angle_deg=90
+
+generate
+----
+total_stalls: 18
+
+snapshot
+----

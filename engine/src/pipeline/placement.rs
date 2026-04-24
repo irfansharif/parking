@@ -170,6 +170,7 @@ pub(crate) fn place_stalls_on_spines(
     params: &ParkingParams,
     center: bool,
     extensions: Option<&[(SpineSegment, usize)]>,
+    centering_overrides: Option<&[Option<f64>]>,
 ) -> (Vec<(StallQuad, usize, usize)>, Vec<f64>) {
     let stall_pitch = params.stall_pitch();
 
@@ -220,7 +221,16 @@ pub(crate) fn place_stalls_on_spines(
         let eff_pitch = if angle_override.is_some() { params.stall_width } else { stall_pitch };
         let proj_start = start.dot(oriented_dir);
 
-        let centering = if !center {
+        // Path-level override wins: for spines in a multi-member placement
+        // path, centering is pre-computed from cumulative arc length so
+        // stalls tile continuously across spine boundaries (e.g., chord
+        // spines along an arc). Takes precedence over opposing-shift and
+        // per-spine centering.
+        let override_shift = centering_overrides
+            .and_then(|ov| ov.get(spine_idx).copied().flatten());
+        let centering = if let Some(s) = override_shift {
+            s
+        } else if !center {
             0.0
         } else if let Some((shift, _partner_idx)) = find_opposing_shift(&claimed, spines, spine_idx, oriented_dir, eff_pitch, params.aisle_width + 2.0 * params.stall_depth) {
             shift
