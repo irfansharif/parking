@@ -1,0 +1,27 @@
+# Rectangle with a gentle outward-bulging arc on the right side.
+# Negative bulge = CW-perp side of start→end = +x for a vertical
+# chord going +y, so the arc sweeps OUTWARD into +x.
+
+polygon outer
+0,0
+200,0
+arc -0.3
+200,200
+0,200
+----
+polygon outer: 4 vertices
+
+set stall-angle=90
+----
+set stall_angle_deg=90
+
+debug offset_carriers=true
+----
+debug offset_carriers=true
+
+generate
+----
+total_stalls: 146
+
+snapshot
+----

@@ -1,13 +1,14 @@
-# Tight-arc boundary: a quarter-circle sweep where the discretized
-# aisle produces many short chord-spines. Without path grouping,
+# Tight-arc boundary: a full-semicircle bulge where the discretized
+# aisle produces many short chord-spines. Without path grouping the
 # per-chord centering leaves stalls mis-aligned across chord
 # boundaries; with grouping on, stalls tile continuously by
-# cumulative arc-length.
+# cumulative arc-length and back against the arc wall all the way to
+# its peak (x ≈ 330 for this fixture's raw_outer).
 
 polygon outer
 0,0
 200,0
-arc 1.0
+arc -1.0
 200,200
 0,200
 ----
@@ -23,7 +24,7 @@ debug offset_carriers=true
 
 generate
 ----
-total_stalls: 276
+total_stalls: 160
 
 snapshot
 ----

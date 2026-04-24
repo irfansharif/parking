@@ -264,3 +264,13 @@ fn offset_carriers_tight_arc() {
 fn offset_carriers_tight_arc_off() {
     run_fixture(&testdata_dir().join("offset-carriers-tight-arc-off.txt"));
 }
+
+#[test]
+fn offset_carriers_arc_wedges() {
+    run_fixture(&testdata_dir().join("offset-carriers-arc-wedges.txt"));
+}
+
+#[test]
+fn offset_carriers_outward_arc() {
+    run_fixture(&testdata_dir().join("offset-carriers-outward-arc.txt"));
+}
