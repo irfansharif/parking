@@ -264,6 +264,7 @@ pub(crate) fn tag_face_edges(
 /// edge is a boundary face (90° stalls). A face with all aisle-facing edges
 /// is interior (angled stalls).
 /// from being confused with a horizontal perimeter corridor nearby.
+#[cfg(test)]
 pub(crate) fn classify_face_edges(
     contour: &[Vec2],
     corridor_shapes: &[Vec<Vec<Vec2>>],

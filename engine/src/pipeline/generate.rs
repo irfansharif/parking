@@ -1,9 +1,8 @@
 use crate::annotations::{apply_annotations, resolve_regions_for_frames, ResolvedRegion};
 use crate::geom::clip::{point_in_polygon, remove_conflicting_stalls};
 use crate::geom::inset::{inset_polygon, signed_area};
-use crate::geom::poly::{point_in_or_on_face, simplify_contour};
 use crate::graph::{auto_generate, compute_inset_d, decompose_regions, derive_raw_holes, derive_raw_outer, intersect_line_polygon, subtract_intervals, Region};
-use crate::pipeline::bays::{extract_faces, normalize_face_winding};
+use crate::pipeline::bays::extract_faces;
 use crate::pipeline::corridors::{
     deduplicate_corridors, generate_miter_fills, merge_corridor_shapes,
 };
@@ -17,8 +16,7 @@ use crate::pipeline::spines::{
     extend_spines_to_faces, group_spines_into_paths, merge_collinear_spines,
     normalize_paired_spines,
 };
-use crate::pipeline::tagging::{classify_face_edges, tag_face_edges};
-use crate::skeleton;
+use crate::pipeline::tagging::tag_face_edges;
 use crate::types::*;
 use geo::{Coord, LineString};
 
@@ -98,7 +96,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     let derived_outer = derive_raw_outer(&input.boundary.outer, inset_d, input.params.site_offset);
     let derived_holes = derive_raw_holes(&input.boundary.holes, inset_d);
 
-    let (stalls, spines, faces, miter_fills, skeleton_debug, islands) =
+    let (stalls, spines, faces, miter_fills, islands) =
         generate_from_spines(&graph, &input.boundary, &input.params, &input.debug);
 
     // Remove stalls that fall inside raw drive line corridors. The raw
@@ -217,7 +215,6 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         spines,
         faces,
         miter_fills,
-        skeleton_debug,
         islands,
         derived_outer,
         derived_holes,
@@ -706,13 +703,13 @@ fn compute_path_centering_overrides(
 }
 
 /// Generate stalls from positive-space face extraction + per-edge spine shifting.
-/// Returns (stalls, spine_lines, faces, miter_fills, skeleton_debugs, islands).
+/// Returns (stalls, spine_lines, faces, miter_fills, islands).
 pub fn generate_from_spines(
     graph: &DriveAisleGraph,
     boundary: &Polygon,
     params: &ParkingParams,
     debug: &DebugToggles,
-) -> (Vec<StallQuad>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>, Vec<SkeletonDebug>, Vec<crate::types::Island>) {
+) -> (Vec<StallQuad>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>, Vec<crate::types::Island>) {
     let stall_angle_rad = params.stall_angle_deg.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin()
         + stall_angle_rad.cos() * params.stall_width / 2.0;
@@ -768,91 +765,10 @@ pub fn generate_from_spines(
     // Collect spines from all faces, then merge collinear segments across
     // face boundaries so stalls flow continuously along shared aisle edges.
     let mut raw_spines = Vec::new();
-    let mut skeleton_debugs = Vec::new();
-    // Track which faces produced any spine candidates (before filtering).
-    // Faces with spine candidates were wide enough for stalls; faces without
-    // are genuinely too narrow and should become islands if they have no stalls.
-    let mut faces_with_spines = std::collections::HashSet::new();
     for (face_idx, shape) in faces.iter().enumerate() {
-        // Optionally collect skeleton debug data for visualization.
-        // Use multi-contour skeleton so arcs stay within the face.
-        if debug.skeleton_debug && !shape.is_empty() && shape[0].len() >= 3 {
-            let mut normalized = normalize_face_winding(shape);
-            if debug.face_simplification {
-                normalized = normalized.into_iter()
-                    .map(|c| simplify_contour(&c, 0.035))
-                    .filter(|c| c.len() >= 3)
-                    .collect();
-            }
-            // Build edge weights matching the spine computation: aisle-facing
-            // edges shrink (1.0), boundary edges stay fixed (0.0).
-            let debug_weights: Vec<f64> = if face_idx < tagged_faces.len() && !debug.face_simplification {
-                let tf = &tagged_faces[face_idx];
-                // Match each normalized contour edge to its closest tagged edge.
-                let mut weights = Vec::new();
-                let classify_weights = |contour: &[Vec2], tagged_edges: &[FaceEdge]| -> Vec<f64> {
-                    let n = contour.len();
-                    (0..n).map(|i| {
-                        let j = (i + 1) % n;
-                        let mid = (contour[i] + contour[j]) * 0.5;
-                        let mut best_dist = f64::INFINITY;
-                        let mut best_aisle = false;
-                        for te in tagged_edges {
-                            let te_mid = (te.start + te.end) * 0.5;
-                            let d = (te_mid - mid).length();
-                            if d < best_dist {
-                                best_dist = d;
-                                best_aisle = matches!(te.source, EdgeSource::Aisle { .. });
-                            }
-                        }
-                        if best_aisle { 1.0 } else { 0.0 }
-                    }).collect()
-                };
-                if !normalized.is_empty() {
-                    weights.extend(classify_weights(&normalized[0], &tf.edges));
-                }
-                for (ci, contour) in normalized.iter().enumerate().skip(1) {
-                    let hi = ci - 1;
-                    if hi < tf.hole_edges.len() {
-                        weights.extend(classify_weights(contour, &tf.hole_edges[hi]));
-                    } else {
-                        weights.extend(vec![0.0; contour.len()]);
-                    }
-                }
-                weights
-            } else {
-                normalized.iter().flat_map(|contour| {
-                    let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors_with_flags);
-                    classified.into_iter().map(|(facing, _, _)| {
-                        if facing { 1.0 } else { 0.0 }
-                    })
-                }).collect()
-            };
-            let sk = skeleton::compute_skeleton_multi(&normalized, &debug_weights);
-            let sources: Vec<Vec2> = normalized.iter().flat_map(|c| c.iter().copied()).collect();
-            skeleton_debugs.push(SkeletonDebug {
-                arcs: sk.arcs.iter()
-                    .filter(|&&(a, b)| {
-                        point_in_or_on_face(a, shape, 0.5)
-                            && point_in_or_on_face(b, shape, 0.5)
-                    })
-                    .map(|&(a, b)| [a, b])
-                    .collect(),
-                nodes: sk.nodes.iter().copied()
-                    .filter(|n| point_in_or_on_face(*n, shape, 0.5))
-                    .collect(),
-                split_nodes: sk.split_nodes.iter().copied()
-                    .filter(|n| point_in_or_on_face(*n, shape, 0.5))
-                    .collect(),
-                sources,
-            });
-        }
         let face_is_boundary = tagged_faces[face_idx].is_boundary;
         let tagged_ref = Some(&tagged_faces[face_idx]);
-        let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors_with_flags, face_is_boundary, params, debug, &two_way_oriented_dirs, tagged_ref);
-        if !face_spines.is_empty() {
-            faces_with_spines.insert(face_idx);
-        }
+        let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors_with_flags, face_is_boundary, debug, &two_way_oriented_dirs, tagged_ref);
         for s in &mut face_spines {
             s.face_idx = face_idx;
         }
@@ -906,18 +822,12 @@ pub fn generate_from_spines(
         all_spines
     };
 
-    // When either offset-carrier flag is on, chord-spine chains (e.g.
-    // a discretized arc aisle) get grouped into placement paths with
-    // precomputed per-spine centering shifts so their stalls tile at
-    // cumulative arc-length. Per-spine centering would otherwise center
-    // each chord independently and the grid would jump at every chord
-    // boundary.
-    let path_centering_overrides: Vec<Option<f64>> =
-        if debug.offset_carriers || debug.offset_carriers_interior {
-            compute_path_centering_overrides(&all_spines, params)
-        } else {
-            vec![None; all_spines.len()]
-        };
+    // Group chord-spine chains (e.g. a discretized arc aisle) into
+    // placement paths with precomputed per-spine centering shifts so
+    // their stalls tile at cumulative arc-length. Per-spine centering
+    // would otherwise center each chord independently and the grid
+    // would jump at every chord boundary.
+    let path_centering_overrides = compute_path_centering_overrides(&all_spines, params);
 
     // Place stalls on merged spines (tagged with face_idx + spine_idx).
     // Pass extension spines so centering uses the full projected range.
@@ -942,13 +852,13 @@ pub fn generate_from_spines(
         .map(|(s, fi, _)| (s.clone(), *fi))
         .collect();
 
-    // Resolve stall conflicts BEFORE face-overhang clipping. When multiple
-    // candidate spines exist for the same narrow face (e.g. from the
-    // single-sided fallback in compute_face_spines), their stalls overlap
+    // Resolve stall conflicts BEFORE face-overhang clipping. When
+    // multiple candidate spines exist for the same narrow face (e.g.
+    // opposing offset spines in a sub-2*ed bay), their stalls overlap
     // spatially and need to fight it out on spine length. Running
-    // clip_stalls_to_faces first would asymmetrically drop the candidate
-    // whose stalls hang off a slanted face edge, silently handing the
-    // contest to the shorter spine.
+    // clip_stalls_to_faces first would asymmetrically drop the
+    // candidate whose stalls hang off a slanted face edge, silently
+    // handing the contest to the shorter spine.
     let tagged_stalls = if debug.conflict_removal {
         // Build per-stall spine lengths by matching surviving stalls back
         // to their spine_idx via corner identity.
@@ -1113,5 +1023,5 @@ pub fn generate_from_spines(
         })
         .collect();
 
-    (all_stalls, spine_lines, face_list, miter_fills, skeleton_debugs, islands)
+    (all_stalls, spine_lines, face_list, miter_fills, islands)
 }

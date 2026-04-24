@@ -1,8 +1,17 @@
 //! §3.5 Spine generation + post-processing.
 //!
-//!   compute_face_spines   — weighted straight-skeleton wavefront
-//!                           extraction; emits one spine per surviving
-//!                           aisle-facing edge.
+//!   compute_face_spines   — classify face edges (aisle vs wall) and
+//!                           emit one offset spine per aisle-facing
+//!                           edge via `offset_aisle_edges_to_spines`.
+//!   offset_aisle_edges_to_spines
+//!                         — offset each aisle edge inward by
+//!                           `effective_depth`, trim each end based on
+//!                           the adjacent edge's corner angle, clip the
+//!                           stall-reach line to the face.
+//!   group_spines_into_paths
+//!                         — chain tangent-continuous adjacent spines
+//!                           (e.g. chord spines along a discretized
+//!                           arc) into ordered placement paths.
 //!   extend_spines_to_faces — colinear extension of interior spines to
 //!                            face boundary (dual-clip validated).
 //!   merge_collinear_spines / try_merge_spines
@@ -20,11 +29,9 @@
 //!                           own extent, producing one longer SpineSegment
 //!                           that the snap pass can treat uniformly.
 
-use crate::geom::inset::signed_area;
 use crate::geom::poly::{clip_segment_to_face, simplify_contour};
 use crate::pipeline::bays::normalize_face_winding;
 use crate::pipeline::tagging::classify_face_edges_ext;
-use crate::skeleton;
 use crate::types::{
     DebugToggles, EdgeSource, FaceEdge, ParkingParams, SpineSegment, TaggedFace, Vec2,
 };
@@ -533,11 +540,10 @@ fn snap_onto_anchor(anchor: &SpineSegment, other: &SpineSegment) -> SpineSegment
     }
 }
 
-/// Offset-carrier spine emission: for each aisle-facing edge in the
-/// (normalized) face contours, emit a spine parallel to the edge at
-/// `effective_depth` inward. Bypasses the weighted skeleton entirely —
-/// edges are independent; there is no wavefront interaction. Spines
-/// are clipped to the face interior when `debug.spine_clipping` is on,
+/// For each aisle-facing edge in the (normalized) face contours, emit a
+/// spine parallel to the edge at `effective_depth` inward. Edges are
+/// independent — no event queue, no wavefront interaction. Spines are
+/// clipped to the face interior when `debug.spine_clipping` is on,
 /// which also handles narrowness: on strips thinner than `ed` the
 /// offset lies past the opposing wall and is clipped away.
 ///
@@ -576,28 +582,25 @@ fn offset_aisle_edges_to_spines(
             let outward = Vec2::new(-inward.x, -inward.y);
             let e_dir = Vec2::new(edge.x * inv, edge.y * inv);
 
-            // End-trim at each spine endpoint. Mirrors the weighted
-            // straight-skeleton's wavefront-vertex migration at that
-            // corner.
+            // End-trim at each spine endpoint, based on the corner
+            // angle with the neighboring edge in the same contour.
             //
-            //   aisle-wall: neighbor is a wall (weight 0, stationary).
-            //     Trim = ed / tan(θ) where θ is the interior angle.
-            //     0 at perpendicular, positive at acute, extension at
-            //     obtuse (clipped to 0 — we never push a spine past
-            //     the original edge). A minimum floor of `ed/2`
-            //     catches the "leave room for an end island" intent at
-            //     perpendicular corners where the raw formula would
-            //     give zero.
+            //   aisle-wall: trim = ed / tan(θ), where θ is the interior
+            //     angle. Zero at perpendicular, positive at acute,
+            //     clamped to zero at obtuse (we never push a spine
+            //     past its original edge extent). A floor of ed/2
+            //     applies when the raw formula would give zero, so
+            //     perpendicular corners still leave room for an end
+            //     island.
             //
-            //   aisle-aisle: neighbor is another aisle (weight 1).
-            //     Trim = ed / tan(θ/2). At a 90° cross-aisle corner
-            //     this is exactly ed — what the skeleton produces
-            //     naturally on grid bays. No floor here: the formula
-            //     already degrades gracefully with interior angle, and
-            //     more importantly, tangent-continuous corners (chord
-            //     chains on an arc) need tiny trims to stay inside
-            //     path grouping's endpoint_tol. A floor would trim
-            //     every chord by ed/2 and shred the chain.
+            //   aisle-aisle: trim = ed / tan(θ/2). At a 90°
+            //     cross-aisle corner that's exactly ed — matches a
+            //     grid bay's natural back-to-back row extent. No
+            //     floor, so tangent-continuous neighbors (chord
+            //     chains on an arc, interior angle → 180°) trim
+            //     by → 0 and stay within path grouping's
+            //     endpoint_tol. A floor would trim every chord by
+            //     ed/2 and shred the chain.
             //
             // Capped per-side at edge_len/2 so the spine can't invert
             // at very acute corners. cos_theta is clamped to [-1, 1]
@@ -652,9 +655,9 @@ fn offset_aisle_edges_to_spines(
                 two_way_oriented_flat.get(flat_idx).copied().unwrap_or(false);
             let travel_dir = travel_dir_flat.get(flat_idx).copied().flatten().map(|td| {
                 if is_two_way_ori {
-                    // Mirrors the skeleton path: flip on the canonical
-                    // negative side so both back-to-back spines end up
-                    // with matching flip_angle.
+                    // Flip travel_dir on the canonical negative side
+                    // so both back-to-back spines end up with matching
+                    // flip_angle downstream.
                     let neg_side = outward.x < -1e-9
                         || (outward.x.abs() < 1e-9 && outward.y < -1e-9);
                     if neg_side { Vec2::new(-td.x, -td.y) } else { td }
@@ -695,8 +698,7 @@ fn offset_aisle_edges_to_spines(
             // the corner overhangs. Instead, clip the stall-reach line
             // (`ed - 0.5` toward the aisle from the spine), which sits
             // 0.5ft inside the face near the aisle edge, and map the
-            // clipped parameters back to the spine. Mirrors the
-            // skeleton path in `compute_face_spines`.
+            // clipped parameters back to the spine.
             let reach = (ed - 0.5).max(0.0);
             let reach_start = s + outward * reach;
             let reach_end = e + outward * reach;
@@ -714,51 +716,26 @@ fn offset_aisle_edges_to_spines(
     spines
 }
 
-/// Generate spine segments for a face shape (outer contour + holes).
-///
-/// Computes the multi-contour straight skeleton (outer CCW + holes CW),
-/// extracts wavefront loops at `effective_depth`, and emits a spine for
-/// each surviving aisle-facing edge. Spines are optionally clipped to
-/// the face interior.
+/// Generate spine segments for a face. Classifies each edge of each
+/// contour as aisle-facing or wall (via tagged edges when available,
+/// else via corridor overlap), then hands off to the per-aisle-edge
+/// offset emission.
 ///
 /// `per_edge_corridors` carries un-merged corridor polygons with their
 /// `interior` flag and travel direction so that spines can be tagged
 /// as interior vs perimeter with the correct one-way direction.
-/// Perimeter aisle-facing edges get a higher skeleton weight so their
-/// spines sit at full stall_depth from the corridor (for 90° stalls).
 pub(crate) fn compute_face_spines(
     shape: &[Vec<Vec2>],
     effective_depth: f64,
     corridor_shapes: &[Vec<Vec<Vec2>>],
     per_edge_corridors: &[(Vec<Vec2>, bool, Option<Vec2>)],
     face_is_boundary: bool,
-    _params: &ParkingParams,
     debug: &DebugToggles,
     two_way_oriented_dirs: &[Option<Vec2>],
     tagged: Option<&TaggedFace>,
 ) -> Vec<SpineSegment> {
     if shape.is_empty() || shape[0].len() < 3 {
         return vec![];
-    }
-
-    // Skip faces that are too narrow to hold a stall strip. The
-    // offset-carrier path handles narrowness via clip_segment_to_face,
-    // so bypass this pre-filter when that path will run.
-    let offset_will_run = if face_is_boundary {
-        debug.offset_carriers
-    } else {
-        debug.offset_carriers_interior
-    };
-    if !offset_will_run {
-        let outer = &shape[0];
-        let area = signed_area(outer).abs();
-        let perimeter: f64 = outer.iter().enumerate().map(|(i, v)| {
-            let next = &outer[(i + 1) % outer.len()];
-            (*next - *v).length()
-        }).sum();
-        if perimeter > 0.0 && 4.0 * area / perimeter < effective_depth {
-            return vec![];
-        }
     }
 
     let mut contours = normalize_face_winding(shape);
@@ -837,165 +814,15 @@ pub(crate) fn compute_face_spines(
         }
     }
 
-    // Offset-carrier path: skip the weighted skeleton entirely and
-    // emit per-aisle-edge offset spines, clipped to the face. Runs
-    // only for boundary faces — interior faces still need the skeleton
-    // to place back-to-back spines correctly for medial-type regions.
-    let offset_path_active = if face_is_boundary {
-        debug.offset_carriers
-    } else {
-        debug.offset_carriers_interior
-    };
-    if offset_path_active {
-        return offset_aisle_edges_to_spines(
-            &contours,
-            &aisle_facing_flat,
-            &interior_flat,
-            &travel_dir_flat,
-            &two_way_oriented_flat,
-            ed,
-            debug,
-        );
-    }
-
-    // Edge weights for the weighted skeleton: aisle-facing edges shrink at
-    // normal speed (1.0), non-aisle-facing edges (boundary walls) stay fixed
-    // (0.0). This lets one-sided perimeter faces produce spines even when
-    // the face is narrower than 2× effective_depth.
-    let edge_weights: Vec<f64> = aisle_facing_flat
-        .iter()
-        .map(|&af| if af { 1.0 } else { 0.0 })
-        .collect();
-    let sk = skeleton::compute_skeleton_multi(&contours, &edge_weights);
-    let wf_loops = skeleton::wavefront_loops_at(&sk, ed);
-
-    // Collect wavefront loops to process, each with an optional edge to skip.
-    // Normal path: no skipped edges.
-    // Suppression path (narrow faces): skip the suppressed edge so we don't
-    // emit a spine on the face boundary where the edge didn't move.
-    let mut wf_to_process: Vec<(Vec<Vec2>, Vec<usize>, Option<usize>)> = Vec::new();
-    for (pts, edges) in wf_loops {
-        wf_to_process.push((pts, edges, None));
-    }
-
-    // If the normal wavefront is empty, the face is too narrow for back-to-back
-    // stalls but may fit single-sided rows. Suppress one aisle-facing edge at a
-    // time (treat it as a wall) and re-run the skeleton to get spines inset
-    // from each remaining aisle edge. All candidates are emitted — pairing
-    // (normalize_paired_spines) and stall-level conflict resolution
-    // (remove_conflicting_stalls with longer-spine tiebreak) decide the
-    // winner downstream.
-    if wf_to_process.is_empty() {
-        let aisle_indices: Vec<usize> = aisle_facing_flat
-            .iter()
-            .enumerate()
-            .filter(|(_, &af)| af)
-            .map(|(i, _)| i)
-            .collect();
-        if aisle_indices.len() >= 2 {
-            for &suppress_idx in &aisle_indices {
-                let mut w = edge_weights.clone();
-                w[suppress_idx] = 0.0;
-                let sk2 = skeleton::compute_skeleton_multi(&contours, &w);
-                for (pts, edges) in skeleton::wavefront_loops_at(&sk2, ed) {
-                    wf_to_process.push((pts, edges, Some(suppress_idx)));
-                }
-            }
-        }
-    }
-
-    let mut all_spines = Vec::new();
-    for (wf_pts, active_edges, skip_edge) in &wf_to_process {
-        let m = active_edges.len();
-        if m < 2 || wf_pts.len() != m {
-            continue;
-        }
-        for idx in 0..m {
-            let next_idx = (idx + 1) % m;
-            let orig_edge = active_edges[next_idx];
-            if orig_edge >= aisle_facing_flat.len() || !aisle_facing_flat[orig_edge] {
-                continue;
-            }
-            if skip_edge.map_or(false, |s| s == orig_edge) {
-                continue;
-            }
-
-            let spine_start = wf_pts[idx];
-            let spine_end = wf_pts[next_idx];
-            if (spine_end - spine_start).length() < 1.0 {
-                continue;
-            }
-
-            // Outward normal = opposite of the edge's inward normal.
-            let outward = Vec2::new(-sk.edge_normals[orig_edge].x, -sk.edge_normals[orig_edge].y);
-            let is_interior = interior_flat.get(orig_edge).copied().unwrap_or(true);
-            let is_two_way_ori = two_way_oriented_flat.get(orig_edge).copied().unwrap_or(false);
-            let travel_dir = travel_dir_flat.get(orig_edge).copied().flatten().map(|td| {
-                if is_two_way_ori {
-                    // For two-way-oriented aisles, flip travel_dir for the
-                    // spine on the "canonical negative" side. This condition
-                    // is td-INDEPENDENT (based only on outward_normal), so
-                    // it always flips the same physical side regardless of
-                    // which variant is active. Combined with the standard
-                    // flip_angle formula, this makes both sides produce the
-                    // same flip_angle, giving correct per-lane stall angles.
-                    let neg_side = outward.x < -1e-9
-                        || (outward.x.abs() < 1e-9 && outward.y < -1e-9);
-                    if neg_side { Vec2::new(-td.x, -td.y) } else { td }
-                } else {
-                    td
-                }
-            });
-
-            // Suppress stalls on the left side of one-way aisles.
-            if let Some(td) = travel_dir {
-                if !is_two_way_ori && td.cross(outward) >= 0.0 {
-                    continue;
-                }
-            }
-
-            if !debug.spine_clipping {
-                all_spines.push(SpineSegment {
-                    start: spine_start,
-                    end: spine_end,
-                    outward_normal: outward,
-                    face_idx: 0,
-                    is_interior,
-                    travel_dir,
-                });
-                continue;
-            }
-
-            // Clip only the stall-reach line; the spine itself comes from
-            // the wavefront and may sit on a face boundary (narrow boundary
-            // faces), where `point_in_face` would wrongly drop it.
-            let reach = (ed - 0.5).max(0.0);
-            let offset_start = spine_start + outward * reach;
-            let offset_end = spine_end + outward * reach;
-            let offset_clips = clip_segment_to_face(offset_start, offset_end, shape);
-
-            for &(t0, t1) in &offset_clips {
-                if t1 - t0 < 1e-9 {
-                    continue;
-                }
-                let d = spine_end - spine_start;
-                let s = spine_start + d * t0;
-                let e = spine_start + d * t1;
-                if (e - s).length() > 1.0 {
-                    all_spines.push(SpineSegment {
-                        start: s,
-                        end: e,
-                        outward_normal: outward,
-                        face_idx: 0,
-                        is_interior,
-                        travel_dir,
-                    });
-                }
-            }
-        }
-    }
-
-    all_spines
+    offset_aisle_edges_to_spines(
+        &contours,
+        &aisle_facing_flat,
+        &interior_flat,
+        &travel_dir_flat,
+        &two_way_oriented_flat,
+        ed,
+        debug,
+    )
 }
 
 /// Extend each spine colinearly in both directions until it hits the face

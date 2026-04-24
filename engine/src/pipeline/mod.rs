@@ -5,7 +5,7 @@
 //!   corridors — §3.2 aisle polygon construction
 //!   bays      — §3.3 positive-space face extraction
 //!   tagging   — §3.4 edge provenance (wall vs corridor source)
-//!   spines    — §3.5 spine generation via straight skeleton
+//!   spines    — §3.5 spine generation via per-aisle-edge offset
 //!   placement — §3.6 stall placement along spines
 //!   filter    — §3.7 post-placement stall filtering (incl. §1.4 modifiers)
 //!   islands   — §3.8 residual gap extraction

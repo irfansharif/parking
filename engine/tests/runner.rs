@@ -246,11 +246,6 @@ fn offset_carriers_tilted_rect() {
 }
 
 #[test]
-fn offset_carriers_tilted_rect_off() {
-    run_fixture(&testdata_dir().join("offset-carriers-tilted-rect-off.txt"));
-}
-
-#[test]
 fn offset_carriers_arc() {
     run_fixture(&testdata_dir().join("offset-carriers-arc.txt"));
 }
@@ -258,11 +253,6 @@ fn offset_carriers_arc() {
 #[test]
 fn offset_carriers_tight_arc() {
     run_fixture(&testdata_dir().join("offset-carriers-tight-arc.txt"));
-}
-
-#[test]
-fn offset_carriers_tight_arc_off() {
-    run_fixture(&testdata_dir().join("offset-carriers-tight-arc-off.txt"));
 }
 
 #[test]

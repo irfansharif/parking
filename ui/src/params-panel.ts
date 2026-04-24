@@ -167,7 +167,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     { key: "faces", label: "Faces" },
     { key: "faceColors", label: "Face Colors" },
     { key: "miterFills", label: "Miter Fills" },
-    { key: "skeletonDebug", label: "Skeleton" },
     { key: "islands", label: "Islands" },
     { key: "regions", label: "Regions" },
     { key: "paintLines", label: "Paint Lines" },
@@ -183,11 +182,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     checkbox.checked = app.state.layers[def.key];
     checkbox.addEventListener("change", () => {
       app.state.layers[def.key] = checkbox.checked;
-      // Skeleton layer also controls the engine debug flag.
-      if (def.key === "skeletonDebug") {
-        app.state.debug.skeleton_debug = checkbox.checked;
-        app.generate();
-      }
       onUpdate();
     });
     label.appendChild(checkbox);
@@ -222,8 +216,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       toggles: [
         { key: "face_simplification", label: "Face Simplification" },
         { key: "spine_clipping", label: "Spine Clipping" },
-        { key: "offset_carriers", label: "Offset Carriers (Boundary)" },
-        { key: "offset_carriers_interior", label: "Offset Carriers (Interior)" },
       ],
     },
     {

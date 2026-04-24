@@ -20,10 +20,6 @@ polygon hole
 ----
 hole: 4 vertices
 
-debug offset_carriers=true
-----
-debug offset_carriers=true
-
 generate
 ----
 total_stalls: 1296

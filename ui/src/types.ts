@@ -78,7 +78,6 @@ export type {
   RegionId,
   RegionInfo,
   RegionOverride,
-  SkeletonDebug,
   SpineLine,
   SpliceVertexResult,
   StallKind,

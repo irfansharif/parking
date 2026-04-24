@@ -137,40 +137,6 @@ export class Renderer {
         }
       }
 
-      if (state.layers.skeletonDebug && layout.skeleton_debug) {
-        const colors = Renderer.FACE_COLORS;
-        for (let si = 0; si < layout.skeleton_debug.length; si++) {
-          const sk = layout.skeleton_debug[si];
-          let [r, g, b] = state.layers.faceColors
-            ? colors[si % colors.length]
-            : [78, 205, 196];
-          for (const arc of sk.arcs) {
-            this.ctx.beginPath();
-            this.ctx.moveTo(arc[0].x, arc[0].y);
-            this.ctx.lineTo(arc[1].x, arc[1].y);
-            this.ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.7)`;
-            this.ctx.lineWidth = 1;
-            this.ctx.stroke();
-          }
-          for (const node of sk.nodes) {
-            this.ctx.beginPath();
-            this.ctx.arc(node.x, node.y, 2.5, 0, Math.PI * 2);
-            this.ctx.fillStyle = state.layers.faceColors
-              ? `rgba(${r}, ${g}, ${b}, 0.6)`
-              : "rgba(255, 221, 87, 0.85)";
-            this.ctx.fill();
-          }
-          const splitColor = state.layers.faceColors
-            ? `rgba(${r}, ${g}, ${b}, 0.9)`
-            : "rgba(255, 100, 200, 0.9)";
-          for (const node of sk.split_nodes ?? []) {
-            const s = 3.5;
-            this.ctx.fillStyle = splitColor;
-            this.ctx.fillRect(node.x - s, node.y - s, s * 2, s * 2);
-          }
-        }
-      }
-
       if (state.layers.islands && layout.islands) {
         for (const island of layout.islands) {
           let fillR: number, fillG: number, fillB: number;
@@ -217,28 +183,6 @@ export class Renderer {
     // 6. Vertex network overlay (always called; individual sections
     //    check their own layer flags inside).
     this.drawVertexNetwork(state);
-
-    // 6b. Skeleton source vertices drawn after vertex network.
-    if (state.layers.skeletonDebug) {
-      const skd = state.lot.layout?.skeleton_debug;
-      if (skd) {
-        const colors = Renderer.FACE_COLORS;
-        for (let si = 0; si < skd.length; si++) {
-          const sk = skd[si];
-          const [r, g, b] = state.layers.faceColors
-            ? colors[si % colors.length]
-            : [255, 80, 80];
-          const srcColor = `rgba(${r}, ${g}, ${b}, 0.9)`;
-          for (const src of sk.sources) {
-            this.ctx.beginPath();
-            this.ctx.arc(src.x, src.y, 3.5, 0, Math.PI * 2);
-            this.ctx.arc(src.x, src.y, 1.5, 0, Math.PI * 2, true);
-            this.ctx.fillStyle = srcColor;
-            this.ctx.fill();
-          }
-        }
-      }
-    }
 
     // 7. Pending hole preview
     if (state.pendingHole && state.pendingHole.length > 0) {

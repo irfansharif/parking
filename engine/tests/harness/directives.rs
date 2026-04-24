@@ -276,8 +276,6 @@ fn apply_debug(d: &mut DebugToggles, key: &str, v: bool) -> Result<(), String> {
         "hole_filtering" => d.hole_filtering = v,
         "face_simplification" => d.face_simplification = v,
         "spine_clipping" => d.spine_clipping = v,
-        "offset_carriers" => d.offset_carriers = v,
-        "offset_carriers_interior" => d.offset_carriers_interior = v,
         "spine_dedup" => d.spine_dedup = v,
         "spine_merging" => d.spine_merging = v,
         "paired_spine_normalization" => d.paired_spine_normalization = v,
@@ -288,7 +286,6 @@ fn apply_debug(d: &mut DebugToggles, key: &str, v: bool) -> Result<(), String> {
         "entrance_on_face_filter" => d.entrance_on_face_filter = v,
         "conflict_removal" => d.conflict_removal = v,
         "island_stall_dilation" => d.island_stall_dilation = v,
-        "skeleton_debug" => d.skeleton_debug = v,
         other => return Err(format!("unknown debug flag: {}", other)),
     }
     Ok(())

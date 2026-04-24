@@ -34,7 +34,6 @@ export type { RegionDebug } from "./RegionDebug";
 export type { RegionId } from "./RegionId";
 export type { RegionInfo } from "./RegionInfo";
 export type { RegionOverride } from "./RegionOverride";
-export type { SkeletonDebug } from "./SkeletonDebug";
 export type { SpineLine } from "./SpineLine";
 export type { StallKind } from "./StallKind";
 export type { StallModifier } from "./StallModifier";

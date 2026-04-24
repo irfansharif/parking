@@ -15,7 +15,7 @@ use super::addressing::{Annotation, RegionId};
 use super::geom::{Polygon, Vec2};
 use super::graph::{DriveAisleGraph, DriveLine};
 use super::output::{
-    Face, Island, Metrics, RegionDebug, SkeletonDebug, SpineLine, StallKind, StallQuad,
+    Face, Island, Metrics, RegionDebug, SpineLine, StallKind, StallQuad,
 };
 
 // ---------------------------------------------------------------------------
@@ -117,23 +117,6 @@ pub struct DebugToggles {
     pub face_simplification: bool,
     #[serde(default = "default_true")]
     pub spine_clipping: bool,
-    /// For BOUNDARY faces, skip the weighted straight skeleton and
-    /// emit spines by offsetting each aisle-facing edge inward by
-    /// effective_depth, clipped to the face. Adjacent offset spines
-    /// whose tangents are close are grouped into placement paths so
-    /// discretized-arc aisles produce continuous stall rows instead of
-    /// per-chord spines that get filtered. Default on; disable to fall
-    /// back to the skeleton path. Independent of
-    /// `offset_carriers_interior`.
-    #[serde(default = "default_true")]
-    pub offset_carriers: bool,
-    /// Same per-aisle-edge offset path, but for INTERIOR bays (faces
-    /// whose aisle-facing edges come from drive-lines / cross-aisles
-    /// rather than the perimeter aisle). Replaces the medial-axis
-    /// spine emission with rows aligned to each source aisle. Default
-    /// on; independent of `offset_carriers`.
-    #[serde(default = "default_true")]
-    pub offset_carriers_interior: bool,
 
     // Spine post-processing
     #[serde(default)]
@@ -164,10 +147,6 @@ pub struct DebugToggles {
     // Island stall dilation (close sliver gaps in face-minus-stalls subtraction)
     #[serde(default = "default_true")]
     pub island_stall_dilation: bool,
-
-    // Skeleton debug visualization
-    #[serde(default)]
-    pub skeleton_debug: bool,
 }
 
 impl Default for DebugToggles {
@@ -180,8 +159,6 @@ impl Default for DebugToggles {
             hole_filtering: true,
             face_simplification: false,
             spine_clipping: true,
-            offset_carriers: true,
-            offset_carriers_interior: true,
             spine_dedup: false,
             spine_merging: true,
             paired_spine_normalization: true,
@@ -192,7 +169,6 @@ impl Default for DebugToggles {
             entrance_on_face_filter: true,
             conflict_removal: true,
             island_stall_dilation: true,
-            skeleton_debug: false,
         }
     }
 }
@@ -263,8 +239,6 @@ pub struct ParkingLayout {
     pub faces: Vec<Face>,
     #[serde(default)]
     pub miter_fills: Vec<Vec<Vec2>>,
-    #[serde(default)]
-    pub skeleton_debug: Vec<SkeletonDebug>,
     #[serde(default)]
     pub islands: Vec<Island>,
     /// Raw lot boundary derived by expanding the aisle-edge perimeter outward.

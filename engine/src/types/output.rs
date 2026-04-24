@@ -143,21 +143,6 @@ pub struct SpineLine {
 }
 
 // ---------------------------------------------------------------------------
-// Skeleton debug output
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct SkeletonDebug {
-    pub arcs: Vec<[Vec2; 2]>,
-    pub nodes: Vec<Vec2>,
-    /// Split event points where the wavefront separated into independent regions.
-    pub split_nodes: Vec<Vec2>,
-    /// Original polygon vertices from which skeleton arcs originate.
-    pub sources: Vec<Vec2>,
-}
-
-// ---------------------------------------------------------------------------
 // Metrics + region debug
 // ---------------------------------------------------------------------------
 

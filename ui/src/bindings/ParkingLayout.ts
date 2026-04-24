@@ -4,12 +4,11 @@ import type { Face } from "./Face";
 import type { Island } from "./Island";
 import type { Metrics } from "./Metrics";
 import type { RegionDebug } from "./RegionDebug";
-import type { SkeletonDebug } from "./SkeletonDebug";
 import type { SpineLine } from "./SpineLine";
 import type { StallQuad } from "./StallQuad";
 import type { Vec2 } from "./Vec2";
 
-export type ParkingLayout = { stalls: Array<StallQuad>, metrics: Metrics, resolved_graph: DriveAisleGraph, spines: Array<SpineLine>, faces: Array<Face>, miter_fills: Array<Array<Vec2>>, skeleton_debug: Array<SkeletonDebug>, islands: Array<Island>, 
+export type ParkingLayout = { stalls: Array<StallQuad>, metrics: Metrics, resolved_graph: DriveAisleGraph, spines: Array<SpineLine>, faces: Array<Face>, miter_fills: Array<Array<Vec2>>, islands: Array<Island>, 
 /**
  * Raw lot boundary derived by expanding the aisle-edge perimeter outward.
  */

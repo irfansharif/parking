@@ -71,7 +71,6 @@ export interface LayerVisibility {
   faces: boolean;
   faceColors: boolean;
   miterFills: boolean;
-  skeletonDebug: boolean;
   islands: boolean;
   regions: boolean;
   paintLines: boolean;
@@ -205,8 +204,6 @@ export class App {
         hole_filtering: true,
         face_simplification: false,
         spine_clipping: true,
-        offset_carriers: true,
-        offset_carriers_interior: true,
         spine_dedup: false,
         spine_merging: true,
         paired_spine_normalization: true,
@@ -217,7 +214,6 @@ export class App {
         entrance_on_face_filter: true,
         conflict_removal: true,
         island_stall_dilation: true,
-        skeleton_debug: false,
       },
       selectedVertex: null,
       hoveredVertex: null,
@@ -239,7 +235,6 @@ export class App {
         faces: false,
         faceColors: false,
         miterFills: false,
-        skeletonDebug: false,
         islands: false,
         regions: false,
         paintLines: true,

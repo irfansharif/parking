@@ -29,14 +29,6 @@ set stall-angle=90
 ----
 set stall_angle_deg=90
 
-debug offset_carriers=true
-----
-debug offset_carriers=true
-
-debug offset_carriers_interior=true
-----
-debug offset_carriers_interior=true
-
 generate
 ----
 total_stalls: 85

@@ -55,7 +55,7 @@ mod tests {
         let params = ParkingParams::default();
         let graph = auto_generate(&boundary, &params, &[], &[]);
 
-        let (stalls, spines, _, _, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default());
+        let (stalls, spines, _, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default());
         eprintln!("\nTotal stalls: {}", stalls.len());
         eprintln!("Total spines: {}", spines.len());
         assert!(stalls.len() >= 50);
@@ -141,7 +141,7 @@ mod tests {
                 }
             }
 
-            let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &DebugToggles::default(), &[], None);
+            let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &DebugToggles::default(), &[], None);
             eprintln!("  spines from face {}: {}", fi, face_spines.len());
             for (si, s) in face_spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -172,7 +172,7 @@ mod tests {
         let params = ParkingParams::default();
         let debug = DebugToggles::default();
 
-        let (stalls, _, _faces_out, _, _, islands) =
+        let (stalls, _, _faces_out, _, islands) =
             generate_from_spines(
                 &crate::graph::auto_generate(&boundary, &params, &[], &[]),
                 &boundary, &params, &debug,
@@ -232,7 +232,7 @@ mod tests {
         let mut raw_spines = Vec::new();
         let mut faces_with_spines = std::collections::HashSet::new();
         for (face_idx, shape) in faces.iter().enumerate() {
-            let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &params, &debug, &[], None);
+            let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &debug, &[], None);
             if !face_spines.is_empty() {
                 faces_with_spines.insert(face_idx);
             }
@@ -374,7 +374,7 @@ mod tests {
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[], None);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &DebugToggles::default(), &[], None);
 
         eprintln!("\n=== Trapezoid face spine test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -466,7 +466,7 @@ mod tests {
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[], None);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &DebugToggles::default(), &[], None);
 
         eprintln!("\n=== Pentagon face spine test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -568,7 +568,7 @@ mod tests {
         let effective_depth = params.stall_depth
             * params.stall_angle_deg.to_radians().sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[], None);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &DebugToggles::default(), &[], None);
         let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true, None, None).0
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
 
@@ -617,7 +617,7 @@ mod tests {
         let effective_depth =
             params.stall_depth * params.stall_angle_deg.to_radians().sin();
 
-        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &params, &DebugToggles::default(), &[], None);
+        let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &DebugToggles::default(), &[], None);
 
         eprintln!("\n=== Vertical spines + diagonal top test ===");
         eprintln!("effective_depth = {:.1}", effective_depth);
@@ -752,7 +752,7 @@ mod tests {
             }
             let mut shape = vec![contour.clone()];
             shape.extend(face.holes.iter().cloned());
-            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &input.params, &DebugToggles::default(), &[], None);
+            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &DebugToggles::default(), &[], None);
             eprintln!("    spines: {}", spines.len());
             for (si, s) in spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -840,7 +840,7 @@ mod tests {
             // Compute spines for this face using full shape (contour + holes).
             let mut shape = vec![contour.clone()];
             shape.extend(face.holes.iter().cloned());
-            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &input.params, &DebugToggles::default(), &[], None);
+            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &DebugToggles::default(), &[], None);
             eprintln!("    spines: {}", spines.len());
             for (si, s) in spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -968,7 +968,7 @@ mod tests {
 
         // --- Test TwoWayOriented ---
         let graph = make_graph(AisleDirection::TwoWayOriented);
-        let (stalls, spine_lines, faces, _, _, _) = generate_from_spines(&graph, &boundary, &params, &debug);
+        let (stalls, spine_lines, faces, _, _) = generate_from_spines(&graph, &boundary, &params, &debug);
 
         eprintln!("\n=== TwoWayOriented test ===");
         eprintln!("stalls: {}, spines: {}, faces: {}", stalls.len(), spine_lines.len(), faces.len());
@@ -1002,7 +1002,7 @@ mod tests {
         let mut right_spines = Vec::new();
         for shape in &extracted_faces {
             let face_is_boundary = is_boundary_face(&shape[0], &merged, &dedup);
-            let spines = compute_face_spines(shape, ed, &merged, &dedup, face_is_boundary, &params, &debug, &two_way_dirs, None);
+            let spines = compute_face_spines(shape, ed, &merged, &dedup, face_is_boundary, &debug, &two_way_dirs, None);
             for s in &spines {
                 if let Some(td) = s.travel_dir {
                     eprintln!(
