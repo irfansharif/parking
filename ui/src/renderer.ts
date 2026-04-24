@@ -436,7 +436,7 @@ export class Renderer {
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
         ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 0.6;
         ctx.stroke();
       }
     };
@@ -770,22 +770,42 @@ export class Renderer {
       ctx.stroke();
     }
 
-    // Hide orphan aisle vertices (no incident edges) — these are
-    // vestiges of edge deletions or post-deletion graph simplification
-    // (degree-2 collinear merges). They aren't real graph nodes anymore.
-    const aisleDegree = new Int32Array(graph?.vertices.length ?? 0);
+    // Hide orphan aisle vertices (no incident edges) — vestiges of edge
+    // deletions / post-deletion graph simplification — and hide
+    // degree-2 near-collinear perimeter vertices, which are arc
+    // discretization facets rather than real graph junctions.
+    const nv = graph?.vertices.length ?? 0;
+    const aisleDegree = new Int32Array(nv);
+    const nbrA = new Int32Array(nv).fill(-1);
+    const nbrB = new Int32Array(nv).fill(-1);
     if (graph) {
       const seenE = new Set<string>();
       for (const e of graph.edges) {
         const k = Math.min(e.start, e.end) + "," + Math.max(e.start, e.end);
         if (seenE.has(k)) continue;
         seenE.add(k);
-        aisleDegree[e.start]++;
-        aisleDegree[e.end]++;
+        for (const [v, o] of [[e.start, e.end], [e.end, e.start]] as const) {
+          const d = aisleDegree[v]++;
+          if (d === 0) nbrA[v] = o;
+          else if (d === 1) nbrB[v] = o;
+        }
       }
     }
     const aisleVerts = (graph?.vertices ?? []).flatMap((v, i) => {
-      if (aisleDegree[i] === 0) return [];
+      const deg = aisleDegree[i];
+      if (deg === 0) return [];
+      if (deg === 2 && graph) {
+        const a = graph.vertices[nbrA[i]];
+        const b = graph.vertices[nbrB[i]];
+        const d1x = v.x - a.x, d1y = v.y - a.y;
+        const d2x = b.x - v.x, d2y = b.y - v.y;
+        const l1 = Math.hypot(d1x, d1y);
+        const l2 = Math.hypot(d2x, d2y);
+        if (l1 > 1e-9 && l2 > 1e-9) {
+          const dot = (d1x * d2x + d1y * d2y) / (l1 * l2);
+          if (dot > 0.95) return [];
+        }
+      }
       return [{
         pos: v,
         ref: { type: "aisle" as const, index: i },

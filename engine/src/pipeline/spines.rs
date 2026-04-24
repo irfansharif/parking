@@ -8,10 +8,6 @@
 //!                           `effective_depth`, trim each end based on
 //!                           the adjacent edge's corner angle, clip the
 //!                           stall-reach line to the face.
-//!   group_spines_into_paths
-//!                         — chain tangent-continuous adjacent spines
-//!                           (e.g. chord spines along a discretized
-//!                           arc) into ordered placement paths.
 //!   extend_spines_to_faces — colinear extension of interior spines to
 //!                            face boundary (dual-clip validated).
 //!   merge_collinear_spines / try_merge_spines
@@ -35,122 +31,6 @@ use crate::pipeline::tagging::classify_face_edges_ext;
 use crate::types::{
     DebugToggles, EdgeSource, FaceEdge, ParkingParams, SpineSegment, TaggedFace, Vec2,
 };
-
-/// Partition spines into ordered placement paths. Two spines chain
-/// together when:
-///   1. Their oriented directions are compatible (cos >= `tangent_cos_tol`).
-///   2. Their outward normals are compatible (same cos threshold).
-///   3. One's oriented-end coincides with the other's oriented-start
-///      (within `endpoint_tol`).
-///
-/// The oriented-start/oriented-end convention matches `fill_strip`: stalls
-/// walk from `oriented_endpoints().0` toward `.1`. A path's stalls are
-/// then laid down at cumulative arc-length positions along that walk,
-/// spanning spine boundaries — which is what the discretized-arc case
-/// needs (per-chord spines phase-lock into one continuous row rather than
-/// each centering independently).
-///
-/// Singleton spines (no successor and no predecessor) are returned as
-/// single-element paths. Ring-shaped chains (closed loops of
-/// chord-spines) start at an arbitrary member.
-pub(crate) fn group_spines_into_paths(
-    spines: &[SpineSegment],
-    endpoint_tol: f64,
-    tangent_cos_tol: f64,
-) -> Vec<Vec<usize>> {
-    let n = spines.len();
-    if n == 0 {
-        return Vec::new();
-    }
-
-    let oriented: Vec<(Vec2, Vec2)> =
-        spines.iter().map(|s| s.oriented_endpoints()).collect();
-    let oriented_dir: Vec<Vec2> = oriented
-        .iter()
-        .map(|(s, e)| (*e - *s).normalize())
-        .collect();
-
-    // Build successor map by matching oriented-end → oriented-start. One
-    // successor per spine; ties resolved by the closest endpoint match.
-    let mut successor: Vec<Option<usize>> = vec![None; n];
-    for i in 0..n {
-        let mut best: Option<(usize, f64)> = None;
-        for j in 0..n {
-            if i == j {
-                continue;
-            }
-            if spines[i].is_interior != spines[j].is_interior {
-                continue;
-            }
-            if oriented_dir[i].dot(oriented_dir[j]) < tangent_cos_tol {
-                continue;
-            }
-            if spines[i].outward_normal.dot(spines[j].outward_normal) < tangent_cos_tol {
-                continue;
-            }
-            let d = (oriented[i].1 - oriented[j].0).length();
-            if d < endpoint_tol && best.map_or(true, |(_, bd)| d < bd) {
-                best = Some((j, d));
-            }
-        }
-        successor[i] = best.map(|(j, _)| j);
-    }
-
-    // Predecessors derived from successors.
-    let mut predecessor: Vec<Option<usize>> = vec![None; n];
-    for (i, s) in successor.iter().enumerate() {
-        if let Some(j) = *s {
-            // Only accept the predecessor if the match is symmetric —
-            // i.e., j's best successor is i (avoids forks where two
-            // spines both think they chain into j).
-            if predecessor[j].is_none() {
-                predecessor[j] = Some(i);
-            }
-        }
-    }
-
-    let mut visited = vec![false; n];
-    let mut result: Vec<Vec<usize>> = Vec::new();
-
-    // Walk from each head (no predecessor).
-    for start in 0..n {
-        if visited[start] || predecessor[start].is_some() {
-            continue;
-        }
-        let mut path = Vec::new();
-        let mut cur = start;
-        loop {
-            visited[cur] = true;
-            path.push(cur);
-            match successor[cur] {
-                Some(next) if !visited[next] && predecessor[next] == Some(cur) => cur = next,
-                _ => break,
-            }
-        }
-        result.push(path);
-    }
-
-    // Any remaining unvisited spines belong to cycles; emit each ring
-    // starting at its lowest-indexed member.
-    for start in 0..n {
-        if visited[start] {
-            continue;
-        }
-        let mut path = Vec::new();
-        let mut cur = start;
-        loop {
-            visited[cur] = true;
-            path.push(cur);
-            match successor[cur] {
-                Some(next) if !visited[next] => cur = next,
-                _ => break,
-            }
-        }
-        result.push(path);
-    }
-
-    result
-}
 
 /// Merge collinear spine segments that share an endpoint (within tolerance)
 /// and have the same outward normal direction. This eliminates gaps between
@@ -234,12 +114,15 @@ pub(crate) fn try_merge_spines(
         return None;
     }
 
-    // Must have (nearly) identical outward normals. Spines from the same
-    // corridor edge have exactly equal normals; spines from different edges
-    // at the same boundary corner differ by the angle between the edges.
-    // A tight threshold (0.9999 ≈ 0.8°) prevents cross-edge merging that
-    // would extend one edge's normal over another edge's territory.
-    if a.outward_normal.dot(b.outward_normal) < 0.9999 {
+    // Outward normals must point the same way (both positive dot).
+    // Threshold matches the direction check (0.99 ≈ 8°) so adjacent
+    // chord spines along a discretized arc can collapse into one
+    // straight segment. Downstream the merged spine keeps a.start's
+    // origin and a's direction/normal, so the merge effectively
+    // projects b onto a's line — chord chains get straightened,
+    // cutting corners by < ε relative to the underlying arc at the
+    // per-step angles this threshold admits.
+    if a.outward_normal.dot(b.outward_normal) < 0.99 {
         return None;
     }
 

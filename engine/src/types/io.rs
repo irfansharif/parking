@@ -125,16 +125,12 @@ pub struct DebugToggles {
     pub spine_merging: bool,
     #[serde(default = "default_true")]
     pub paired_spine_normalization: bool,
-    #[serde(default)]
-    pub short_spine_filter: bool,
 
     // Spine extensions (extend spines colinearly to face boundary)
     #[serde(default = "default_true")]
     pub spine_extensions: bool,
 
     // Stall placement
-    #[serde(default)]
-    pub stall_centering: bool,
     #[serde(default = "default_true")]
     pub stall_face_clipping: bool,
     #[serde(default = "default_true")]
@@ -162,9 +158,7 @@ impl Default for DebugToggles {
             spine_dedup: false,
             spine_merging: true,
             paired_spine_normalization: true,
-            short_spine_filter: false,
             spine_extensions: true,
-            stall_centering: false,
             stall_face_clipping: true,
             entrance_on_face_filter: true,
             conflict_removal: true,

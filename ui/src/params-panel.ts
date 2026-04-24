@@ -224,14 +224,12 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
         { key: "spine_dedup", label: "Spine Dedup" },
         { key: "spine_merging", label: "Spine Merging" },
         { key: "paired_spine_normalization", label: "Paired Spine Normalization" },
-        { key: "short_spine_filter", label: "Short Spine Filter" },
         { key: "spine_extensions", label: "Spine Extensions" },
       ],
     },
     {
       label: "Stall Placement",
       toggles: [
-        { key: "stall_centering", label: "Stall Centering" },
         { key: "stall_face_clipping", label: "Stall-to-Face Clipping" },
         { key: "entrance_on_face_filter", label: "Entrance-on-Face Filter" },
         { key: "island_stall_dilation", label: "Island Stall Dilation" },

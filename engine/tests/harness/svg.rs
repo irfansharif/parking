@@ -6,7 +6,7 @@
 
 use parking_lot_engine::geom::arc::discretize_polygon;
 use parking_lot_engine::types::{
-    AisleDirection, DriveAisleGraph, ParkingLayout, Polygon, StallKind, StallQuad, Vec2,
+    AisleDirection, DriveAisleGraph, Island, ParkingLayout, Polygon, StallKind, StallQuad, Vec2,
 };
 
 pub struct SvgOptions {
@@ -65,7 +65,7 @@ pub fn render(boundary: &Polygon, layout: &ParkingLayout, opts: &SvgOptions) -> 
     // stall boundaries below one pixel and the row reads as a solid
     // band. `vector-effect` doesn't inherit through `<g>` in the
     // spec, so apply it via CSS.
-    out.push_str("<style>polygon,line{vector-effect:non-scaling-stroke}</style>\n");
+    out.push_str("<style>polygon,polyline,line,path{vector-effect:non-scaling-stroke}</style>\n");
     // SVG y-axis flips down, but parking coords treat y-up. We mirror
     // the whole picture so a CCW outer boundary stays visually CCW.
     out.push_str(&format!(
@@ -73,48 +73,244 @@ pub fn render(boundary: &Polygon, layout: &ParkingLayout, opts: &SvgOptions) -> 
         f(2.0 * vb_min.y + vb_h)
     ));
 
-    // Layer order: boundary → holes → stalls → graph. Each layer is its
-    // own <g id="..."> so a reviewer can read the SVG top-to-bottom
-    // matching pipeline stages.
-    render_boundary(&mut out, &discretized);
+    // Layer order: island fills → stall fills → paint lines → graph.
+    // The outer lot boundary / holes aren't drawn as a separate layer
+    // — the perimeter graph edges already trace them in red-dash, and
+    // an underlying boundary stroke would show through the dash gaps
+    // and tint the red line.
+    render_islands(&mut out, &layout.islands);
     render_stalls(&mut out, &layout.stalls);
+    render_paint(&mut out, &layout.stalls, &layout.islands);
     render_graph(&mut out, &layout.resolved_graph);
 
     out.push_str("</g>\n</svg>\n");
     out
 }
 
-fn render_boundary(out: &mut String, boundary: &Polygon) {
-    out.push_str("<g id=\"boundary\" fill=\"none\" stroke=\"#222\" stroke-width=\"0.5\">\n");
-    out.push_str(&polygon_el(&boundary.outer, None));
-    out.push_str("</g>\n");
-
-    if !boundary.holes.is_empty() {
-        out.push_str(
-            "<g id=\"holes\" fill=\"#e5e5e5\" stroke=\"#666\" stroke-width=\"0.5\">\n",
-        );
-        for h in &boundary.holes {
-            out.push_str(&polygon_el(h, None));
-        }
-        out.push_str("</g>\n");
+fn render_islands(out: &mut String, islands: &[Island]) {
+    if islands.is_empty() {
+        return;
     }
+    // Landscape green fill only — the outline is drawn in the paint
+    // layer so it sits on top of stall fills at the edges. Holes are
+    // carved with fill-rule="evenodd" to match the UI's even-odd fill.
+    out.push_str("<g id=\"islands\" fill=\"#9fbf8a\" fill-rule=\"evenodd\" stroke=\"none\">\n");
+    for isl in islands {
+        if isl.contour.is_empty() {
+            continue;
+        }
+        out.push_str("<path d=\"");
+        append_subpath(out, &isl.contour);
+        for hole in &isl.holes {
+            if hole.is_empty() {
+                continue;
+            }
+            out.push(' ');
+            append_subpath(out, hole);
+        }
+        out.push_str("\"/>\n");
+    }
+    out.push_str("</g>\n");
+}
+
+fn append_subpath(out: &mut String, pts: &[Vec2]) {
+    for (i, p) in pts.iter().enumerate() {
+        if i == 0 {
+            out.push_str(&format!("M{} {}", f(p.x), f(p.y)));
+        } else {
+            out.push_str(&format!(" L{} {}", f(p.x), f(p.y)));
+        }
+    }
+    out.push_str(" Z");
 }
 
 fn render_stalls(out: &mut String, stalls: &[StallQuad]) {
     if stalls.is_empty() {
         return;
     }
-    out.push_str("<g id=\"stalls\" stroke=\"#1f5f1a\" stroke-width=\"0.25\">\n");
+    // Fill only — the painted sides are emitted in the paint layer so
+    // each stall reads as "3 painted edges + open entrance" rather than
+    // a closed rectangle. Standard and Island stalls are left unfilled
+    // since the paint lines (and hatch, for islands) carry all the
+    // needed information on their own.
+    out.push_str("<g id=\"stalls\" stroke=\"none\">\n");
     for s in stalls {
         // Suppressed stalls are intentionally not rendered — they're a
         // marker the renderer should skip.
         if s.kind == StallKind::Suppressed {
             continue;
         }
-        let fill = stall_color(&s.kind);
+        let Some(fill) = stall_color(&s.kind) else {
+            continue;
+        };
         out.push_str(&polygon_el(&s.corners, Some(fill)));
     }
     out.push_str("</g>\n");
+}
+
+fn render_paint(out: &mut String, stalls: &[StallQuad], islands: &[Island]) {
+    let any_stall = stalls.iter().any(|s| s.kind != StallKind::Suppressed);
+    if !any_stall && islands.is_empty() {
+        return;
+    }
+    // Paint-stripe look: dark charcoal lines on top of fills, matching
+    // the UI's white-on-asphalt conventions translated for a white
+    // background. Stroke width is a bit heavier than the fill outlines
+    // so the paint reads as the dominant line work.
+    out.push_str(
+        "<g id=\"paint\" fill=\"none\" stroke=\"#2a2a2a\" stroke-width=\"0.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n",
+    );
+
+    // Stall paint: 3 sides, front open. Regular stalls leave [2]→[3]
+    // open (aisle/entrance); island stalls leave [0]→[1] open (back,
+    // connecting to the island).
+    for s in stalls {
+        if s.kind == StallKind::Suppressed {
+            continue;
+        }
+        let c = &s.corners;
+        let path = if s.kind == StallKind::Island {
+            [c[1], c[2], c[3], c[0]]
+        } else {
+            [c[3], c[0], c[1], c[2]]
+        };
+        out.push_str("<polyline points=\"");
+        for (i, p) in path.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            out.push_str(&format!("{},{}", f(p.x), f(p.y)));
+        }
+        out.push_str("\"/>\n");
+    }
+
+    // Island-stall hatching: 45° stripes clipped to each stall quad.
+    // Computed as line–quad intersections so the output is a flat list
+    // of segments — no SVG <clipPath> plumbing needed to stay
+    // byte-stable.
+    for s in stalls {
+        if s.kind != StallKind::Island {
+            continue;
+        }
+        emit_hatch(out, &s.corners);
+    }
+
+    // Island outlines — edge + hole boundaries painted on top, so the
+    // green landscape has the same "painted curb" read as stall edges.
+    for isl in islands {
+        if isl.contour.is_empty() {
+            continue;
+        }
+        out.push_str("<path d=\"");
+        append_subpath(out, &isl.contour);
+        for hole in &isl.holes {
+            if hole.is_empty() {
+                continue;
+            }
+            out.push(' ');
+            append_subpath(out, hole);
+        }
+        out.push_str("\"/>\n");
+    }
+
+    out.push_str("</g>\n");
+}
+
+/// Emit 45° hatch segments clipped to a convex quad, matching the UI's
+/// island-stall hatch (back-edge direction rotated by 45°, spacing=3).
+fn emit_hatch(out: &mut String, corners: &[Vec2; 4]) {
+    // Back edge: [0] → [1]. Hatch direction = back edge rotated by 45°.
+    let ux = corners[1].x - corners[0].x;
+    let uy = corners[1].y - corners[0].y;
+    let ulen = (ux * ux + uy * uy).sqrt();
+    if ulen < 1e-9 {
+        return;
+    }
+    let unx = ux / ulen;
+    let uny = uy / ulen;
+    let a = std::f64::consts::FRAC_PI_4;
+    let hx = unx * a.cos() - uny * a.sin();
+    let hy = unx * a.sin() + uny * a.cos();
+    // Perpendicular sweep axis.
+    let nx = -hy;
+    let ny = hx;
+
+    // Project corners onto sweep axis to bracket the hatch range.
+    let projs: [f64; 4] = [
+        corners[0].x * nx + corners[0].y * ny,
+        corners[1].x * nx + corners[1].y * ny,
+        corners[2].x * nx + corners[2].y * ny,
+        corners[3].x * nx + corners[3].y * ny,
+    ];
+    let min_p = projs.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_p = projs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+    let spacing = 3.0_f64;
+    // Start at the first multiple of `spacing` inside [min_p, max_p] so
+    // the pattern is translation-invariant: two island stalls that share
+    // a back edge get hatches that align across the seam rather than
+    // jittering based on each quad's own min corner.
+    let start = (min_p / spacing).ceil() * spacing;
+
+    let mut p = start;
+    while p <= max_p + 1e-9 {
+        if let Some((q0, q1)) = clip_line_to_quad(corners, hx, hy, nx, ny, p) {
+            out.push_str(&format!(
+                "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"/>\n",
+                f(q0.x),
+                f(q0.y),
+                f(q1.x),
+                f(q1.y),
+            ));
+        }
+        p += spacing;
+    }
+}
+
+/// Intersect the infinite line `{x : x·n = p}` (direction `h`) with a
+/// convex quad, returning the entry/exit points.
+fn clip_line_to_quad(
+    corners: &[Vec2; 4],
+    hx: f64,
+    hy: f64,
+    nx: f64,
+    ny: f64,
+    p: f64,
+) -> Option<(Vec2, Vec2)> {
+    // Signed distance of each vertex from the line.
+    let d: [f64; 4] = [
+        corners[0].x * nx + corners[0].y * ny - p,
+        corners[1].x * nx + corners[1].y * ny - p,
+        corners[2].x * nx + corners[2].y * ny - p,
+        corners[3].x * nx + corners[3].y * ny - p,
+    ];
+    let mut hits: Vec<Vec2> = Vec::with_capacity(2);
+    for i in 0..4 {
+        let j = (i + 1) % 4;
+        if (d[i] >= 0.0 && d[j] < 0.0) || (d[i] < 0.0 && d[j] >= 0.0) {
+            let t = d[i] / (d[i] - d[j]);
+            hits.push(Vec2::new(
+                corners[i].x + t * (corners[j].x - corners[i].x),
+                corners[i].y + t * (corners[j].y - corners[i].y),
+            ));
+            if hits.len() == 2 {
+                break;
+            }
+        }
+    }
+    if hits.len() < 2 {
+        return None;
+    }
+    // Order the hits along +h so the segment direction is deterministic
+    // (flipping the sign of the edge-crossing traversal would otherwise
+    // swap endpoints between adjacent stalls).
+    let t0 = hits[0].x * hx + hits[0].y * hy;
+    let t1 = hits[1].x * hx + hits[1].y * hy;
+    if t0 <= t1 {
+        Some((hits[0], hits[1]))
+    } else {
+        Some((hits[1], hits[0]))
+    }
 }
 
 fn render_graph(out: &mut String, graph: &DriveAisleGraph) {
@@ -123,18 +319,54 @@ fn render_graph(out: &mut String, graph: &DriveAisleGraph) {
     }
     out.push_str("<g id=\"graph\">\n");
     // Edges. Perimeter = brown-orange, interior = blue, matching the
-    // DESIGN.md figure conventions.
+    // DESIGN.md figure conventions. Undirected edges are frequently
+    // stored twice (A→B and B→A) in `resolved_graph.edges`, which
+    // would double-draw the same dashed segment with opposing dash
+    // phases — producing a solid-looking line instead of dashes, or
+    // the appearance of a second overlapping color. Dedupe by
+    // unordered vertex pair and draw each segment once; if the same
+    // pair carries both perimeter and interior edges, perimeter wins
+    // so the lot outline reads cleanly on top.
+    let mut seen: std::collections::HashMap<(usize, usize), (bool, AisleDirection)> =
+        std::collections::HashMap::new();
+    let mut ordered_keys: Vec<(usize, usize)> = Vec::new();
     for edge in &graph.edges {
         if edge.start >= graph.vertices.len() || edge.end >= graph.vertices.len() {
             continue;
         }
-        let a = graph.vertices[edge.start];
-        let b = graph.vertices[edge.end];
-        let color = if edge.interior { "#3e68a8" } else { "#a84a1e" };
-        let dash = match edge.direction {
-            AisleDirection::OneWay => " stroke-dasharray=\"2 1\"",
-            AisleDirection::TwoWayOriented => " stroke-dasharray=\"4 1\"",
-            AisleDirection::TwoWay => "",
+        let key = if edge.start <= edge.end {
+            (edge.start, edge.end)
+        } else {
+            (edge.end, edge.start)
+        };
+        match seen.get_mut(&key) {
+            Some(entry) => {
+                // Promote to perimeter (interior=false) if any copy is
+                // perimeter; keep the first-seen direction.
+                if entry.0 && !edge.interior {
+                    entry.0 = false;
+                }
+            }
+            None => {
+                seen.insert(key, (edge.interior, edge.direction.clone()));
+                ordered_keys.push(key);
+            }
+        }
+    }
+    for key in &ordered_keys {
+        let (interior, direction) = &seen[key];
+        let a = graph.vertices[key.0];
+        let b = graph.vertices[key.1];
+        let color = if *interior { "#3e68a8" } else { "#a84a1e" };
+        // Road-style centerline: every aisle is dashed so the graph
+        // reads as a drivable path. Dash numbers are in world units
+        // (feet) — an 8-ft dash + 5-ft gap reads as road paint at the
+        // typical parking-lot scale. Directional variants add density
+        // on top of the base cadence.
+        let dash = match *direction {
+            AisleDirection::TwoWay => " stroke-dasharray=\"8 5\"",
+            AisleDirection::OneWay => " stroke-dasharray=\"4 2\"",
+            AisleDirection::TwoWayOriented => " stroke-dasharray=\"8 2\"",
         };
         out.push_str(&format!(
             "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"0.6\"{}/>\n",
@@ -160,16 +392,20 @@ fn render_graph(out: &mut String, graph: &DriveAisleGraph) {
     out.push_str("</g>\n");
 }
 
-fn stall_color(kind: &StallKind) -> &'static str {
+fn stall_color(kind: &StallKind) -> Option<&'static str> {
+    // Only semantic "non-default" kinds get a fill. Standard stalls are
+    // left transparent so the paint lines carry the stall shape on their
+    // own, and Island stalls are left transparent so the hatch + island
+    // green underneath do the same job without a second green layered
+    // on top.
     match kind {
-        StallKind::Standard => "#8fc98a",
-        StallKind::Compact => "#b2d8a8",
-        StallKind::Ev => "#7ec6d9",
-        StallKind::Extension => "#d4b86a",
-        StallKind::Island => "#a1b885",
+        StallKind::Standard | StallKind::Island => None,
+        StallKind::Compact => Some("#d8d096"),
+        StallKind::Ev => Some("#7ec6d9"),
+        StallKind::Extension => Some("#d4b86a"),
         // Unreachable — render_stalls skips Suppressed before dispatching
         // here — but the match must be exhaustive.
-        StallKind::Suppressed => "#eeeeee",
+        StallKind::Suppressed => None,
     }
 }
 
@@ -212,6 +448,11 @@ fn content_bbox(boundary: &Polygon, layout: &ParkingLayout) -> (Vec2, Vec2) {
             continue;
         }
         for p in &s.corners {
+            extend(p);
+        }
+    }
+    for isl in &layout.islands {
+        for p in &isl.contour {
             extend(p);
         }
     }

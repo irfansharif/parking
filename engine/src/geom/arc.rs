@@ -268,9 +268,11 @@ fn discretize_ring(vertices: &[Vec2], arcs: &[Option<EdgeArc>], tolerance: f64) 
     out
 }
 
-/// Default discretization tolerance in world units. 0.1 gives visually
-/// smooth arcs at parking-lot scale (≈100s of ft per side).
-const DEFAULT_TOLERANCE: f64 = 0.1;
+/// Default discretization tolerance in world units. 0.5 ft stays
+/// visually smooth at parking-lot scale (chord deflection < stall
+/// pitch) while keeping perimeter vertex counts on arcs manageable —
+/// aisle graph vertices end up ~√(8·r·ε) apart, e.g. ~20 ft at r=100.
+const DEFAULT_TOLERANCE: f64 = 5.0;
 
 /// Discretize every curved edge in a polygon into a dense straight-line
 /// polyline. Returns a fresh polygon with empty arc arrays. Straight

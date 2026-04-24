@@ -247,7 +247,7 @@ mod tests {
             .filter(|s| (s.end - s.start).length() >= effective_depth)
             .collect();
 
-        let (tagged_stalls_3, _) = place_stalls_on_spines(&all_spines, &params, true, None, None);
+        let tagged_stalls_3 = place_stalls_on_spines(&all_spines, &params);
         let tagged_stalls: Vec<(StallQuad, usize)> = tagged_stalls_3.iter()
             .map(|(s, fi, _)| (s.clone(), *fi)).collect();
         let tagged_stalls = clip_stalls_to_faces(tagged_stalls, &faces);
@@ -403,7 +403,7 @@ mod tests {
         );
 
         // Place stalls and verify ALL stall corners are inside the face.
-        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true, None, None).0
+        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params)
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
@@ -511,7 +511,7 @@ mod tests {
         );
 
         // Place stalls and verify containment.
-        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true, None, None).0
+        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params)
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
@@ -569,7 +569,7 @@ mod tests {
             * params.stall_angle_deg.to_radians().sin();
 
         let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &DebugToggles::default(), &[], None);
-        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true, None, None).0
+        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params)
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
 
         eprintln!("\n=== Narrow face test (30ft between aisles) ===");
@@ -637,7 +637,7 @@ mod tests {
         );
 
         // Place stalls and verify ALL corners are inside the face.
-        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params, true, None, None).0
+        let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params)
             .into_iter().map(|(s, fi, _)| (s, fi)).collect();
         eprintln!("stalls placed: {}", stalls.len());
         assert!(stalls.len() > 0, "should place some stalls");
@@ -1129,7 +1129,7 @@ mod tests {
                 is_interior: true,
                 travel_dir: None,
             };
-            let stalls: Vec<(StallQuad, usize, usize)> = fill_spine(&seg, params, 0.0)
+            let stalls: Vec<(StallQuad, usize, usize)> = fill_spine(&seg, params)
                 .into_iter()
                 .map(|q| (q, face_idx, spine_idx))
                 .collect();

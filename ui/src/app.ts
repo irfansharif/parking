@@ -207,9 +207,7 @@ export class App {
         spine_dedup: false,
         spine_merging: true,
         paired_spine_normalization: true,
-        short_spine_filter: false,
         spine_extensions: true,
-        stall_centering: false,
         stall_face_clipping: true,
         entrance_on_face_filter: true,
         conflict_removal: true,
@@ -774,49 +772,49 @@ export class App {
     const v = graph.vertices[vertexIndex];
     if (!v) return;
 
-    // Three addressing schemes in priority order. Try the MOST stable
-    // first so that parameter changes (aisle angle, stall depth) don't
-    // silently re-target a different vertex:
-    //   1. Abstract grid (region + xi + yi) — for vertices that snap to
-    //      an integer lattice point. Stable under boundary moves AND
-    //      grid-parameter changes.
-    //   2. Drive-line splice (id + t) — for drive × anything crossings.
-    //      Stable under grid changes (drive line doesn't move with
-    //      grid), drifts only when the drive line itself is edited.
-    //   3. Perimeter (loop + arc) — fallback for vertices that sit on
-    //      a boundary loop but aren't at integer lattice (e.g. grid ×
-    //      perimeter crossings at non-lattice positions). Stable under
-    //      boundary-geometry edits but drifts when the grid rotates and
-    //      the crossing sweeps along the loop — acceptable for the
-    //      cases this catches, which the other two don't.
-    const abs = lot.layout?.region_debug
-      ? worldToAbstractVertex(v, this.state.params, lot.layout.region_debug)
-      : null;
-    if (abs) {
-      const stop: GridStop = { at: "Lattice", other: abs.yi };
+    // Three addressing schemes in priority order. The semantic question
+    // is "what does this vertex belong to" — anchor by the most
+    // explicit container the click is on:
+    //   1. Perimeter (loop + arc) — if the vertex lies on a boundary
+    //      loop. The perimeter is what the user drew; the vertex is at
+    //      this position *because* the perimeter passes through here.
+    //      Wins over grid even when a grid line also terminates here:
+    //      that crossing is incidental to the vertex's perimeter
+    //      identity. Deletion stays bound to the boundary the user
+    //      sees, regardless of grid-parameter changes.
+    //   2. Abstract grid (region + xi + yi) — for purely interior
+    //      vertices that snap to an integer lattice point. Stable under
+    //      grid-parameter changes within the same region.
+    //   3. Drive-line splice (id + t) — for drive × interior crossings
+    //      that aren't on the perimeter and aren't lattice-aligned.
+    const perim = worldToPerimeterPos(v, lot.boundary);
+    if (perim) {
       lot.annotations.push({
         kind: "DeleteVertex",
-        target: {
-          on: "Grid",
-          region: abs.region,
-          axis: "X",
-          coord: abs.xi,
-          range: [stop, stop],
-        },
+        target: { on: "Perimeter", loop: perim.loop, arc: perim.arc },
       });
     } else {
-      const sp = worldToSpliceVertex(v, lot.driveLines);
-      if (sp) {
+      const abs = lot.layout?.region_debug
+        ? worldToAbstractVertex(v, this.state.params, lot.layout.region_debug)
+        : null;
+      if (abs) {
+        const stop: GridStop = { at: "Lattice", other: abs.yi };
         lot.annotations.push({
           kind: "DeleteVertex",
-          target: { on: "DriveLine", id: sp.drive_line_id, t: sp.t },
+          target: {
+            on: "Grid",
+            region: abs.region,
+            axis: "X",
+            coord: abs.xi,
+            range: [stop, stop],
+          },
         });
       } else {
-        const perim = worldToPerimeterPos(v, lot.boundary);
-        if (perim) {
+        const sp = worldToSpliceVertex(v, lot.driveLines);
+        if (sp) {
           lot.annotations.push({
             kind: "DeleteVertex",
-            target: { on: "Perimeter", loop: perim.loop, arc: perim.arc },
+            target: { on: "DriveLine", id: sp.drive_line_id, t: sp.t },
           });
         } else {
           return; // no stable anchor for this vertex
