@@ -752,7 +752,7 @@ pub(crate) fn compute_face_spines(
         }
     } else {
         for contour in contours.iter() {
-            let classified = classify_face_edges_ext(contour, corridor_shapes, per_edge_corridors, debug.edge_classification, two_way_oriented_dirs);
+            let classified = classify_face_edges_ext(contour, corridor_shapes, per_edge_corridors, two_way_oriented_dirs);
             for &(facing, _ignored_interior, travel_dir, is_two_way_ori) in classified.iter() {
                 aisle_facing_flat.push(facing);
                 interior_flat.push(face_interior);

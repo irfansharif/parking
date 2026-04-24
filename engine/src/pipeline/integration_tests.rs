@@ -722,7 +722,7 @@ mod tests {
                 eprintln!("    v{}: ({:.1}, {:.1})", vi, v.x, v.y);
             }
 
-            let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors, true);
+            let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors);
             let ed = effective_depth - 0.05;
             let min_edge_len = effective_depth * 2.0;
             for i in 0..contour.len() {
@@ -741,7 +741,7 @@ mod tests {
 
             for (hi, hole) in face.holes.iter().enumerate() {
                 eprintln!("    hole {}: {} verts", hi, hole.len());
-                let hole_classified = classify_face_edges(hole, &merged_corridors, &dedup_corridors, true);
+                let hole_classified = classify_face_edges(hole, &merged_corridors, &dedup_corridors);
                 for i in 0..hole.len() {
                     let j = (i + 1) % hole.len();
                     let elen = (hole[j] - hole[i]).length();
@@ -811,7 +811,7 @@ mod tests {
             }
 
             // Classify edges for this face.
-            let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors, true);
+            let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors);
             let ed = effective_depth - 0.05;
             let min_edge_len = effective_depth * 2.0;
             for i in 0..contour.len() {

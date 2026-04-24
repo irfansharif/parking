@@ -221,7 +221,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       label: "Spine Generation",
       toggles: [
         { key: "face_simplification", label: "Face Simplification" },
-        { key: "edge_classification", label: "Edge Classification" },
         { key: "spine_clipping", label: "Spine Clipping" },
         { key: "offset_carriers", label: "Offset Carriers" },
       ],

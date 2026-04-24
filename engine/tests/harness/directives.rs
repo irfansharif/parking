@@ -275,7 +275,6 @@ fn apply_debug(d: &mut DebugToggles, key: &str, v: bool) -> Result<(), String> {
         "contour_simplification" => d.contour_simplification = v,
         "hole_filtering" => d.hole_filtering = v,
         "face_simplification" => d.face_simplification = v,
-        "edge_classification" => d.edge_classification = v,
         "spine_clipping" => d.spine_clipping = v,
         "offset_carriers" => d.offset_carriers = v,
         "spine_dedup" => d.spine_dedup = v,

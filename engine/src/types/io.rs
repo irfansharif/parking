@@ -116,8 +116,6 @@ pub struct DebugToggles {
     #[serde(default)]
     pub face_simplification: bool,
     #[serde(default = "default_true")]
-    pub edge_classification: bool,
-    #[serde(default = "default_true")]
     pub spine_clipping: bool,
     /// Experimental: skip the weighted straight skeleton for boundary
     /// faces and emit spines by offsetting each aisle-facing edge inward
@@ -172,7 +170,6 @@ impl Default for DebugToggles {
             contour_simplification: true,
             hole_filtering: true,
             face_simplification: false,
-            edge_classification: true,
             spine_clipping: true,
             offset_carriers: false,
             spine_dedup: false,

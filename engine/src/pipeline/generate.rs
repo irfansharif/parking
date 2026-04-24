@@ -822,7 +822,7 @@ pub fn generate_from_spines(
                 weights
             } else {
                 normalized.iter().flat_map(|contour| {
-                    let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors_with_flags, debug.edge_classification);
+                    let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors_with_flags);
                     classified.into_iter().map(|(facing, _, _)| {
                         if facing { 1.0 } else { 0.0 }
                     })

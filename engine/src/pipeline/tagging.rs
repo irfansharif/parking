@@ -268,9 +268,8 @@ pub(crate) fn classify_face_edges(
     contour: &[Vec2],
     corridor_shapes: &[Vec<Vec<Vec2>>],
     per_edge_corridors: &[(Vec<Vec2>, bool, Option<Vec2>)],
-    classify: bool,
 ) -> Vec<(bool, bool, Option<Vec2>)> {
-    classify_face_edges_ext(contour, corridor_shapes, per_edge_corridors, classify, &[])
+    classify_face_edges_ext(contour, corridor_shapes, per_edge_corridors, &[])
         .into_iter()
         .map(|(a, b, c, _)| (a, b, c))
         .collect()
@@ -281,13 +280,8 @@ pub(crate) fn classify_face_edges_ext(
     contour: &[Vec2],
     corridor_shapes: &[Vec<Vec<Vec2>>],
     per_edge_corridors: &[(Vec<Vec2>, bool, Option<Vec2>)],
-    classify: bool,
     two_way_oriented_dirs: &[Option<Vec2>],
 ) -> Vec<(bool, bool, Option<Vec2>, bool)> {
-    if !classify {
-        return vec![(true, true, None, false); contour.len()];
-    }
-
     let is_interior = !is_boundary_face(contour, corridor_shapes, per_edge_corridors);
 
     let eps = 0.5;

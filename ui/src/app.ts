@@ -204,7 +204,6 @@ export class App {
         contour_simplification: true,
         hole_filtering: true,
         face_simplification: false,
-        edge_classification: true,
         spine_clipping: true,
         offset_carriers: false,
         spine_dedup: false,
