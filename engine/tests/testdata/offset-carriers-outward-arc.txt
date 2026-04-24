@@ -21,7 +21,7 @@ debug offset_carriers=true
 
 generate
 ----
-total_stalls: 146
+total_stalls: 131
 
 snapshot
 ----
