@@ -1,0 +1,58 @@
+# The app's default layout (irregular quadrilateral + rect hole +
+# three drive-lines) with both offset flags on. This is the closest
+# fixture to image-1 territory; lots of interior wedges and bays.
+# Use 90° stalls so divergence between skeleton-medial and
+# offset-per-aisle is most visible.
+
+polygon outer
+76.30,0
+692.14,0
+782.80,654.85
+168.78,654.85
+----
+polygon outer: 4 vertices
+
+polygon hole
+394.53,251.80
+611.14,251.80
+613.91,512.33
+394.53,512.33
+----
+hole: 4 vertices
+
+drive-line
+930.76,381.06
+-42.60,512.33
+----
+drive-line: 930.76,381.06 -> -42.60,512.33
+
+drive-line partitions
+198.60,-53.66
+475.79,349.25
+----
+drive-line: 198.60,-53.66 -> 475.79,349.25 partitions
+
+drive-line partitions
+446.56,335.61
+930.76,135.52
+----
+drive-line: 446.56,335.61 -> 930.76,135.52 partitions
+
+set stall-angle=90
+----
+set stall_angle_deg=90
+
+debug offset_carriers=true
+----
+debug offset_carriers=true
+
+debug offset_carriers_interior=true
+----
+debug offset_carriers_interior=true
+
+generate
+----
+total_stalls: 1039
+
+snapshot
+----

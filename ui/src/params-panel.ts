@@ -223,6 +223,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
         { key: "face_simplification", label: "Face Simplification" },
         { key: "spine_clipping", label: "Spine Clipping" },
         { key: "offset_carriers", label: "Offset Carriers" },
+        { key: "offset_carriers_interior", label: "  ↳ Interior Bays Too", parent: "offset_carriers" },
       ],
     },
     {

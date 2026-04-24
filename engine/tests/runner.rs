@@ -274,3 +274,18 @@ fn offset_carriers_arc_wedges() {
 fn offset_carriers_outward_arc() {
     run_fixture(&testdata_dir().join("offset-carriers-outward-arc.txt"));
 }
+
+#[test]
+fn offset_carriers_interior_rect_hole() {
+    run_fixture(&testdata_dir().join("offset-carriers-interior-rect-hole.txt"));
+}
+
+#[test]
+fn offset_carriers_interior_arc_wedges() {
+    run_fixture(&testdata_dir().join("offset-carriers-interior-arc-wedges.txt"));
+}
+
+#[test]
+fn offset_carriers_interior_default_app() {
+    run_fixture(&testdata_dir().join("offset-carriers-interior-default-app.txt"));
+}

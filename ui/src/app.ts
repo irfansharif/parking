@@ -206,6 +206,7 @@ export class App {
         face_simplification: false,
         spine_clipping: true,
         offset_carriers: false,
+        offset_carriers_interior: false,
         spine_dedup: false,
         spine_merging: true,
         paired_spine_normalization: true,

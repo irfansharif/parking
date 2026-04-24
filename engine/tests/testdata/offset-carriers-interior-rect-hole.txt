@@ -1,0 +1,36 @@
+# Rect-with-hole, both offset_carriers and offset_carriers_interior
+# on. Interior bays now use per-aisle-edge offset instead of the
+# weighted skeleton's medial axis. For 2*ed-wide bays this should
+# produce identical layouts to the skeleton path; wider/narrower
+# bays diverge into per-aisle row alignment.
+
+polygon outer
+0,0
+800,0
+800,800
+0,800
+----
+polygon outer: 4 vertices
+
+polygon hole
+300,300
+500,300
+500,500
+300,500
+----
+hole: 4 vertices
+
+debug offset_carriers=true
+----
+debug offset_carriers=true
+
+debug offset_carriers_interior=true
+----
+debug offset_carriers_interior=true
+
+generate
+----
+total_stalls: 1616
+
+snapshot
+----

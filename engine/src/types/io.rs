@@ -125,6 +125,13 @@ pub struct DebugToggles {
     /// per-chord spines that get filtered. Off = current behavior.
     #[serde(default)]
     pub offset_carriers: bool,
+    /// Sub-toggle of `offset_carriers`: when both are on, run the
+    /// per-aisle-edge offset path on interior parking bays too (not just
+    /// boundary strips). Replaces the medial-axis spine emission with
+    /// rows aligned to each source aisle. Has no effect when
+    /// `offset_carriers` is off.
+    #[serde(default)]
+    pub offset_carriers_interior: bool,
 
     // Spine post-processing
     #[serde(default)]
@@ -172,6 +179,7 @@ impl Default for DebugToggles {
             face_simplification: false,
             spine_clipping: true,
             offset_carriers: false,
+            offset_carriers_interior: false,
             spine_dedup: false,
             spine_merging: true,
             paired_spine_normalization: true,

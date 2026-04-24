@@ -277,6 +277,7 @@ fn apply_debug(d: &mut DebugToggles, key: &str, v: bool) -> Result<(), String> {
         "face_simplification" => d.face_simplification = v,
         "spine_clipping" => d.spine_clipping = v,
         "offset_carriers" => d.offset_carriers = v,
+        "offset_carriers_interior" => d.offset_carriers_interior = v,
         "spine_dedup" => d.spine_dedup = v,
         "spine_merging" => d.spine_merging = v,
         "paired_spine_normalization" => d.paired_spine_normalization = v,
