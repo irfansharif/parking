@@ -578,38 +578,33 @@ fn offset_aisle_edges_to_spines(
 
             // End-trim at each spine endpoint. Mirrors the weighted
             // straight-skeleton's wavefront-vertex migration at that
-            // corner, with a minimum floor so perpendicular corners
-            // still leave room for an end island.
-            //
-            // Two cases for the neighbor edge (in the same contour) at
-            // each endpoint:
+            // corner.
             //
             //   aisle-wall: neighbor is a wall (weight 0, stationary).
             //     Trim = ed / tan(θ) where θ is the interior angle.
             //     0 at perpendicular, positive at acute, extension at
             //     obtuse (clipped to 0 — we never push a spine past
-            //     the original edge).
+            //     the original edge). A minimum floor of `ed/2`
+            //     catches the "leave room for an end island" intent at
+            //     perpendicular corners where the raw formula would
+            //     give zero.
             //
-            //   aisle-aisle: neighbor is another aisle (also weight 1).
-            //     Trim = ed / tan(θ/2) where θ is the interior angle.
-            //     At a 90° cross-aisle corner this is exactly ed —
-            //     what the skeleton naturally produces for grid bays.
-            //     If the two edges are tangent-continuous (cos_theta <
-            //     -CHAIN_CONTINUE_COS, i.e. interior angle > ~154°),
-            //     trim is zero — these form a chord chain that path
-            //     grouping will stitch into one continuous placement
-            //     path, and trimming at every internal chord would
-            //     break the chain.
+            //   aisle-aisle: neighbor is another aisle (weight 1).
+            //     Trim = ed / tan(θ/2). At a 90° cross-aisle corner
+            //     this is exactly ed — what the skeleton produces
+            //     naturally on grid bays. No floor here: the formula
+            //     already degrades gracefully with interior angle, and
+            //     more importantly, tangent-continuous corners (chord
+            //     chains on an arc) need tiny trims to stay inside
+            //     path grouping's endpoint_tol. A floor would trim
+            //     every chord by ed/2 and shred the chain.
             //
-            // A minimum floor of `ed / 2` catches the "deliberately
-            // leave room for an end island" intent even at perpendicular
-            // aisle-wall corners where the raw skeleton formula would
-            // give zero. Capped per-side at edge_len/2 so the spine
-            // can't invert at very acute corners.
-            const CHAIN_CONTINUE_COS: f64 = 0.9;
+            // Capped per-side at edge_len/2 so the spine can't invert
+            // at very acute corners. cos_theta is clamped to [-1, 1]
+            // before use to absorb floating-point noise.
             let pred_flat = flat_base + (i + n - 1) % n;
             let succ_flat = flat_base + (i + 1) % n;
-            let min_end_trim = ed * 0.5;
+            let min_wall_trim = ed * 0.5;
             let compute_end_trim = |neighbor_vec: Vec2,
                                     edge_vec: Vec2,
                                     neighbor_is_aisle: bool|
@@ -617,19 +612,16 @@ fn offset_aisle_edges_to_spines(
                 let nlen = neighbor_vec.length();
                 let elen = edge_vec.length();
                 if nlen < 1e-9 || elen < 1e-9 {
-                    return min_end_trim;
+                    return if neighbor_is_aisle { 0.0 } else { min_wall_trim };
                 }
-                let cos_theta = neighbor_vec.dot(edge_vec) / (nlen * elen);
+                let cos_theta = (neighbor_vec.dot(edge_vec) / (nlen * elen)).clamp(-1.0, 1.0);
                 if neighbor_is_aisle {
-                    // Tangent-continuous → part of a chain, skip trim.
-                    if cos_theta < -CHAIN_CONTINUE_COS {
-                        return 0.0;
-                    }
-                    // tan(θ/2) via half-angle identity avoids acos roundtrip.
+                    // tan(θ/2) via half-angle identity. Tangent-continuous
+                    // (cos_theta → -1) makes tan_half → ∞, trim → 0.
                     let one_minus = (1.0 - cos_theta).max(1e-12);
                     let one_plus = (1.0 + cos_theta).max(1e-12);
                     let tan_half = (one_minus / one_plus).sqrt();
-                    (ed / tan_half).max(min_end_trim)
+                    ed / tan_half
                 } else {
                     let base = if cos_theta > 0.0 {
                         let sin_theta = (1.0 - cos_theta * cos_theta).sqrt().max(1e-9);
@@ -637,7 +629,7 @@ fn offset_aisle_edges_to_spines(
                     } else {
                         0.0
                     };
-                    base.max(min_end_trim)
+                    base.max(min_wall_trim)
                 }
             };
             let pred_is_aisle = aisle_facing_flat.get(pred_flat).copied().unwrap_or(false);
