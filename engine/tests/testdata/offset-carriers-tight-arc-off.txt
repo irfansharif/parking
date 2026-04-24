@@ -1,4 +1,5 @@
-# Flag-off baseline for the tight-arc quarter-circle.
+# Skeleton-path baseline for the tight-arc quarter-circle (both
+# offset-carrier flags explicitly off).
 
 polygon outer
 0,0
@@ -12,6 +13,14 @@ polygon outer: 4 vertices
 set stall-angle=90
 ----
 set stall_angle_deg=90
+
+debug offset_carriers=false
+----
+debug offset_carriers=false
+
+debug offset_carriers_interior=false
+----
+debug offset_carriers_interior=false
 
 generate
 ----

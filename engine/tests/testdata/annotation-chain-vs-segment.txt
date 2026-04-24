@@ -24,7 +24,7 @@ set stalls_per_face=4
 
 generate
 ----
-total_stalls: 162
+total_stalls: 148
 
 # Chain-mode direction on a horizontal row. Chain expansion walks
 # the whole row, so the emitted annotation extents span every cell

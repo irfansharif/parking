@@ -117,22 +117,22 @@ pub struct DebugToggles {
     pub face_simplification: bool,
     #[serde(default = "default_true")]
     pub spine_clipping: bool,
-    /// Experimental: for BOUNDARY faces, skip the weighted straight
-    /// skeleton and emit spines by offsetting each aisle-facing edge
-    /// inward by effective_depth, clipped to the face. Adjacent offset
-    /// spines whose tangents are close are grouped into placement paths
-    /// so discretized-arc aisles produce continuous stall rows instead
-    /// of per-chord spines that get filtered. Off = skeleton path.
-    /// Independent of `offset_carriers_interior`.
-    #[serde(default)]
+    /// For BOUNDARY faces, skip the weighted straight skeleton and
+    /// emit spines by offsetting each aisle-facing edge inward by
+    /// effective_depth, clipped to the face. Adjacent offset spines
+    /// whose tangents are close are grouped into placement paths so
+    /// discretized-arc aisles produce continuous stall rows instead of
+    /// per-chord spines that get filtered. Default on; disable to fall
+    /// back to the skeleton path. Independent of
+    /// `offset_carriers_interior`.
+    #[serde(default = "default_true")]
     pub offset_carriers: bool,
-    /// Experimental: same per-aisle-edge offset path, but for INTERIOR
-    /// bays (faces whose aisle-facing edges come from drive-lines /
-    /// cross-aisles rather than the perimeter aisle). Replaces the
-    /// medial-axis spine emission with rows aligned to each source
-    /// aisle. Independent of `offset_carriers`: either flag can be on
-    /// alone, both, or neither.
-    #[serde(default)]
+    /// Same per-aisle-edge offset path, but for INTERIOR bays (faces
+    /// whose aisle-facing edges come from drive-lines / cross-aisles
+    /// rather than the perimeter aisle). Replaces the medial-axis
+    /// spine emission with rows aligned to each source aisle. Default
+    /// on; independent of `offset_carriers`.
+    #[serde(default = "default_true")]
     pub offset_carriers_interior: bool,
 
     // Spine post-processing
@@ -180,8 +180,8 @@ impl Default for DebugToggles {
             hole_filtering: true,
             face_simplification: false,
             spine_clipping: true,
-            offset_carriers: false,
-            offset_carriers_interior: false,
+            offset_carriers: true,
+            offset_carriers_interior: true,
             spine_dedup: false,
             spine_merging: true,
             paired_spine_normalization: true,

@@ -20,7 +20,7 @@ hole: 4 vertices
 
 generate
 ----
-total_stalls: 1312
+total_stalls: 1296
 
 snapshot
 ----

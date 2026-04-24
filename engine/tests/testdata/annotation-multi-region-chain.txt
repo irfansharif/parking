@@ -27,7 +27,7 @@ drive-line: 200,0 -> 200,300 partitions
 
 generate
 ----
-total_stalls: 162
+total_stalls: 148
 
 # Chain-mode delete inside the left region. The click at (100, 120)
 # lands on a vertical column aisle; chain expansion walks the whole
@@ -49,7 +49,7 @@ delete-edge on=grid region=0x00003c159bc36ac7 axis=x coord=-2 range=lattice:0,la
 # removed, which frees space the generator now fills with stalls.
 generate
 ----
-total_stalls: 180
+total_stalls: 166
 
 # Chain-mode direction on a horizontal row in the right region.
 edge-select near=300,120 mode=chain
@@ -69,7 +69,7 @@ direction on=grid region=0x0000354ed55eccc5 axis=y coord=2 range=lattice:-8,latt
 # should touch every sub-edge in the chain, not just the adjacent pair.
 generate
 ----
-total_stalls: 180
+total_stalls: 166
 
 dormant
 ----

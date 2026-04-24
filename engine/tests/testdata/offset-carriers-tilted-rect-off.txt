@@ -1,6 +1,6 @@
-# Baseline (flag off): same geometry as offset-carriers-tilted-rect
-# but with the weighted-skeleton path. Held as a reference to see
-# which sides the current path drops stalls from.
+# Skeleton-path baseline (both offset flags explicitly off): same
+# geometry as offset-carriers-tilted-rect. Held as a reference to see
+# which sides the weighted-skeleton path drops stalls from.
 
 polygon outer
 10,0
@@ -9,6 +9,14 @@ polygon outer
 -10,280
 ----
 polygon outer: 4 vertices
+
+debug offset_carriers=false
+----
+debug offset_carriers=false
+
+debug offset_carriers_interior=false
+----
+debug offset_carriers_interior=false
 
 generate
 ----
