@@ -906,16 +906,18 @@ pub fn generate_from_spines(
         all_spines
     };
 
-    // Under offset_carriers, group chord-spine chains (e.g. a discretized
-    // arc aisle) into placement paths and precompute per-spine centering
-    // shifts so their stalls tile at cumulative arc-length. Per-spine
-    // centering would otherwise center each chord independently and the
-    // grid would jump at every chord boundary.
-    let path_centering_overrides: Vec<Option<f64>> = if debug.offset_carriers {
-        compute_path_centering_overrides(&all_spines, params)
-    } else {
-        vec![None; all_spines.len()]
-    };
+    // When either offset-carrier flag is on, chord-spine chains (e.g.
+    // a discretized arc aisle) get grouped into placement paths with
+    // precomputed per-spine centering shifts so their stalls tile at
+    // cumulative arc-length. Per-spine centering would otherwise center
+    // each chord independently and the grid would jump at every chord
+    // boundary.
+    let path_centering_overrides: Vec<Option<f64>> =
+        if debug.offset_carriers || debug.offset_carriers_interior {
+            compute_path_centering_overrides(&all_spines, params)
+        } else {
+            vec![None; all_spines.len()]
+        };
 
     // Place stalls on merged spines (tagged with face_idx + spine_idx).
     // Pass extension spines so centering uses the full projected range.

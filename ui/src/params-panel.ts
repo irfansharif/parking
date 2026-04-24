@@ -222,8 +222,8 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
       toggles: [
         { key: "face_simplification", label: "Face Simplification" },
         { key: "spine_clipping", label: "Spine Clipping" },
-        { key: "offset_carriers", label: "Offset Carriers" },
-        { key: "offset_carriers_interior", label: "  ↳ Interior Bays Too", parent: "offset_carriers" },
+        { key: "offset_carriers", label: "Offset Carriers (Boundary)" },
+        { key: "offset_carriers_interior", label: "Offset Carriers (Interior)" },
       ],
     },
     {

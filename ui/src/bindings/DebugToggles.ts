@@ -2,19 +2,21 @@
 
 export type DebugToggles = { miter_fills: boolean, boundary_only_miters: boolean, spike_removal: boolean, contour_simplification: boolean, hole_filtering: boolean, face_simplification: boolean, spine_clipping: boolean, 
 /**
- * Experimental: skip the weighted straight skeleton for boundary
- * faces and emit spines by offsetting each aisle-facing edge inward
- * by effective_depth, clipped to the face. Adjacent offset spines
- * whose tangents are close are grouped into placement paths so
- * discretized-arc aisles produce continuous stall rows instead of
- * per-chord spines that get filtered. Off = current behavior.
+ * Experimental: for BOUNDARY faces, skip the weighted straight
+ * skeleton and emit spines by offsetting each aisle-facing edge
+ * inward by effective_depth, clipped to the face. Adjacent offset
+ * spines whose tangents are close are grouped into placement paths
+ * so discretized-arc aisles produce continuous stall rows instead
+ * of per-chord spines that get filtered. Off = skeleton path.
+ * Independent of `offset_carriers_interior`.
  */
 offset_carriers: boolean, 
 /**
- * Sub-toggle of `offset_carriers`: when both are on, run the
- * per-aisle-edge offset path on interior parking bays too (not just
- * boundary strips). Replaces the medial-axis spine emission with
- * rows aligned to each source aisle. Has no effect when
- * `offset_carriers` is off.
+ * Experimental: same per-aisle-edge offset path, but for INTERIOR
+ * bays (faces whose aisle-facing edges come from drive-lines /
+ * cross-aisles rather than the perimeter aisle). Replaces the
+ * medial-axis spine emission with rows aligned to each source
+ * aisle. Independent of `offset_carriers`: either flag can be on
+ * alone, both, or neither.
  */
 offset_carriers_interior: boolean, spine_dedup: boolean, spine_merging: boolean, paired_spine_normalization: boolean, short_spine_filter: boolean, spine_extensions: boolean, stall_centering: boolean, stall_face_clipping: boolean, entrance_on_face_filter: boolean, conflict_removal: boolean, island_stall_dilation: boolean, skeleton_debug: boolean, };

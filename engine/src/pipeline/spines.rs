@@ -752,8 +752,11 @@ pub(crate) fn compute_face_spines(
     // Skip faces that are too narrow to hold a stall strip. The
     // offset-carrier path handles narrowness via clip_segment_to_face,
     // so bypass this pre-filter when that path will run.
-    let offset_will_run = debug.offset_carriers
-        && (face_is_boundary || debug.offset_carriers_interior);
+    let offset_will_run = if face_is_boundary {
+        debug.offset_carriers
+    } else {
+        debug.offset_carriers_interior
+    };
     if !offset_will_run {
         let outer = &shape[0];
         let area = signed_area(outer).abs();
@@ -846,7 +849,12 @@ pub(crate) fn compute_face_spines(
     // emit per-aisle-edge offset spines, clipped to the face. Runs
     // only for boundary faces — interior faces still need the skeleton
     // to place back-to-back spines correctly for medial-type regions.
-    if debug.offset_carriers && (face_is_boundary || debug.offset_carriers_interior) {
+    let offset_path_active = if face_is_boundary {
+        debug.offset_carriers
+    } else {
+        debug.offset_carriers_interior
+    };
+    if offset_path_active {
         return offset_aisle_edges_to_spines(
             &contours,
             &aisle_facing_flat,
