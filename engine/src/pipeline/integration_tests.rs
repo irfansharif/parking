@@ -23,7 +23,7 @@ use crate::pipeline::generate::generate_from_spines;
 use crate::pipeline::islands::{compute_islands, mark_island_stalls, stall_center, stall_key};
 use crate::pipeline::placement::{fill_spine, place_stalls_on_spines};
 use crate::pipeline::spines::{
-    compute_face_spines, dedup_overlapping_spines, merge_collinear_spines,
+    compute_face_spines, merge_collinear_spines,
 };
 use crate::pipeline::tagging::{classify_face_edges, is_boundary_face};
 use crate::types::*;
@@ -239,10 +239,9 @@ mod tests {
             for s in &mut face_spines {
                 s.face_idx = face_idx;
             }
-            let face_spines = dedup_overlapping_spines(face_spines, 2.0);
             raw_spines.extend(face_spines);
         }
-        let all_spines = merge_collinear_spines(raw_spines, 1.0);
+        let all_spines = merge_collinear_spines(raw_spines, 1.0, 0.99);
         let all_spines: Vec<SpineSegment> = all_spines.into_iter()
             .filter(|s| (s.end - s.start).length() >= effective_depth)
             .collect();
@@ -899,154 +898,6 @@ mod tests {
         assert!(layout.faces.len() > 0, "should produce faces");
     }
 
-    /// Test that TwoWayOriented aisles assign per-side travel_dir to spines.
-    ///
-    /// Setup: a 200×300 rectangle with a vertical aisle down the middle.
-    /// The aisle edge goes from (100,0) to (100,300) and is marked
-    /// TwoWayOriented with travel_dir pointing downward (0,1).
-    ///
-    /// Expected: the spine on the RIGHT side of travel_dir (outward normal
-    /// pointing right, i.e. +x) should get travel_dir = (0,1) (downward,
-    /// matching the right lane). The spine on the LEFT side (outward normal
-    /// pointing left, i.e. -x) should get travel_dir = (0,-1) (upward,
-    /// the oncoming lane).
-    ///
-    /// For comparison, a OneWay aisle should give BOTH sides the same
-    /// travel_dir.
-    #[test]
-    fn test_two_way_oriented_per_side_travel_dir() {
-        // Build a minimal graph: vertical aisle at x=100 in a 200×300 box.
-        let boundary = Polygon {
-            outer: vec![
-                Vec2::new(0.0, 0.0),
-                Vec2::new(200.0, 0.0),
-                Vec2::new(200.0, 300.0),
-                Vec2::new(0.0, 300.0),
-            ],
-            holes: vec![],
-            ..Default::default()
-        };
-        let params = ParkingParams::default();
-        let hw = params.aisle_width / 2.0;
-
-        // Vertical aisle: 4 perimeter vertices + 2 interior vertices at
-        // top and bottom of the aisle centerline.
-        let vertices = vec![
-            Vec2::new(0.0, 0.0),     // 0: bottom-left
-            Vec2::new(200.0, 0.0),   // 1: bottom-right
-            Vec2::new(200.0, 300.0), // 2: top-right
-            Vec2::new(0.0, 300.0),   // 3: top-left
-            Vec2::new(100.0, 0.0),   // 4: aisle bottom
-            Vec2::new(100.0, 300.0), // 5: aisle top
-        ];
-
-        // Helper to build a graph with a specific direction for the interior edge.
-        let make_graph = |direction: AisleDirection| -> DriveAisleGraph {
-            DriveAisleGraph {
-                vertices: vertices.clone(),
-                edges: vec![
-                    // Perimeter edges
-                    AisleEdge { start: 0, end: 1, width: hw, interior: false, direction: AisleDirection::TwoWay },
-                    AisleEdge { start: 1, end: 2, width: hw, interior: false, direction: AisleDirection::TwoWay },
-                    AisleEdge { start: 2, end: 3, width: hw, interior: false, direction: AisleDirection::TwoWay },
-                    AisleEdge { start: 3, end: 0, width: hw, interior: false, direction: AisleDirection::TwoWay },
-                    // Perimeter connections to aisle
-                    AisleEdge { start: 0, end: 4, width: hw, interior: false, direction: AisleDirection::TwoWay },
-                    AisleEdge { start: 1, end: 4, width: hw, interior: false, direction: AisleDirection::TwoWay },
-                    AisleEdge { start: 2, end: 5, width: hw, interior: false, direction: AisleDirection::TwoWay },
-                    AisleEdge { start: 3, end: 5, width: hw, interior: false, direction: AisleDirection::TwoWay },
-                    // Interior aisle edge: 4→5 (bottom to top, i.e. travel_dir = (0,1) upward)
-                    AisleEdge { start: 4, end: 5, width: hw, interior: true, direction: direction.clone() },
-                    // Reverse edge for two-way
-                    AisleEdge { start: 5, end: 4, width: hw, interior: true, direction: direction },
-                ],
-                perim_vertex_count: 4,
-            }
-        };
-
-        let debug = DebugToggles::default();
-
-        // --- Test TwoWayOriented ---
-        let graph = make_graph(AisleDirection::TwoWayOriented);
-        let (stalls, spine_lines, faces, _, _) = generate_from_spines(&graph, &boundary, &params, &debug);
-
-        eprintln!("\n=== TwoWayOriented test ===");
-        eprintln!("stalls: {}, spines: {}, faces: {}", stalls.len(), spine_lines.len(), faces.len());
-
-        // Rebuild spines with travel_dir info (spine_lines loses it).
-        // Use the internal pipeline directly.
-        let dedup = deduplicate_corridors(&graph);
-        let dedup_polys: Vec<Vec<Vec2>> = dedup.iter().map(|(p, _, _)| p.clone()).collect();
-        let merged = merge_corridor_shapes(&dedup_polys, &graph, &debug);
-        let two_way_dirs: Vec<Option<Vec2>> = {
-            let mut seen = std::collections::HashSet::new();
-            let mut dirs = Vec::new();
-            for edge in &graph.edges {
-                let key = if edge.start < edge.end { (edge.start, edge.end) } else { (edge.end, edge.start) };
-                if !seen.insert(key) { continue; }
-                if edge.direction == AisleDirection::TwoWayOriented {
-                    dirs.push(Some((graph.vertices[edge.end] - graph.vertices[edge.start]).normalize()));
-                } else {
-                    dirs.push(None);
-                }
-            }
-            dirs
-        };
-        let extracted_faces = extract_faces(&boundary.outer, &merged, &[]);
-
-        let ed = params.stall_depth
-            + params.stall_depth * (params.stall_angle_deg * std::f64::consts::PI / 180.0).sin()
-            + (params.stall_angle_deg * std::f64::consts::PI / 180.0).cos() * params.stall_width / 2.0;
-
-        let mut left_spines = Vec::new();
-        let mut right_spines = Vec::new();
-        for shape in &extracted_faces {
-            let face_is_boundary = is_boundary_face(&shape[0], &merged, &dedup);
-            let spines = compute_face_spines(shape, ed, &merged, &dedup, face_is_boundary, &debug, &two_way_dirs, None);
-            for s in &spines {
-                if let Some(td) = s.travel_dir {
-                    eprintln!(
-                        "  spine: outward=({:.1},{:.1}) travel_dir=({:.1},{:.1}) start=({:.0},{:.0}) end=({:.0},{:.0})",
-                        s.outward_normal.x, s.outward_normal.y,
-                        td.x, td.y,
-                        s.start.x, s.start.y, s.end.x, s.end.y,
-                    );
-                    // Classify: is outward pointing right (+x) or left (-x)?
-                    if s.outward_normal.x > 0.5 {
-                        right_spines.push(td);
-                    } else if s.outward_normal.x < -0.5 {
-                        left_spines.push(td);
-                    }
-                }
-            }
-        }
-
-        // The interior aisle goes from vertex 4 (100,0) to vertex 5 (100,300).
-        // travel_dir = normalize(v5 - v4) = (0, 1).
-        //
-        // For TwoWayOriented, both sides get the SAME travel_dir (like
-        // OneWay). The existing flip_angle logic in place_stalls_on_spines
-        // already differentiates stall lean per-side based on the spine's
-        // orientation relative to travel_dir.
-        eprintln!("right_spines travel_dirs: {:?}", right_spines);
-        eprintln!("left_spines travel_dirs: {:?}", left_spines);
-
-        assert!(!right_spines.is_empty(), "should have spines on right side of aisle");
-        assert!(!left_spines.is_empty(), "should have spines on left side of aisle");
-
-        // For TwoWayOriented, the "canonical negative" side (outward.x < 0)
-        // gets its travel_dir flipped. The "canonical positive" side keeps it.
-        // This makes both sides produce the same flip_angle in
-        // place_stalls_on_spines, giving correct per-lane stall angles.
-        // Right spines (outward.x > 0 = positive side): keep td = (0,1)
-        for td in &right_spines {
-            assert!(td.y > 0.5, "positive-side travel_dir should stay (0,1), got ({:.2},{:.2})", td.x, td.y);
-        }
-        // Left spines (outward.x < 0 = negative side): flipped to (0,-1)
-        for td in &left_spines {
-            assert!(td.y < -0.5, "negative-side travel_dir should be flipped to (0,-1), got ({:.2},{:.2})", td.x, td.y);
-        }
-    }
 
     /// End-to-end test: use the full generate pipeline with a TwoWayOriented
     /// annotation on an auto-generated graph (simulating the UI flow).
@@ -1128,6 +979,7 @@ mod tests {
                 face_idx,
                 is_interior: true,
                 travel_dir: None,
+                reverse_lean: false,
             };
             let stalls: Vec<(StallQuad, usize, usize)> = fill_spine(&seg, params)
                 .into_iter()

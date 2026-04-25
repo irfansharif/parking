@@ -11,7 +11,7 @@ use parking_lot_engine::pipeline::generate::generate;
 use parking_lot_engine::types::{
     AisleDirection, Annotation, Axis, DebugToggles, DriveLine,
     EdgeArc, GenerateInput, GridStop, HolePin, ParkingLayout, ParkingParams, PerimeterLoop,
-    Polygon, RegionId, Target, TrafficDirection, Vec2,
+    Polygon, RegionId, Target, TrafficDirection, Vec2, VertexId,
 };
 use std::path::{Path, PathBuf};
 
@@ -272,13 +272,7 @@ fn apply_debug(d: &mut DebugToggles, key: &str, v: bool) -> Result<(), String> {
         "miter_fills" => d.miter_fills = v,
         "boundary_only_miters" => d.boundary_only_miters = v,
         "spike_removal" => d.spike_removal = v,
-        "contour_simplification" => d.contour_simplification = v,
-        "hole_filtering" => d.hole_filtering = v,
-        "face_simplification" => d.face_simplification = v,
-        "spine_clipping" => d.spine_clipping = v,
-        "spine_dedup" => d.spine_dedup = v,
         "spine_merging" => d.spine_merging = v,
-        "paired_spine_normalization" => d.paired_spine_normalization = v,
         "spine_extensions" => d.spine_extensions = v,
         "stall_face_clipping" => d.stall_face_clipping = v,
         "entrance_on_face_filter" => d.entrance_on_face_filter = v,
@@ -456,9 +450,16 @@ fn dormant_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
             ..Default::default()
         });
     }
-    let ids: Vec<String> = dormant.iter().map(|i| i.to_string()).collect();
+    let entries: Vec<String> = dormant
+        .iter()
+        .map(|d| format!("{}: {}", d.index, d.reason))
+        .collect();
     Ok(Outcome {
-        output: format!("dormant_annotations: {} ({})", dormant.len(), ids.join(",")),
+        output: format!(
+            "dormant_annotations: {}\n  {}",
+            dormant.len(),
+            entries.join("\n  ")
+        ),
         ..Default::default()
     })
 }
@@ -500,6 +501,7 @@ fn graph_cmd(ctx: &mut FixtureCtx, mode: &str) -> Result<Outcome, String> {
                 let dir = match e.direction {
                     AisleDirection::TwoWay => "two-way",
                     AisleDirection::TwoWayOriented => "two-way-oriented",
+                    AisleDirection::TwoWayOrientedReverse => "two-way-oriented-reverse",
                     AisleDirection::OneWay => "one-way",
                 };
                 out.push_str(&format!(
@@ -527,10 +529,12 @@ fn generate_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
     let total = layout.metrics.total_stalls;
     let mut lines = vec![format!("total_stalls: {}", total)];
     if !layout.dormant_annotations.is_empty() {
-        lines.push(format!(
-            "dormant_annotations: {:?}",
-            layout.dormant_annotations
-        ));
+        let entries: Vec<String> = layout
+            .dormant_annotations
+            .iter()
+            .map(|d| format!("{}: {}", d.index, d.reason))
+            .collect();
+        lines.push(format!("dormant_annotations: [{}]", entries.join("; ")));
     }
     ctx.last_layout = Some(layout);
     Ok(Outcome {
@@ -560,7 +564,10 @@ fn snapshot(ctx: &mut FixtureCtx, rest: &str) -> Result<Outcome, String> {
     let svg_text = svg::render(
         &ctx.input.boundary,
         layout,
+        &ctx.input.annotations,
+        &ctx.input.drive_lines,
         &svg::SvgOptions::default(),
+        ctx.input.params.arc_discretize_tolerance,
     );
 
     if ctx.update_snapshots {
@@ -810,12 +817,24 @@ fn parse_annotation_target(
                 kv.get("loop")
                     .ok_or_else(|| "perimeter: missing loop".to_string())?,
             )?;
-            let arc = kv
-                .get("arc")
-                .ok_or_else(|| "perimeter: missing arc".to_string())?
+            let start = VertexId(
+                kv.get("start")
+                    .ok_or_else(|| "perimeter: missing start".to_string())?
+                    .parse::<u32>()
+                    .map_err(|e| format!("perimeter start: {}", e))?,
+            );
+            let end = VertexId(
+                kv.get("end")
+                    .ok_or_else(|| "perimeter: missing end".to_string())?
+                    .parse::<u32>()
+                    .map_err(|e| format!("perimeter end: {}", e))?,
+            );
+            let t = kv
+                .get("t")
+                .ok_or_else(|| "perimeter: missing t".to_string())?
                 .parse::<f64>()
-                .map_err(|e| format!("perimeter arc: {}", e))?;
-            Ok(Target::Perimeter { loop_, arc })
+                .map_err(|e| format!("perimeter t: {}", e))?;
+            Ok(Target::Perimeter { loop_, start, end, t })
         }
         other => Err(format!("unknown substrate 'on={}'", other)),
     }

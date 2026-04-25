@@ -21,6 +21,8 @@ import {
   worldToPerimeterPos,
   worldToAbstractVertex,
   worldToSpliceVertex,
+  ensurePolygonIds,
+  nextVertexId,
 } from "./types";
 import { SnapGuide, SnapState, emptySnapState } from "./snap";
 import { showToast } from "./toast";
@@ -69,7 +71,6 @@ export interface LayerVisibility {
   driveLines: boolean;
   spines: boolean;
   faces: boolean;
-  faceColors: boolean;
   miterFills: boolean;
   islands: boolean;
   regions: boolean;
@@ -127,10 +128,10 @@ export class App {
     const defaultLot: ParkingLot = {
       boundary: {
         outer: [
-          { x: 76.30, y: 0 },
+          { x: 54.71, y: 49.12 },
           { x: 692.14, y: 0 },
           { x: 782.80, y: 654.85 },
-          { x: 168.78, y: 654.85 },
+          { x: 31.41, y: 653.82 },
         ],
         holes: [
           [
@@ -140,28 +141,75 @@ export class App {
             { x: 394.53, y: 512.33 },
           ],
         ],
-        outer_arcs: [],
-        hole_arcs: [],
+        outer_arcs: [null, { bulge: -0.524 }, null, null],
+        hole_arcs: [[{ bulge: -0.796 }, null, { bulge: 0.400 }, null]],
+        outer_ids: [1, 2, 3, 4],
+        hole_ids: [[5, 6, 7, 8]],
       },
       annotations: [
+        {
+          kind: "Direction",
+          target: {
+            on: "Grid",
+            region: 84978695160110,
+            axis: "X",
+            coord: -5,
+            range: [{ at: "Lattice", other: -3 }, { at: "Lattice", other: -1 }],
+          },
+          traffic: "OneWay",
+        },
         {
           kind: "DeleteEdge",
           target: {
             on: "Grid",
-            region: 38732162085172,
-            axis: "X",
+            region: 84978695160110,
+            axis: "Y",
             coord: -2,
-            range: [{ at: "Lattice", other: 0 }, { at: "Lattice", other: 1 }],
+            range: [{ at: "Lattice", other: -9 }, { at: "Lattice", other: -4 }],
+          },
+        },
+        {
+          kind: "DeleteEdge",
+          target: { on: "DriveLine", id: 1, t: 0.80 },
+        },
+        {
+          kind: "DeleteEdge",
+          target: {
+            on: "Grid",
+            region: 42210882214992,
+            axis: "X",
+            coord: -5,
+            range: [{ at: "Lattice", other: 0 }, { at: "Lattice", other: 2 }],
+          },
+        },
+        {
+          kind: "DeleteVertex",
+          target: {
+            on: "Perimeter",
+            loop: { kind: "Outer" },
+            start: 2,
+            end: 3,
+            t: 0.63,
           },
         },
         {
           kind: "DeleteEdge",
           target: {
             on: "Grid",
-            region: 38732162085172,
+            region: 42210882214992,
             axis: "X",
-            coord: -2,
-            range: [{ at: "Lattice", other: 1 }, { at: "Lattice", other: 2 }],
+            coord: -16,
+            range: [{ at: "Lattice", other: 0 }, { at: "Lattice", other: 2 }],
+          },
+        },
+        {
+          kind: "DeleteEdge",
+          target: {
+            on: "Grid",
+            region: 42210882214992,
+            axis: "Y",
+            coord: 1,
+            range: [{ at: "Lattice", other: -16 }, { at: "Lattice", other: -15 }],
           },
         },
       ],
@@ -171,12 +219,14 @@ export class App {
         90,
       ),
       driveLines: [
-        { id: 1, start: { x: 930.76, y: 381.06 }, end: { x: -42.60, y: 512.33 }, partitions: false },
-        { id: 2, start: { x: 198.60, y: -53.66 }, end: { x: 475.79, y: 349.25 }, partitions: true },
-        { id: 3, start: { x: 446.56, y: 335.61 }, end: { x: 930.76, y: 135.52 }, partitions: true },
+        { id: 1, start: { x: 312.28, y: 518.60 }, end: { x: 144.72, y: 515.73 }, partitions: false },
+        { id: 2, start: { x: 1186.57, y: 153.66 }, end: { x: 475.79, y: 349.25 }, partitions: true },
+        { id: 3, start: { x: 446.56, y: 335.61 }, end: { x: 454.87, y: -53.66 }, partitions: true },
       ],
       regionOverrides: {
         "221108085334326": { offset: 154.58 },
+        "5138299582397": { angle: 2, offset: -79.50 },
+        "42210882214992": { angle: 92 },
       },
       layout: null,
     };
@@ -195,23 +245,23 @@ export class App {
         use_regions: true,
         island_stall_interval: 12,
         min_stalls_per_spine: 3,
+        arc_discretize_tolerance: 5,
+        spine_merge_angle_deg: 8.1,
+        spine_merge_endpoint_tol: 1,
+        island_corner_radius: 6,
       },
       debug: {
         miter_fills: true,
         boundary_only_miters: true,
         spike_removal: true,
-        contour_simplification: true,
-        hole_filtering: true,
-        face_simplification: false,
-        spine_clipping: true,
-        spine_dedup: false,
+        spine_end_trim: true,
         spine_merging: true,
-        paired_spine_normalization: true,
         spine_extensions: true,
         stall_face_clipping: true,
         entrance_on_face_filter: true,
         conflict_removal: true,
         island_stall_dilation: true,
+        island_corner_rounding: true,
       },
       selectedVertex: null,
       hoveredVertex: null,
@@ -231,7 +281,6 @@ export class App {
         driveLines: true,
         spines: true,
         faces: false,
-        faceColors: false,
         miterFills: false,
         islands: false,
         regions: false,
@@ -260,6 +309,9 @@ export class App {
 
   generate(): void {
     const lot = this.state.lot;
+    // Defensive id sync — catches any boundary mutation site that
+    // didn't keep outer_ids/hole_ids parallel.
+    ensurePolygonIds(lot.boundary);
     const input: GenerateInput = {
       boundary: lot.boundary,
       drive_lines: lot.driveLines,
@@ -278,6 +330,24 @@ export class App {
     try {
       const resultJson = this.generateFn(inputJson);
       lot.layout = JSON.parse(resultJson);
+      const dormant = lot.layout?.dormant_annotations ?? [];
+      if (dormant.length > 0) {
+        console.groupCollapsed(
+          `[generate] ${dormant.length} dormant annotation(s)`,
+        );
+        for (const d of dormant) {
+          const a = lot.annotations[d.index];
+          console.log(`#${d.index} ${a?.kind ?? "?"} — ${d.reason}`, a);
+        }
+        console.groupEnd();
+        const which = dormant
+          .map((d) => {
+            const a = lot.annotations[d.index];
+            return `#${d.index} ${a?.kind ?? "?"}: ${d.reason}`;
+          })
+          .join("; ");
+        showToast(`${dormant.length} annotation(s) dormant — ${which}`);
+      }
     } catch (e) {
       console.error("Generate failed:", e);
     }
@@ -400,7 +470,18 @@ export class App {
     });
     const graph = this.getEffectiveAisleGraph();
     if (graph) {
+      // Skip orphan vertices (no incident edges) — left behind by
+      // delete-vertex annotations since the engine doesn't compact
+      // graph.vertices. The renderer hides them; hit-testing must too,
+      // otherwise an invisible orphan can steal a click meant for the
+      // annotation marker drawn at the same spot.
+      const degree = new Int32Array(graph.vertices.length);
+      for (const e of graph.edges) {
+        degree[e.start]++;
+        degree[e.end]++;
+      }
       graph.vertices.forEach((v, i) => {
+        if (degree[i] === 0) return;
         result.push({ ref: { type: "aisle", index: i }, pos: v });
       });
     }
@@ -538,6 +619,8 @@ export class App {
   addHole(vertices: Vec2[]): void {
     const lot = this.state.lot;
     lot.boundary.holes.push(vertices);
+    let next = nextVertexId(lot.boundary);
+    lot.boundary.hole_ids.push(vertices.map(() => next++));
     this.generate();
   }
 
@@ -562,6 +645,12 @@ export class App {
   insertBoundaryVertex(index: number, pos: Vec2): void {
     const lot = this.state.lot;
     lot.boundary.outer.splice(index + 1, 0, pos);
+    // Maintain id array: the new vertex gets a fresh id; existing ids
+    // upstream and downstream stay put. The original sketch edge
+    // (outer_ids[index] → outer_ids[index+1]) is now split, so any
+    // perimeter annotation referencing that pair will go dormant on
+    // resolve — by design.
+    lot.boundary.outer_ids.splice(index + 1, 0, nextVertexId(lot.boundary));
     // Maintain arc array: split the edge's arc at the insertion point,
     // or insert a straight-edge slot.
     if (lot.boundary.outer_arcs && lot.boundary.outer_arcs.length > 0) {
@@ -583,6 +672,7 @@ export class App {
     const lot = this.state.lot;
     if (lot.boundary.outer.length <= 3) return false;
     lot.boundary.outer.splice(index, 1);
+    lot.boundary.outer_ids.splice(index, 1);
     // Maintain arc array: remove the edge entry and revert the merged
     // edge to straight (the pre-deletion bulge on the prior edge is no
     // longer meaningful — its chord just changed).
@@ -603,9 +693,11 @@ export class App {
     const hole = lot.boundary.holes[holeIndex];
     if (hole.length <= 3) {
       lot.boundary.holes.splice(holeIndex, 1);
+      lot.boundary.hole_ids.splice(holeIndex, 1);
       lot.boundary.hole_arcs?.splice(holeIndex, 1);
     } else {
       hole.splice(vertexIndex, 1);
+      lot.boundary.hole_ids[holeIndex]?.splice(vertexIndex, 1);
       const hc = lot.boundary.hole_arcs?.[holeIndex];
       if (hc && hc.length > 0) {
         const n = hc.length;
@@ -623,6 +715,12 @@ export class App {
   insertHoleVertex(holeIndex: number, afterIndex: number, pos: Vec2): void {
     const lot = this.state.lot;
     lot.boundary.holes[holeIndex].splice(afterIndex + 1, 0, pos);
+    if (!lot.boundary.hole_ids[holeIndex]) lot.boundary.hole_ids[holeIndex] = [];
+    lot.boundary.hole_ids[holeIndex].splice(
+      afterIndex + 1,
+      0,
+      nextVertexId(lot.boundary),
+    );
     const hc = lot.boundary.hole_arcs?.[holeIndex];
     if (hc && hc.length > 0) {
       const oldArc = hc[afterIndex];
@@ -643,7 +741,10 @@ export class App {
   commitPendingHole(): void {
     if (this.state.pendingHole.length >= 3) {
       const lot = this.state.lot;
-      lot.boundary.holes.push([...this.state.pendingHole]);
+      const verts = [...this.state.pendingHole];
+      lot.boundary.holes.push(verts);
+      let next = nextVertexId(lot.boundary);
+      lot.boundary.hole_ids.push(verts.map(() => next++));
       this.generate();
     }
     this.state.pendingHole = [];
@@ -651,12 +752,16 @@ export class App {
 
   commitPendingBoundary(): void {
     if (this.state.pendingBoundary.length >= 3) {
-      this.replaceBoundary({
+      const next: Polygon = {
         outer: [...this.state.pendingBoundary],
         holes: [],
         outer_arcs: [],
         hole_arcs: [],
-      });
+        outer_ids: [],
+        hole_ids: [],
+      };
+      ensurePolygonIds(next);
+      this.replaceBoundary(next);
       this.generate();
     }
     this.state.pendingBoundary = [];
@@ -787,16 +892,61 @@ export class App {
     //      grid-parameter changes within the same region.
     //   3. Drive-line splice (id + t) — for drive × interior crossings
     //      that aren't on the perimeter and aren't lattice-aligned.
-    const perim = worldToPerimeterPos(v, lot.boundary);
+    // Defensive: ensure ids are populated and parallel to outer/holes
+    // before any wasm bridge that needs them. Cheap when already
+    // synced; corrects any drift from unwatched mutation paths.
+    ensurePolygonIds(lot.boundary);
+    // Project the click against the sketch boundary to see how far
+    // off it is — diagnoses "click too far from any sketch edge"
+    // failures vs. resolver-side problems.
+    const pin = computeBoundaryPin(
+      v,
+      lot.boundary.outer,
+      lot.boundary.outer_arcs,
+    );
+    const pinDist = Math.hypot(pin.pos.x - v.x, pin.pos.y - v.y);
+    const perim_v_count = graph.perim_vertex_count ?? 0;
+    const arcsSummary = (lot.boundary.outer_arcs ?? [])
+      .map((a, i) => (a ? `${i}:b=${a.bulge.toFixed(2)}` : `${i}:line`))
+      .join(",");
+    console.log(
+      `[delete-vertex] vi=${vertexIndex} ` +
+        `isPerim=${vertexIndex < perim_v_count} (perim_n=${perim_v_count}) ` +
+        `world=(${v.x.toFixed(2)},${v.y.toFixed(2)}) ` +
+        `pin=(${pin.pos.x.toFixed(2)},${pin.pos.y.toFixed(2)}) ` +
+        `pinDist=${pinDist.toFixed(3)} pinEdge=${pin.edgeIndex} pinT=${pin.t.toFixed(3)} ` +
+        `outerLen=${lot.boundary.outer.length} ` +
+        `outerArcsLen=${lot.boundary.outer_arcs?.length} ` +
+        `outerIds=[${lot.boundary.outer_ids?.join(",")}] ` +
+        `arcs=[${arcsSummary}]`,
+    );
+    // Tolerance must accommodate chord deflection on discretized
+    // arcs: a split vertex (e.g. grid × perimeter on an arc edge)
+    // sits on a chord, while `compute_boundary_pin` projects to the
+    // underlying circular arc — those differ by up to
+    // `arc_discretize_tolerance` (~5 ft default). Without slack,
+    // clicks on arc-perimeter splits silently fall through to
+    // grid/drive-line.
+    const perimTol = (this.state.params.arc_discretize_tolerance ?? 0.5) + 1.0;
+    const perim = worldToPerimeterPos(v, lot.boundary, perimTol);
+    console.log("[delete-vertex] worldToPerimeterPos result:", perim);
     if (perim) {
+      showToast(`delete: anchored on perimeter (${perim.start}→${perim.end} t=${perim.t.toFixed(3)})`);
       lot.annotations.push({
         kind: "DeleteVertex",
-        target: { on: "Perimeter", loop: perim.loop, arc: perim.arc },
+        target: {
+          on: "Perimeter",
+          loop: perim.loop,
+          start: perim.start,
+          end: perim.end,
+          t: perim.t,
+        },
       });
     } else {
       const abs = lot.layout?.region_debug
         ? worldToAbstractVertex(v, this.state.params, lot.layout.region_debug)
         : null;
+      console.log("[delete-vertex] worldToAbstractVertex result:", abs);
       if (abs) {
         const stop: GridStop = { at: "Lattice", other: abs.yi };
         lot.annotations.push({
@@ -811,12 +961,15 @@ export class App {
         });
       } else {
         const sp = worldToSpliceVertex(v, lot.driveLines);
+        console.log("[delete-vertex] worldToSpliceVertex result:", sp);
         if (sp) {
           lot.annotations.push({
             kind: "DeleteVertex",
             target: { on: "DriveLine", id: sp.drive_line_id, t: sp.t },
           });
         } else {
+          console.log("[delete-vertex] FALLTHROUGH — no annotation created");
+          showToast("can't anchor delete: vertex isn't on perimeter, grid, or drive-line");
           return; // no stable anchor for this vertex
         }
       }

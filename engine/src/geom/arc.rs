@@ -9,7 +9,7 @@
 //! edges — this module is the single place that turns bulges into
 //! polylines for the pipeline to consume.
 
-use crate::types::{EdgeArc, Polygon, Vec2};
+use crate::types::{EdgeArc, Polygon, Vec2, VertexId};
 
 /// A bulge whose magnitude is below this is treated as a straight line.
 /// Keeps `bulge_to_arc` away from the 1/bulge singularity.
@@ -250,44 +250,87 @@ pub fn discretize_edge(p0: Vec2, p1: Vec2, bulge: f64, tolerance: f64) -> Vec<Ve
     out
 }
 
-fn discretize_ring(vertices: &[Vec2], arcs: &[Option<EdgeArc>], tolerance: f64) -> Vec<Vec2> {
+fn discretize_ring(
+    vertices: &[Vec2],
+    arcs: &[Option<EdgeArc>],
+    ids: &[VertexId],
+    tolerance: f64,
+    next_synthetic: &mut u32,
+) -> (Vec<Vec2>, Vec<VertexId>) {
     let n = vertices.len();
     if n < 2 {
-        return vertices.to_vec();
+        return (vertices.to_vec(), ids.to_vec());
     }
-    let mut out = Vec::new();
+    let want_ids = ids.len() == n;
+    let mut out_v = Vec::new();
+    let mut out_ids = Vec::new();
+    let mut alloc_synthetic = || {
+        let id = VertexId(*next_synthetic);
+        *next_synthetic += 1;
+        id
+    };
     for i in 0..n {
         let j = (i + 1) % n;
         let arc = arcs.get(i).and_then(|a| a.as_ref());
+        let start_id = if want_ids { ids[i] } else { alloc_synthetic() };
         if let Some(a) = arc {
-            out.extend(discretize_edge(vertices[i], vertices[j], a.bulge, tolerance));
+            let pts = discretize_edge(vertices[i], vertices[j], a.bulge, tolerance);
+            // pts[0] is the starting vertex (sketch corner). pts[1..]
+            // are interior chord samples with synthetic ids.
+            for (k, p) in pts.into_iter().enumerate() {
+                out_v.push(p);
+                out_ids.push(if k == 0 { start_id } else { alloc_synthetic() });
+            }
         } else {
-            out.push(vertices[i]);
+            out_v.push(vertices[i]);
+            out_ids.push(start_id);
         }
     }
-    out
+    (out_v, out_ids)
 }
 
-/// Default discretization tolerance in world units. 0.5 ft stays
-/// visually smooth at parking-lot scale (chord deflection < stall
-/// pitch) while keeping perimeter vertex counts on arcs manageable —
-/// aisle graph vertices end up ~√(8·r·ε) apart, e.g. ~20 ft at r=100.
-const DEFAULT_TOLERANCE: f64 = 5.0;
-
 /// Discretize every curved edge in a polygon into a dense straight-line
-/// polyline. Returns a fresh polygon with empty arc arrays. Straight
-/// edges pass through unchanged.
-pub fn discretize_polygon(polygon: &Polygon) -> Polygon {
-    let outer = discretize_ring(&polygon.outer, &polygon.outer_arcs, DEFAULT_TOLERANCE);
-    let holes: Vec<Vec<Vec2>> = polygon.holes.iter().enumerate().map(|(hi, hole)| {
+/// polyline. `tolerance` is the chord deflection in world units (feet) —
+/// smaller = smoother arcs but more perimeter vertices. Returns a fresh
+/// polygon with empty arc arrays. Straight edges pass through unchanged.
+///
+/// Vertex id propagation: if the input polygon has ids parallel to its
+/// vertex arrays, each sketch corner in the output keeps its original
+/// `VertexId`. Chord-interior samples (introduced by arc discretization)
+/// carry synthetic ids allocated above `VertexId::SYNTHETIC_BASE`. This
+/// lets resolution code recognize "real" sketch addresses vs.
+/// discretizer-introduced filler when projecting.
+pub fn discretize_polygon(polygon: &Polygon, tolerance: f64) -> Polygon {
+    let mut next_synthetic: u32 = VertexId::SYNTHETIC_BASE;
+    let (outer, outer_ids) = discretize_ring(
+        &polygon.outer,
+        &polygon.outer_arcs,
+        &polygon.outer_ids,
+        tolerance,
+        &mut next_synthetic,
+    );
+    let mut holes: Vec<Vec<Vec2>> = Vec::with_capacity(polygon.holes.len());
+    let mut hole_ids: Vec<Vec<VertexId>> = Vec::with_capacity(polygon.holes.len());
+    for (hi, hole) in polygon.holes.iter().enumerate() {
         let arcs = polygon.hole_arcs.get(hi).cloned().unwrap_or_default();
-        discretize_ring(hole, &arcs, DEFAULT_TOLERANCE)
-    }).collect();
+        let ids = polygon.hole_ids.get(hi).cloned().unwrap_or_default();
+        let (h, h_ids) = discretize_ring(
+            hole,
+            &arcs,
+            &ids,
+            tolerance,
+            &mut next_synthetic,
+        );
+        holes.push(h);
+        hole_ids.push(h_ids);
+    }
     Polygon {
         outer,
         holes,
         outer_arcs: vec![],
         hole_arcs: vec![],
+        outer_ids,
+        hole_ids,
     }
 }
 
@@ -403,7 +446,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let result = discretize_polygon(&polygon);
+        let result = discretize_polygon(&polygon, 5.0);
         assert_eq!(result.outer.len(), 4);
         assert!(result.outer_arcs.is_empty());
     }
@@ -425,7 +468,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let result = discretize_polygon(&polygon);
+        let result = discretize_polygon(&polygon, 5.0);
         assert!(result.outer.len() > 4, "expected expansion, got {}", result.outer.len());
         assert!(result.outer_arcs.is_empty());
         // Untouched vertices still present.

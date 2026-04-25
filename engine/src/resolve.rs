@@ -20,8 +20,9 @@ use ts_rs::TS;
 use crate::geom::clip::point_in_polygon;
 use crate::geom::poly::point_to_segment_dist;
 use crate::types::{
-    AbstractFrame, Annotation, Axis, DriveAisleGraph, DriveLine, GridStop, ParkingParams,
-    PerimeterLoop, Polygon, RegionDebug, RegionId, RegionInfo, Target, Vec2,
+    AbstractFrame, Annotation, Axis, DriveAisleGraph, DriveLine, EdgeArc, GridStop,
+    ParkingParams, PerimeterLoop, Polygon, RegionDebug, RegionId, RegionInfo, Target, Vec2,
+    VertexId,
 };
 
 // ---------------------------------------------------------------------------
@@ -50,7 +51,12 @@ pub struct PerimeterPosResult {
     #[serde(rename = "loop")]
     #[ts(rename = "loop")]
     pub loop_: PerimeterLoop,
-    pub arc: f64,
+    /// Sketch vertex at the start of the addressed edge.
+    pub start: VertexId,
+    /// Sketch vertex at the end of the addressed edge.
+    pub end: VertexId,
+    /// Position along the chord chain from `start` to `end` ∈ [0, 1].
+    pub t: f64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, TS)]
@@ -125,12 +131,22 @@ pub fn target_world_pos(
             };
             Some(frame.forward(abs))
         }
-        Target::Perimeter { loop_, arc } => {
+        Target::Perimeter { loop_, start, end, t } => {
             let poly = perimeter_loop_polygon(boundary, loop_)?;
+            let ids = perimeter_loop_ids(boundary, loop_)?;
             if poly.len() < 3 {
                 return None;
             }
-            Some(loop_arc_to_world(poly, *arc))
+            // If the sketch edge `(start, end)` has a bulge, evaluate
+            // the world position along the *arc* (not the chord chain)
+            // so the annotation marker follows the curve as the bulge
+            // changes. Falls back to chord-chain lerp for straight
+            // edges and discretized inputs (where the loop has many
+            // synthetic intermediates).
+            if let Some(pos) = evaluate_perim_edge_arc(boundary, loop_, *start, *end, *t) {
+                return Some(pos);
+            }
+            evaluate_perim_edge(poly, ids, *start, *end, *t)
         }
     }
 }
@@ -227,35 +243,57 @@ pub fn world_to_splice_vertex(
 }
 
 /// Project a world point onto the nearest perimeter loop, within the
-/// given world-space tolerance. Used by the UI to address grid ×
-/// perimeter crossings via a `Target::Perimeter`.
+/// given world-space tolerance. Returns the addressed sketch edge
+/// `(start, end, t)` for the closest projection. Uses arc-aware
+/// projection (`compute_boundary_pin`), so clicks on a discretized
+/// arc resolve to the correct sketch edge even though the engine's
+/// graph stores chord-interior synthetic vertices.
 pub fn world_to_perimeter_pos(
     world: Vec2,
     boundary: &Polygon,
     tol: f64,
 ) -> Option<PerimeterPosResult> {
-    let mut candidates: Vec<(PerimeterLoop, &[Vec2])> = Vec::new();
-    if boundary.outer.len() >= 3 {
-        candidates.push((PerimeterLoop::Outer, boundary.outer.as_slice()));
-    }
+    let mut best: Option<(PerimeterLoop, VertexId, VertexId, f64, f64)> = None;
+
+    let mut consider = |loop_id: PerimeterLoop,
+                        poly: &[Vec2],
+                        ids: &[VertexId],
+                        arcs: Option<&[Option<EdgeArc>]>| {
+        let n = poly.len();
+        if n < 3 || ids.len() != n {
+            return;
+        }
+        let (proj, edge_idx, t) =
+            crate::geom::arc::compute_boundary_pin(world, poly, arcs);
+        let dist = (world - proj).length();
+        if dist > tol {
+            return;
+        }
+        let start = ids[edge_idx];
+        let end = ids[(edge_idx + 1) % n];
+        if best.as_ref().map(|(_, _, _, _, d)| dist < *d).unwrap_or(true) {
+            best = Some((loop_id, start, end, t, dist));
+        }
+    };
+
+    consider(
+        PerimeterLoop::Outer,
+        &boundary.outer,
+        &boundary.outer_ids,
+        if boundary.outer_arcs.is_empty() { None } else { Some(&boundary.outer_arcs) },
+    );
     for (i, h) in boundary.holes.iter().enumerate() {
-        if h.len() >= 3 {
-            candidates.push((PerimeterLoop::Hole { index: i }, h.as_slice()));
+        if let Some(ids) = boundary.hole_ids.get(i) {
+            let arcs = boundary
+                .hole_arcs
+                .get(i)
+                .filter(|v| !v.is_empty())
+                .map(|v| v.as_slice());
+            consider(PerimeterLoop::Hole { index: i }, h, ids, arcs);
         }
     }
-    let mut best: Option<(PerimeterLoop, f64, f64)> = None;
-    for (loop_, poly) in candidates {
-        let arc = match project_onto_loop(world, poly, tol) {
-            Some(a) => a,
-            None => continue,
-        };
-        let world_at = loop_arc_to_world(poly, arc);
-        let dist = (world - world_at).length();
-        if best.as_ref().map(|(_, _, d)| dist < *d).unwrap_or(true) {
-            best = Some((loop_, arc, dist));
-        }
-    }
-    best.map(|(loop_, arc, _)| PerimeterPosResult { loop_, arc })
+
+    best.map(|(loop_, start, end, t, _)| PerimeterPosResult { loop_, start, end, t })
 }
 
 // ---------------------------------------------------------------------------
@@ -409,6 +447,156 @@ pub fn perimeter_loop_polygon<'a>(
         PerimeterLoop::Outer => Some(&boundary.outer),
         PerimeterLoop::Hole { index } => boundary.holes.get(*index).map(|h| h.as_slice()),
     }
+}
+
+/// Fetch the per-vertex `VertexId` array parallel to the loop's
+/// vertices. Returns `None` when the polygon doesn't have ids
+/// populated (e.g. test fixtures that bypassed `ensure_ids`).
+pub fn perimeter_loop_ids<'a>(
+    boundary: &'a Polygon,
+    loop_: &PerimeterLoop,
+) -> Option<&'a [VertexId]> {
+    let (poly, ids) = match loop_ {
+        PerimeterLoop::Outer => (boundary.outer.as_slice(), boundary.outer_ids.as_slice()),
+        PerimeterLoop::Hole { index } => {
+            let h = boundary.holes.get(*index)?;
+            let i = boundary.hole_ids.get(*index).map(|v| v.as_slice()).unwrap_or(&[]);
+            (h.as_slice(), i)
+        }
+    };
+    if ids.len() == poly.len() && !ids.is_empty() {
+        Some(ids)
+    } else {
+        None
+    }
+}
+
+/// Walk the loop forward from the chord-chain corresponding to the
+/// sketch edge `start → end`, emitting `(a, b, chord_len)` triples
+/// for each chord in the chain plus the running total length.
+///
+/// Returns `None` when:
+///   - either id is missing from the loop (sketch vertex deleted),
+///   - the polygon is malformed,
+///   - or any *non-synthetic* id appears strictly between `start`
+///     and `end` on the loop. That case means a real sketch vertex
+///     has been inserted on the edge (the user split it), so the
+///     annotation's original `(start, end)` no longer names a single
+///     sketch edge — caller treats this as dormant. Synthetic ids
+///     (chord-interior samples produced by arc discretization) are
+///     allowed and walked over without flagging.
+fn perimeter_edge_chords(
+    poly: &[Vec2],
+    ids: &[VertexId],
+    start: VertexId,
+    end: VertexId,
+) -> Option<(Vec<(Vec2, Vec2, f64)>, f64, usize, usize)> {
+    let n = ids.len();
+    if n < 2 || poly.len() != n {
+        return None;
+    }
+    let is = ids.iter().position(|v| *v == start)?;
+    let ie = ids.iter().position(|v| *v == end)?;
+    if is == ie {
+        return None;
+    }
+    let mut chords = Vec::new();
+    let mut total = 0.0;
+    let mut k = is;
+    let mut steps = 0usize;
+    while k != ie {
+        let knext = (k + 1) % n;
+        if knext != ie && !ids[knext].is_synthetic() {
+            // Sketch vertex inserted between `start` and `end` — the
+            // edge has been split. Annotation goes dormant.
+            return None;
+        }
+        let a = poly[k];
+        let b = poly[knext];
+        let len = (b - a).length();
+        chords.push((a, b, len));
+        total += len;
+        k = knext;
+        steps += 1;
+        if steps > n {
+            return None; // malformed: walked past `end`
+        }
+    }
+    Some((chords, total, is, ie))
+}
+
+/// Evaluate position along the sketch edge `(start → end)` using its
+/// stored arc data. Returns `Some(pos)` only when the loop carries
+/// per-edge arc info (i.e. it's the un-discretized sketch); the
+/// position lies on the actual circular arc (or the chord for
+/// straight edges). Returns `None` if the edge isn't found, the loop
+/// lacks arc data, or `start`/`end` aren't consecutive (which means
+/// the input is the post-discretization loop — caller falls back to
+/// chord-chain interpolation).
+pub fn evaluate_perim_edge_arc(
+    boundary: &Polygon,
+    loop_: &PerimeterLoop,
+    start: VertexId,
+    end: VertexId,
+    t: f64,
+) -> Option<Vec2> {
+    let (poly, ids, arcs) = match loop_ {
+        PerimeterLoop::Outer => (
+            boundary.outer.as_slice(),
+            boundary.outer_ids.as_slice(),
+            boundary.outer_arcs.as_slice(),
+        ),
+        PerimeterLoop::Hole { index } => {
+            let h = boundary.holes.get(*index)?;
+            let i = boundary.hole_ids.get(*index).map(|v| v.as_slice()).unwrap_or(&[]);
+            let a = boundary.hole_arcs.get(*index).map(|v| v.as_slice()).unwrap_or(&[]);
+            (h.as_slice(), i, a)
+        }
+    };
+    let n = poly.len();
+    if n < 2 || ids.len() != n {
+        return None;
+    }
+    let is = ids.iter().position(|v| *v == start)?;
+    let ie = ids.iter().position(|v| *v == end)?;
+    // Sketch edges are consecutive vertices. If `(start, end)` aren't
+    // adjacent in the loop, this isn't a sketch edge — return None
+    // so the caller falls back to chord-chain interpolation.
+    if (is + 1) % n != ie {
+        return None;
+    }
+    let p0 = poly[is];
+    let p1 = poly[ie];
+    let bulge = arcs.get(is).and_then(|a| a.as_ref()).map(|a| a.bulge).unwrap_or(0.0);
+    Some(crate::geom::arc::eval_arc_at(p0, p1, bulge, t))
+}
+
+/// Sample the world position at parameter `t ∈ [0, 1]` along the
+/// chord chain that represents the sketch edge `start → end` on the
+/// loop. For an un-discretized straight edge this is a single linear
+/// interpolation; for a discretized arc edge it walks the chord
+/// polyline by length.
+pub fn evaluate_perim_edge(
+    poly: &[Vec2],
+    ids: &[VertexId],
+    start: VertexId,
+    end: VertexId,
+    t: f64,
+) -> Option<Vec2> {
+    let (chords, total, is, ie) = perimeter_edge_chords(poly, ids, start, end)?;
+    if total < 1e-12 {
+        return Some(poly[is]);
+    }
+    let target = t.clamp(0.0, 1.0) * total;
+    let mut acc = 0.0;
+    for (a, b, len) in &chords {
+        if acc + *len >= target {
+            let local = if *len > 1e-12 { (target - acc) / *len } else { 0.0 };
+            return Some(*a + (*b - *a) * local);
+        }
+        acc += *len;
+    }
+    Some(poly[ie])
 }
 
 /// Sample the world position at a normalized arc length `arc ∈ [0, 1]`
@@ -749,13 +937,17 @@ pub fn targets_equal(a: &Target, b: &Target) -> bool {
         (
             Target::Perimeter {
                 loop_: al,
-                arc: aa,
+                start: as_,
+                end: ae,
+                t: at,
             },
             Target::Perimeter {
                 loop_: bl,
-                arc: ba,
+                start: bs,
+                end: be,
+                t: bt,
             },
-        ) => loops_equal(al, bl) && (aa - ba).abs() < 1e-3,
+        ) => loops_equal(al, bl) && as_ == bs && ae == be && (at - bt).abs() < 1e-3,
         _ => false,
     }
 }
@@ -873,7 +1065,7 @@ mod tests {
 
     #[test]
     fn world_to_perimeter_pos_projects_onto_loop() {
-        let boundary = Polygon {
+        let mut boundary = Polygon {
             outer: vec![
                 Vec2::new(0.0, 0.0),
                 Vec2::new(10.0, 0.0),
@@ -881,14 +1073,16 @@ mod tests {
                 Vec2::new(0.0, 10.0),
             ],
             holes: vec![],
-            outer_arcs: vec![],
-            hole_arcs: vec![],
+            ..Default::default()
         };
-        // Point just above the bottom edge projects onto outer.
+        boundary.ensure_ids();
+        // Point just above the bottom edge projects onto the bottom edge.
         let r = world_to_perimeter_pos(Vec2::new(5.0, 0.3), &boundary, 1.0).unwrap();
         assert!(matches!(r.loop_, PerimeterLoop::Outer));
-        // arc ≈ 0.125 (halfway along the bottom of a 40-unit perimeter).
-        assert!((r.arc - 0.125).abs() < 1e-9);
+        // Bottom edge is outer_ids[0] → outer_ids[1]; t = 0.5 (midpoint).
+        assert_eq!(r.start, boundary.outer_ids[0]);
+        assert_eq!(r.end, boundary.outer_ids[1]);
+        assert!((r.t - 0.5).abs() < 1e-9);
         // Point far from any edge — None within tol=1.
         assert!(world_to_perimeter_pos(Vec2::new(5.0, 5.0), &boundary, 1.0).is_none());
     }

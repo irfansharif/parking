@@ -1,5 +1,5 @@
 use crate::geom::boolean::{self, FillRule};
-use crate::geom::inset::{inset_polygon, raw_inset_polygon, signed_area};
+use crate::geom::inset::{inset_polygon, inset_polygon_with_ids, raw_inset_polygon, signed_area};
 use crate::types::*;
 
 /// Compute the inset distance for a given set of parking parameters.
@@ -84,16 +84,36 @@ pub struct Region {
 /// edge span; we preserve that when a hole is present).
 pub fn decompose_regions(
     outer_loop: &[Vec2],
+    outer_ids: &[crate::types::VertexId],
     hole_loops: &[Vec<Vec2>],
+    hole_ids: &[Vec<crate::types::VertexId>],
     partitioning_lines: &[(u32, Vec2, Vec2)],
     default_angle_deg: f64,
     default_offset: f64,
 ) -> Vec<Region> {
     use crate::graph::regions::{enumerate_regions, PartitionedRegion};
 
-    let hole_slices: Vec<&[Vec2]> = hole_loops.iter().map(|h| h.as_slice()).collect();
-    let parts: Vec<PartitionedRegion> =
-        enumerate_regions(outer_loop, &hole_slices, partitioning_lines);
+    let empty_ids: Vec<crate::types::VertexId> = Vec::new();
+    let holes_with_ids: Vec<(&[Vec2], &[crate::types::VertexId])> = hole_loops
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
+            let ids = hole_ids
+                .get(i)
+                .filter(|v| v.len() == h.len())
+                .map(|v| v.as_slice())
+                .unwrap_or(empty_ids.as_slice());
+            (h.as_slice(), ids)
+        })
+        .collect();
+    let outer_ids_aligned: &[crate::types::VertexId] =
+        if outer_ids.len() == outer_loop.len() { outer_ids } else { &empty_ids };
+    let parts: Vec<PartitionedRegion> = enumerate_regions(
+        outer_loop,
+        outer_ids_aligned,
+        &holes_with_ids,
+        partitioning_lines,
+    );
 
     if parts.is_empty() {
         return Vec::new();
@@ -418,14 +438,26 @@ pub fn auto_generate(
     let row_spacing = 2.0 * effective_depth + 2.0 * params.aisle_width;
 
     // boundary.outer is the aisle-edge perimeter. Apply site_offset if any.
-    let outer_loop = if params.site_offset > 0.0 {
-        let p = inset_polygon(&boundary.outer, params.site_offset);
+    // Track parallel `VertexId`s alongside so region IDs (derived from
+    // start-vertex ids of boundary segments) stay stable under edits
+    // elsewhere on the loop.
+    let (outer_loop, outer_loop_ids) = if params.site_offset > 0.0 {
+        let (p, p_ids) = inset_polygon_with_ids(
+            &boundary.outer,
+            &boundary.outer_ids,
+            params.site_offset,
+        );
         if p.is_empty() {
             return empty_graph();
         }
-        ensure_ccw(p)
+        ensure_ccw_with_ids(p, p_ids)
     } else {
-        ensure_ccw(boundary.outer.clone())
+        let raw_ids = if boundary.outer_ids.len() == boundary.outer.len() {
+            boundary.outer_ids.clone()
+        } else {
+            Vec::new()
+        };
+        ensure_ccw_with_ids(boundary.outer.clone(), raw_ids)
     };
 
     let mut vertices: Vec<Vec2> = Vec::new();
@@ -439,9 +471,13 @@ pub fn auto_generate(
     let perim_n = outer_loop.len();
 
     // 2. Hole loops: boundary.holes are aisle-edge rings — use directly.
+    // Carry parallel `VertexId`s for each kept hole so decompose_regions
+    // can key region IDs off stable identifiers rather than positional
+    // segment indices.
     let mut hole_loops: Vec<Vec<Vec2>> = Vec::new();
+    let mut hole_loop_ids: Vec<Vec<crate::types::VertexId>> = Vec::new();
     let mut hole_bases: Vec<usize> = Vec::new();
-    for hole in &boundary.holes {
+    for (i, hole) in boundary.holes.iter().enumerate() {
         if hole.is_empty() {
             continue;
         }
@@ -451,6 +487,13 @@ pub fn auto_generate(
         }
         hole_bases.push(base);
         hole_loops.push(hole.clone());
+        let ids = boundary
+            .hole_ids
+            .get(i)
+            .filter(|v| v.len() == hole.len())
+            .cloned()
+            .unwrap_or_default();
+        hole_loop_ids.push(ids);
     }
 
     // Snap hole loop vertices onto nearby outer perimeter edges. When a hole
@@ -523,7 +566,9 @@ pub fn auto_generate(
     let regions = if params.use_regions && !partitioning_lines.is_empty() {
         let mut regions = decompose_regions(
             &outer_loop,
+            &outer_loop_ids,
             &hole_loops,
+            &hole_loop_ids,
             partitioning_lines,
             params.aisle_angle_deg,
             params.aisle_offset,
@@ -676,11 +721,21 @@ fn empty_graph() -> DriveAisleGraph {
     }
 }
 
-fn ensure_ccw(mut poly: Vec<Vec2>) -> Vec<Vec2> {
+/// `ensure_ccw` paired with a parallel `VertexId` array. Reverses ids
+/// alongside the polygon so segment-i's start vertex id stays at
+/// `ids[i]`. Caller passes empty `ids` to opt out — returned ids vec
+/// is then also empty.
+fn ensure_ccw_with_ids(
+    mut poly: Vec<Vec2>,
+    mut ids: Vec<crate::types::VertexId>,
+) -> (Vec<Vec2>, Vec<crate::types::VertexId>) {
     if signed_area(&poly) < 0.0 {
         poly.reverse();
+        if ids.len() == poly.len() {
+            ids.reverse();
+        }
     }
-    poly
+    (poly, ids)
 }
 
 

@@ -13,7 +13,7 @@ use crate::types::*;
 /// Miter-outset applied to each non-island stall before face-subtraction.
 /// Gaps smaller than 2× this value collapse, removing sliver-island
 /// artifacts from braided back edges and oblique face corners.
-const STALL_DILATION: f64 = 0.25;
+const STALL_DILATION: f64 = 0.5;
 
 pub(crate) fn stall_key(s: &StallQuad) -> [u64; 8] {
     [
@@ -115,9 +115,12 @@ pub(crate) fn compute_islands(
         else { pts.iter().rev().copied().collect() }
     };
 
+    // Island stalls subtract from the face polygon just like any other
+    // stall kind — they're tracked as explicit StallKind::Island quads
+    // (rendered with hatching + 4-sided paintline), so the residual
+    // island contour should sit *between* them, not overlap them.
     let mut stalls_by_face: Vec<Vec<Vec<Vec2>>> = vec![Vec::new(); faces.len()];
     for (stall, face_idx) in tagged_stalls {
-        if stall.kind == StallKind::Island { continue; }
         if *face_idx >= faces.len() { continue; }
         let poly = if dilate_stalls {
             let dilated = raw_inset_polygon(&stall.corners, -STALL_DILATION);

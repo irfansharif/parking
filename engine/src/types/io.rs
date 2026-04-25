@@ -48,10 +48,49 @@ pub struct ParkingParams {
     /// every spine with any stall meets the threshold.
     #[serde(default = "default_min_stalls_per_spine")]
     pub min_stalls_per_spine: u32,
+    /// Chord-deflection tolerance (feet) used when discretizing curved
+    /// boundary edges into straight-line polylines. Smaller = smoother
+    /// arcs but more perimeter vertices. See `geom::arc::discretize_polygon`.
+    #[serde(default = "default_arc_discretize_tolerance")]
+    pub arc_discretize_tolerance: f64,
+    /// Maximum angular difference (degrees) between two spine segments
+    /// for them to be considered colinear and fused. Controls how
+    /// aggressively chord-derived spines along a discretized arc collapse
+    /// into a single straight segment in `try_merge_spines`.
+    #[serde(default = "default_spine_merge_angle_deg")]
+    pub spine_merge_angle_deg: f64,
+    /// Endpoint-share tolerance (feet) for the spine-merge pass. Two
+    /// spines must have a pair of endpoints within this distance to be
+    /// candidates for fusion in `merge_collinear_spines`.
+    #[serde(default = "default_spine_merge_endpoint_tol")]
+    pub spine_merge_endpoint_tol: f64,
+    /// Turn radius (feet) for island corner rounding. A disk of this
+    /// radius is rolled inside each face polygon (morphological
+    /// opening) before residual island extraction, so convex face
+    /// corners become arcs rather than 90° wedges. Only takes effect
+    /// when `DebugToggles.island_corner_rounding` is on.
+    #[serde(default = "default_island_corner_radius")]
+    pub island_corner_radius: f64,
 }
 
 fn default_min_stalls_per_spine() -> u32 {
     3
+}
+
+fn default_arc_discretize_tolerance() -> f64 {
+    5.0
+}
+
+fn default_spine_merge_angle_deg() -> f64 {
+    8.1
+}
+
+fn default_spine_merge_endpoint_tol() -> f64 {
+    1.0
+}
+
+fn default_island_corner_radius() -> f64 {
+    6.0
 }
 
 impl ParkingParams {
@@ -85,6 +124,10 @@ impl Default for ParkingParams {
             use_regions: false,
             island_stall_interval: 8,
             min_stalls_per_spine: 3,
+            arc_discretize_tolerance: 5.0,
+            spine_merge_angle_deg: 8.1,
+            spine_merge_endpoint_tol: 1.0,
+            island_corner_radius: 6.0,
         }
     }
 }
@@ -107,24 +150,18 @@ pub struct DebugToggles {
     pub boundary_only_miters: bool,
     #[serde(default = "default_true")]
     pub spike_removal: bool,
-    #[serde(default)]
-    pub contour_simplification: bool,
-    #[serde(default = "default_true")]
-    pub hole_filtering: bool,
 
     // Spine generation
-    #[serde(default)]
-    pub face_simplification: bool,
+    /// Trim each spine endpoint inward from its face edge based on the
+    /// corner angle with the neighboring contour edge (see
+    /// `offset_aisle_edges_to_spines`). Off ⇒ spines run the full face
+    /// edge length.
     #[serde(default = "default_true")]
-    pub spine_clipping: bool,
+    pub spine_end_trim: bool,
 
     // Spine post-processing
-    #[serde(default)]
-    pub spine_dedup: bool,
     #[serde(default = "default_true")]
     pub spine_merging: bool,
-    #[serde(default = "default_true")]
-    pub paired_spine_normalization: bool,
 
     // Spine extensions (extend spines colinearly to face boundary)
     #[serde(default = "default_true")]
@@ -143,6 +180,15 @@ pub struct DebugToggles {
     // Island stall dilation (close sliver gaps in face-minus-stalls subtraction)
     #[serde(default = "default_true")]
     pub island_stall_dilation: bool,
+
+    // Round island corners by morphological opening (erode-then-dilate
+    // with round joins) of the face polygon before residual extraction.
+    // Mimics drive-aisle turn-radius geometry so islands aren't sharp
+    // 90° wedges. The opened polygon is also threaded through the
+    // downstream stall-vs-face checks so stalls never overshoot the
+    // rounded contour.
+    #[serde(default = "default_true")]
+    pub island_corner_rounding: bool,
 }
 
 impl Default for DebugToggles {
@@ -151,18 +197,14 @@ impl Default for DebugToggles {
             miter_fills: true,
             boundary_only_miters: true,
             spike_removal: true,
-            contour_simplification: true,
-            hole_filtering: true,
-            face_simplification: false,
-            spine_clipping: true,
-            spine_dedup: false,
+            spine_end_trim: true,
             spine_merging: true,
-            paired_spine_normalization: true,
             spine_extensions: true,
             stall_face_clipping: true,
             entrance_on_face_filter: true,
             conflict_removal: true,
             island_stall_dilation: true,
+            island_corner_rounding: true,
         }
     }
 }
@@ -244,15 +286,21 @@ pub struct ParkingLayout {
     /// Debug: region clip polygons and separator segments for visualization.
     #[serde(default)]
     pub region_debug: Option<RegionDebug>,
-    /// Indices into `GenerateInput.annotations` for annotations that
-    /// didn't resolve to any graph feature in this pass. For abstract
-    /// annotations that means the (region, xi, yi) lookup missed —
-    /// the target grid point isn't inside any current region, or the
-    /// region's clip polygon excludes it. For legacy proximity
-    /// annotations it means no edge/vertex landed within the
-    /// proximity threshold. Either way the annotation is stored but
-    /// not applied this regenerate; the UI can surface these as
-    /// "dormant."
+    /// Annotations that didn't resolve to any graph feature this pass.
+    /// Each entry pairs the index into `GenerateInput.annotations` with
+    /// a human-readable reason explaining why resolution failed (substrate
+    /// missing, vertex id not on current sketch, no graph feature within
+    /// tolerance, etc.). The annotation is stored but not applied this
+    /// regenerate; the UI can surface these as "dormant."
     #[serde(default)]
-    pub dormant_annotations: Vec<usize>,
+    pub dormant_annotations: Vec<DormantAnnotation>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DormantAnnotation {
+    /// Index into `GenerateInput.annotations`.
+    pub index: usize,
+    /// Why the annotation couldn't be applied this regen.
+    pub reason: String,
 }

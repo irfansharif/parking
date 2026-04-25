@@ -17,7 +17,6 @@ pub enum StallKind {
     Standard,
     Compact,
     Ev,
-    Extension,
     Island,
     /// Stall suppressed by a `StallModifier` post-pass. The renderer
     /// skips these entirely; kept as a distinguished variant (rather
@@ -109,6 +108,10 @@ pub struct SpineSegment {
     pub is_interior: bool,
     /// Travel direction of the adjacent aisle. `None` for two-way or perimeter edges.
     pub travel_dir: Option<Vec2>,
+    /// True for spines on a `TwoWayOrientedReverse` aisle — placement
+    /// negates the stall-angle cosine so the row leans the opposite way
+    /// from the default two-way layout.
+    pub reverse_lean: bool,
 }
 
 impl SpineSegment {
@@ -138,8 +141,6 @@ pub struct SpineLine {
     pub start: Vec2,
     pub end: Vec2,
     pub normal: Vec2,
-    #[serde(default)]
-    pub is_extension: bool,
 }
 
 // ---------------------------------------------------------------------------

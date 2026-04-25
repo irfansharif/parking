@@ -1,0 +1,125 @@
+# Direction-annotation snapshot covering all four TrafficDirection
+# variants on the same lot. 12 vertical drive lines at 100ft pitch;
+# every other one carries a different direction so each annotated
+# aisle has a default (TwoWay) bay between it and the next, isolating
+# the stall-lean pattern of each variant.
+#
+# Stall angle is 45° so the lean direction is unambiguous: at 90° the
+# cosine vanishes and the four variants would render identically.
+#
+# Drive-line ids are auto-allocated 1..12 in declaration order. We
+# annotate ids 2, 4, 6, 8.
+
+polygon outer
+0,0
+1240,0
+1240,300
+0,300
+----
+polygon outer: 4 vertices
+
+drive-line
+70,-20
+70,320
+----
+drive-line: 70,-20 -> 70,320
+
+drive-line
+170,-20
+170,320
+----
+drive-line: 170,-20 -> 170,320
+
+drive-line
+270,-20
+270,320
+----
+drive-line: 270,-20 -> 270,320
+
+drive-line
+370,-20
+370,320
+----
+drive-line: 370,-20 -> 370,320
+
+drive-line
+470,-20
+470,320
+----
+drive-line: 470,-20 -> 470,320
+
+drive-line
+570,-20
+570,320
+----
+drive-line: 570,-20 -> 570,320
+
+drive-line
+670,-20
+670,320
+----
+drive-line: 670,-20 -> 670,320
+
+drive-line
+770,-20
+770,320
+----
+drive-line: 770,-20 -> 770,320
+
+drive-line
+870,-20
+870,320
+----
+drive-line: 870,-20 -> 870,320
+
+drive-line
+970,-20
+970,320
+----
+drive-line: 970,-20 -> 970,320
+
+drive-line
+1070,-20
+1070,320
+----
+drive-line: 1070,-20 -> 1070,320
+
+drive-line
+1170,-20
+1170,320
+----
+drive-line: 1170,-20 -> 1170,320
+
+set stall_angle_deg=45
+----
+set stall_angle_deg=45
+
+annotation direction on=drive-line id=2 t=0.5 traffic=one-way
+----
+annotation direction on=drive-line id=2 t=0.50 traffic=one-way
+
+annotation direction on=drive-line id=4 t=0.5 traffic=one-way-reverse
+----
+annotation direction on=drive-line id=4 t=0.50 traffic=one-way-reverse
+
+annotation direction on=drive-line id=6 t=0.5 traffic=two-way-oriented
+----
+annotation direction on=drive-line id=6 t=0.50 traffic=two-way-oriented
+
+annotation direction on=drive-line id=8 t=0.5 traffic=two-way-oriented-reverse
+----
+annotation direction on=drive-line id=8 t=0.50 traffic=two-way-oriented-reverse
+
+generate
+----
+total_stalls: 612
+
+annotations
+----
+direction on=drive-line id=2 t=0.50 traffic=one-way
+direction on=drive-line id=4 t=0.50 traffic=one-way-reverse
+direction on=drive-line id=6 t=0.50 traffic=two-way-oriented
+direction on=drive-line id=8 t=0.50 traffic=two-way-oriented-reverse
+
+snapshot
+----

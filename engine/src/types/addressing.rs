@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::geom::Vec2;
+use super::geom::{Vec2, VertexId};
 use super::io::ParkingParams;
 
 // ---------------------------------------------------------------------------
@@ -249,8 +249,18 @@ pub enum Target {
         #[serde(rename = "loop")]
         #[ts(rename = "loop")]
         loop_: PerimeterLoop,
-        /// Normalized arc length ∈ [0, 1] along the loop.
-        arc: f64,
+        /// Sketch vertex at the start of the addressed edge (loop
+        /// traversal order — the edge runs from `start` to `end`
+        /// going forward along the loop's stored winding).
+        start: VertexId,
+        /// Sketch vertex at the end of the addressed edge.
+        end: VertexId,
+        /// Position along the edge in sketch parameter space:
+        ///   straight edges — linear `lerp(start_pos, end_pos, t)`,
+        ///   arc edges      — angular fraction along the circular arc.
+        /// `t = 0` resolves to the start vertex; `t = 1` to the end.
+        /// Vertex annotations use `t = 0` (the edge's start vertex).
+        t: f64,
     },
 }
 

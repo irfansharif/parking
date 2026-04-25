@@ -146,6 +146,16 @@ fn annotation_perimeter_direction() {
 }
 
 #[test]
+fn annotation_direction_quartet() {
+    run_fixture(&testdata_dir().join("annotation-direction-quartet.txt"));
+}
+
+#[test]
+fn perimeter_delete_arc_vertex() {
+    run_fixture(&testdata_dir().join("perimeter-delete-arc-vertex.txt"));
+}
+
+#[test]
 fn stall_modifier_suppress() {
     run_fixture(&testdata_dir().join("stall-modifier-suppress.txt"));
 }

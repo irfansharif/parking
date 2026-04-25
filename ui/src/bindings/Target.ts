@@ -3,6 +3,7 @@ import type { Axis } from "./Axis";
 import type { GridStop } from "./GridStop";
 import type { PerimeterLoop } from "./PerimeterLoop";
 import type { RegionId } from "./RegionId";
+import type { VertexId } from "./VertexId";
 
 /**
  * A referenceable region in one substrate's own coord system.
@@ -23,6 +24,20 @@ range: [GridStop, GridStop] | null, } | { "on": "DriveLine", id: number,
  */
 t: number, } | { "on": "Perimeter", loop: PerimeterLoop, 
 /**
- * Normalized arc length ∈ [0, 1] along the loop.
+ * Sketch vertex at the start of the addressed edge (loop
+ * traversal order — the edge runs from `start` to `end`
+ * going forward along the loop's stored winding).
  */
-arc: number, };
+start: VertexId, 
+/**
+ * Sketch vertex at the end of the addressed edge.
+ */
+end: VertexId, 
+/**
+ * Position along the edge in sketch parameter space:
+ *   straight edges — linear `lerp(start_pos, end_pos, t)`,
+ *   arc edges      — angular fraction along the circular arc.
+ * `t = 0` resolves to the start vertex; `t = 1` to the end.
+ * Vertex annotations use `t = 0` (the edge's start vertex).
+ */
+t: number, };

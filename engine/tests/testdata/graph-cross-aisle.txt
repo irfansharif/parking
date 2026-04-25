@@ -21,7 +21,7 @@ set stalls_per_face=10
 
 generate
 ----
-total_stalls: 164
+total_stalls: 102
 
 graph summary
 ----

@@ -64,6 +64,154 @@ pub fn point_to_segment_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
     (p - proj).length()
 }
 
+/// Pole of inaccessibility — the interior point farthest from any
+/// boundary edge. Useful as a label-placement anchor for irregular
+/// polygons (centroid can fall outside concave shapes). Implements
+/// Mapbox's polylabel algorithm: priority-queue grid subdivision over
+/// a max-heap keyed by upper-bound distance per cell.
+///
+/// `precision` caps the search — refinement stops once the heap's
+/// best upper bound is within `precision` of the current best
+/// in-cell distance. 1.0 (= 1 ft) is plenty for label placement.
+pub fn polygon_pole(outer: &[Vec2], holes: &[Vec<Vec2>], precision: f64) -> Vec2 {
+    use std::cmp::Ordering;
+    use std::collections::BinaryHeap;
+
+    if outer.len() < 3 {
+        return outer.first().copied().unwrap_or(Vec2::new(0.0, 0.0));
+    }
+
+    let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
+    let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in outer {
+        min_x = min_x.min(p.x);
+        max_x = max_x.max(p.x);
+        min_y = min_y.min(p.y);
+        max_y = max_y.max(p.y);
+    }
+    let width = max_x - min_x;
+    let height = max_y - min_y;
+    let cell_size = width.min(height);
+    let center_fallback = Vec2::new((min_x + max_x) * 0.5, (min_y + max_y) * 0.5);
+    if cell_size < 1e-9 {
+        return center_fallback;
+    }
+
+    /// `max_d` = upper bound on signed distance for any point in this
+    /// cell (= cell-center distance + half-diagonal). Heap order keys
+    /// off this so we always refine the most promising cell next.
+    struct Cell {
+        center: Vec2,
+        half: f64,
+        d: f64,
+        max_d: f64,
+    }
+    impl PartialEq for Cell {
+        fn eq(&self, o: &Self) -> bool {
+            self.max_d == o.max_d
+        }
+    }
+    impl Eq for Cell {}
+    impl PartialOrd for Cell {
+        fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+            Some(self.cmp(o))
+        }
+    }
+    impl Ord for Cell {
+        fn cmp(&self, o: &Self) -> Ordering {
+            self.max_d.partial_cmp(&o.max_d).unwrap_or(Ordering::Equal)
+        }
+    }
+
+    let signed_dist = |p: Vec2| -> f64 {
+        let mut min_d = f64::INFINITY;
+        for ring in std::iter::once(outer).chain(holes.iter().map(|h| h.as_slice())) {
+            let n = ring.len();
+            if n < 2 {
+                continue;
+            }
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let d = point_to_segment_dist(p, ring[i], ring[j]);
+                if d < min_d {
+                    min_d = d;
+                }
+            }
+        }
+        let inside = point_in_loop(&p, outer)
+            && !holes.iter().any(|h| point_in_loop(&p, h));
+        if inside { min_d } else { -min_d }
+    };
+
+    let make_cell = |center: Vec2, half: f64| -> Cell {
+        let d = signed_dist(center);
+        Cell {
+            center,
+            half,
+            d,
+            max_d: d + half * std::f64::consts::SQRT_2,
+        }
+    };
+
+    let h = cell_size * 0.5;
+    let mut queue: BinaryHeap<Cell> = BinaryHeap::new();
+    let mut x = min_x;
+    while x < max_x {
+        let mut y = min_y;
+        while y < max_y {
+            queue.push(make_cell(Vec2::new(x + h, y + h), h));
+            y += cell_size;
+        }
+        x += cell_size;
+    }
+
+    // Seed best with bbox-center and centroid.
+    let centroid = {
+        let mut acc = Vec2::new(0.0, 0.0);
+        let mut a2 = 0.0;
+        let n = outer.len();
+        for i in 0..n {
+            let p0 = outer[i];
+            let p1 = outer[(i + 1) % n];
+            let cross = p0.x * p1.y - p1.x * p0.y;
+            acc.x += (p0.x + p1.x) * cross;
+            acc.y += (p0.y + p1.y) * cross;
+            a2 += cross;
+        }
+        if a2.abs() > 1e-9 {
+            Vec2::new(acc.x / (3.0 * a2), acc.y / (3.0 * a2))
+        } else {
+            center_fallback
+        }
+    };
+    let mut best_cell = make_cell(center_fallback, 0.0);
+    let centroid_cell = make_cell(centroid, 0.0);
+    if centroid_cell.d > best_cell.d {
+        best_cell = centroid_cell;
+    }
+
+    while let Some(cell) = queue.pop() {
+        if cell.d > best_cell.d {
+            best_cell = Cell {
+                center: cell.center,
+                half: cell.half,
+                d: cell.d,
+                max_d: cell.max_d,
+            };
+        }
+        if cell.max_d - best_cell.d <= precision {
+            continue;
+        }
+        let h2 = cell.half * 0.5;
+        for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            let c = Vec2::new(cell.center.x + sx * h2, cell.center.y + sy * h2);
+            queue.push(make_cell(c, h2));
+        }
+    }
+
+    best_cell.center
+}
+
 /// Clip line segment `a→b` to the interior of a face shape. Returns
 /// parameter intervals `[(t0, t1), …]` where `a + t*(b-a)` is inside
 /// the face (outer CCW minus CW holes).
@@ -151,62 +299,3 @@ pub fn ray_hit_face_edge(
     best
 }
 
-/// Simplify a closed contour in two passes:
-///
-/// 1. Remove duplicate vertices (zero-length edges, tol 1e-6).
-/// 2. Drop any vertex whose incoming/outgoing edges are near-collinear
-///    — the angle between them smaller than `angle_tol` radians.
-///
-/// Preserves winding. If simplification would leave fewer than 3
-/// vertices, returns the dedup-only result.
-pub fn simplify_contour(pts: &[Vec2], angle_tol: f64) -> Vec<Vec2> {
-    if pts.len() < 3 {
-        return pts.to_vec();
-    }
-
-    // Pass 1: remove duplicate vertices (truly zero-length edges only).
-    let dup_tol = 1e-6;
-    let mut deduped: Vec<Vec2> = Vec::with_capacity(pts.len());
-    for &p in pts {
-        if deduped
-            .last()
-            .map_or(true, |prev: &Vec2| (*prev - p).length() > dup_tol)
-        {
-            deduped.push(p);
-        }
-    }
-    while deduped.len() > 3 {
-        if (deduped[0] - *deduped.last().unwrap()).length() <= dup_tol {
-            deduped.pop();
-        } else {
-            break;
-        }
-    }
-
-    // Pass 2: merge nearly-collinear edges.
-    let cos_tol = angle_tol.cos();
-    let mut simplified: Vec<Vec2> = Vec::with_capacity(deduped.len());
-    let n = deduped.len();
-    for i in 0..n {
-        let prev = deduped[(i + n - 1) % n];
-        let curr = deduped[i];
-        let next = deduped[(i + 1) % n];
-        let d1 = curr - prev;
-        let d2 = next - curr;
-        let len1 = d1.length();
-        let len2 = d2.length();
-        if len1 < 1e-12 || len2 < 1e-12 {
-            continue;
-        }
-        let dot = d1.dot(d2) / (len1 * len2);
-        if dot > cos_tol {
-            continue;
-        }
-        simplified.push(curr);
-    }
-
-    if simplified.len() < 3 {
-        return deduped;
-    }
-    simplified
-}

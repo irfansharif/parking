@@ -69,6 +69,37 @@ pub fn inset_polygon(polygon: &[Vec2], d: f64) -> Vec<Vec2> {
     out
 }
 
+/// Like `inset_polygon`, but also subsets a parallel `VertexId` array
+/// down to surviving vertices so callers can preserve stable identity
+/// across the inset. Returns `(inset_polygon, surviving_ids)`. If
+/// `ids.len()` doesn't match `polygon.len()`, the returned ids vec is
+/// empty (the inset polygon itself is unaffected).
+pub fn inset_polygon_with_ids(
+    polygon: &[Vec2],
+    ids: &[crate::types::VertexId],
+    d: f64,
+) -> (Vec<Vec2>, Vec<crate::types::VertexId>) {
+    let n = polygon.len();
+    if n < 3 {
+        return (Vec::new(), Vec::new());
+    }
+    let distances = vec![d; n];
+    let (result, live, _) = inset_per_edge_core(polygon, &distances, None);
+    if live.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let out: Vec<Vec2> = live.iter().map(|&i| result[i]).collect();
+    if signed_area(&out).abs() < 1.0 {
+        return (Vec::new(), Vec::new());
+    }
+    let ids_out: Vec<crate::types::VertexId> = if ids.len() == n {
+        live.iter().map(|&i| ids[i]).collect()
+    } else {
+        Vec::new()
+    };
+    (out, ids_out)
+}
+
 /// Core per-edge inset with miter intersections and edge-collapse detection.
 ///
 /// `sign_override` lets the caller force a winding sign (e.g. use the outer

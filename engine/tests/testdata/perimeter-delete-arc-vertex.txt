@@ -1,0 +1,44 @@
+# Repro: deleting a synthetic chord-interior vertex on a discretized
+# arc. Sketch is a rect with one curved edge (the right one). After
+# `discretize_polygon`, that arc edge becomes a chord chain with
+# synthetic ids. The user's `DeleteVertex` annotation addresses the
+# parent sketch edge by `(start_vid, end_vid)`; the engine should
+# resolve to the nearest graph vertex on the chord chain (i.e. the
+# synthetic vertex closest to t=0.5) and remove it.
+#
+# Bug: previously the annotation went dormant because (a)
+# `world_to_perimeter_pos` projected onto the chord between sketch
+# corners instead of the underlying arc, and (b) the engine resolver
+# couldn't match the (start, end, t) target to any graph vertex.
+
+polygon outer
+0,0
+240,0
+arc 0.2
+240,160
+0,160
+----
+polygon outer: 4 vertices
+
+set stall-angle=90
+----
+set stall_angle_deg=90
+
+# Sketch ids assigned by `ensure_ids` (engine-side, before
+# discretization) are 1..4 in walk order: 1=(0,0), 2=(240,0),
+# 3=(240,160) (post-arc), 4=(0,160). The arc edge runs 2→3.
+# bulge=0.2 + the default `arc_discretize_tolerance=5` yields
+# exactly 2 chords on the arc — one synthetic vertex at the
+# chord-chain midpoint, hit precisely by t=0.5.
+annotation delete-vertex on=perimeter loop=outer start=2 end=3 t=0.5
+----
+annotation delete-vertex on=perimeter loop=outer edge=2→3 t=0.50
+
+generate
+----
+total_stalls: 104
+
+# The annotation must NOT be dormant — that's the whole point.
+dormant
+----
+dormant_annotations: 0

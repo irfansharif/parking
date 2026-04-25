@@ -17,17 +17,17 @@ set stall-angle=90
 set stall_angle_deg=90
 
 annotation-json
-[{"kind":"Direction","target":{"on":"Perimeter","loop":{"kind":"Outer"},"arc":0.5},"traffic":"OneWay"}]
+[{"kind":"Direction","target":{"on":"Perimeter","loop":{"kind":"Outer"},"start":2,"end":3,"t":0.5},"traffic":"OneWay"}]
 ----
 annotation-json: +1
 
 generate
 ----
-total_stalls: 154
+total_stalls: 127
 
 annotations
 ----
-direction on=perimeter loop=outer arc=0.50 traffic=one-way
+direction on=perimeter loop=outer edge=2→3 t=0.50 traffic=one-way
 
 snapshot
 ----

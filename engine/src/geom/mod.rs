@@ -9,4 +9,5 @@ pub mod arc;
 pub mod boolean;
 pub mod clip;
 pub mod inset;
+pub mod offset;
 pub mod poly;

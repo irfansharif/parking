@@ -393,13 +393,76 @@ export function targetWorldPos(
   ) as Vec2 | null;
 }
 
-/** Project a world point onto the nearest perimeter loop. */
+/** Project a world point onto the nearest perimeter loop. The boundary
+ * must carry `outer_ids` / `hole_ids` parallel to its vertex arrays —
+ * call `ensurePolygonIds` first if you're constructing one fresh. */
 export function worldToPerimeterPos(
   v: Vec2,
-  boundary: { outer: Vec2[]; holes: Vec2[][] },
+  boundary: Polygon,
   tol: number = 0.5,
 ): PerimeterPosResult | null {
   return world_to_perimeter_pos_js(v.x, v.y, boundary, tol) as PerimeterPosResult | null;
+}
+
+// ---------------------------------------------------------------------------
+// Vertex-id allocation helpers. Boundary annotations reference sketch
+// edges by `(start_vid, end_vid)` pairs; the UI is responsible for
+// keeping `outer_ids` / `hole_ids` in sync with vertex mutations so
+// that ids stay stable across edits unrelated to a given annotation's
+// edge. When a vertex is inserted on an annotation's edge or one of
+// the endpoints is deleted, the engine returns dormant — the user
+// re-adds the annotation. There is no migration / promotion.
+// ---------------------------------------------------------------------------
+
+/** Highest VertexId currently in use across the boundary. */
+function maxBoundaryVid(boundary: Polygon): number {
+  let m = 0;
+  if (Array.isArray(boundary.outer_ids)) {
+    for (const id of boundary.outer_ids) if (id > m) m = id;
+  }
+  if (Array.isArray(boundary.hole_ids)) {
+    for (const ring of boundary.hole_ids) {
+      if (Array.isArray(ring)) {
+        for (const id of ring) if (id > m) m = id;
+      }
+    }
+  }
+  return m;
+}
+
+/** Allocate the next available VertexId on the boundary. */
+export function nextVertexId(boundary: Polygon): number {
+  return maxBoundaryVid(boundary) + 1;
+}
+
+/** Populate any missing `outer_ids` / `hole_ids` so they're parallel
+ * to `outer` / `holes`. Idempotent: existing ids are preserved when
+ * lengths already match. When a length mismatch is detected (e.g. a
+ * vertex was inserted without a paired id), all ids on that ring are
+ * reallocated from scratch — annotations targeting that ring go
+ * dormant on the next regen, matching the "clear on split" rule. */
+export function ensurePolygonIds(boundary: Polygon): void {
+  let next = maxBoundaryVid(boundary) + 1;
+  if (
+    !Array.isArray(boundary.outer_ids) ||
+    boundary.outer_ids.length !== boundary.outer.length
+  ) {
+    boundary.outer_ids = boundary.outer.map(() => next++);
+  }
+  if (
+    !Array.isArray(boundary.hole_ids) ||
+    boundary.hole_ids.length !== boundary.holes.length
+  ) {
+    boundary.hole_ids = boundary.holes.map(() => []);
+  }
+  for (let i = 0; i < boundary.holes.length; i++) {
+    if (
+      !Array.isArray(boundary.hole_ids[i]) ||
+      boundary.hole_ids[i].length !== boundary.holes[i].length
+    ) {
+      boundary.hole_ids[i] = boundary.holes[i].map(() => next++);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

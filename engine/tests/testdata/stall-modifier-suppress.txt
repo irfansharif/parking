@@ -26,7 +26,7 @@ stall-modifier-json: +1
 
 generate
 ----
-total_stalls: 142
+total_stalls: 116
 
 snapshot
 ----

@@ -78,6 +78,42 @@ impl Mul<f64> for Vec2 {
 }
 
 // ---------------------------------------------------------------------------
+// VertexId
+// ---------------------------------------------------------------------------
+
+/// Stable identifier for a sketch vertex. Allocated at input parse
+/// time and threaded through the pipeline so that perimeter
+/// annotations can address sketch edges as `(start, end)` pairs
+/// instead of by array index or arc length. Mirrors Arcol's
+/// `VertexId` (a `Brand<number, "VertexId">` over a 32-bit
+/// integer) for an eventual integration.
+///
+/// Ids are stable within a single user-authored sketch — they
+/// survive vertex insertion, deletion, and reordering elsewhere on
+/// the loop. Splitting an edge with a new sketch vertex *does*
+/// invalidate the original edge identity; resolution promotes the
+/// annotation onto the appropriate child edge by length.
+///
+/// Post-discretization vertices that don't correspond to a sketch
+/// corner carry synthetic ids — they're not addressable from
+/// annotations but exist so that the parallel `outer_ids` /
+/// `hole_ids` arrays stay 1:1 with the vertex lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct VertexId(pub u32);
+
+impl VertexId {
+    /// Sentinel synthetic id used while discretizing or before ids are
+    /// allocated. Real sketch vertices always carry a value below
+    /// `SYNTHETIC_BASE`.
+    pub const SYNTHETIC_BASE: u32 = 1 << 30;
+
+    pub fn is_synthetic(self) -> bool {
+        self.0 >= Self::SYNTHETIC_BASE
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Polygon
 // ---------------------------------------------------------------------------
 
@@ -103,6 +139,13 @@ pub struct Polygon {
     /// Per-hole per-edge arc data. Outer index = hole index.
     #[serde(default)]
     pub hole_arcs: Vec<Vec<Option<EdgeArc>>>,
+    /// Per-vertex stable ids for the outer ring. Parallel to `outer`.
+    /// Auto-allocated by `ensure_ids` if missing on input.
+    #[serde(default)]
+    pub outer_ids: Vec<VertexId>,
+    /// Per-vertex stable ids for each hole. Parallel to `holes`.
+    #[serde(default)]
+    pub hole_ids: Vec<Vec<VertexId>>,
 }
 
 impl Polygon {
@@ -135,6 +178,51 @@ impl Polygon {
     /// is the serialization contract.
     pub fn holes_are_cw(&self) -> bool {
         self.holes.iter().all(|h| Self::signed_area(h) < 0.0)
+    }
+
+    /// Allocate `VertexId`s for any vertex without one. Idempotent.
+    /// Existing ids (from external input — Arcol, JSON, hand-written
+    /// fixtures) are preserved. Newly allocated ids start above the
+    /// max existing id, so re-running this on a partially-populated
+    /// polygon stays consistent.
+    pub fn ensure_ids(&mut self) {
+        let outer_n = self.outer.len();
+        let mut max_existing: u32 = 0;
+        let mut have_existing = |ids: &Vec<VertexId>| {
+            for v in ids {
+                if !v.is_synthetic() && v.0 > max_existing {
+                    max_existing = v.0;
+                }
+            }
+        };
+        if self.outer_ids.len() == outer_n {
+            have_existing(&self.outer_ids);
+        }
+        for hi in 0..self.holes.len() {
+            if let Some(ids) = self.hole_ids.get(hi) {
+                if ids.len() == self.holes[hi].len() {
+                    have_existing(ids);
+                }
+            }
+        }
+        let mut next: u32 = max_existing + 1;
+        let mut alloc = || {
+            let id = VertexId(next);
+            next += 1;
+            id
+        };
+
+        if self.outer_ids.len() != outer_n {
+            self.outer_ids = (0..outer_n).map(|_| alloc()).collect();
+        }
+        if self.hole_ids.len() != self.holes.len() {
+            self.hole_ids = vec![Vec::new(); self.holes.len()];
+        }
+        for hi in 0..self.holes.len() {
+            if self.hole_ids[hi].len() != self.holes[hi].len() {
+                self.hole_ids[hi] = (0..self.holes[hi].len()).map(|_| alloc()).collect();
+            }
+        }
     }
 
     /// Debug-only simple-polygon check: no edge crosses any non-
@@ -245,8 +333,7 @@ mod tests {
                 Vec2::new(1.5, 1.5),
                 Vec2::new(1.5, 0.5),
             ]],
-            outer_arcs: Vec::new(),
-            hole_arcs: Vec::new(),
+            ..Default::default()
         };
         assert!(p.outer_is_ccw());
         assert!(p.holes_are_cw());

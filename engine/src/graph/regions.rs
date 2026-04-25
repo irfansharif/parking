@@ -9,20 +9,32 @@
 //! enclosing face's boundary cycle but don't split it.
 //!
 //! Region IDs are derived from the canonicalized cyclic sequence of
-//! edge kinds bounding each face. The sequence is deduped for
-//! consecutive identical kinds (an outer edge split by a partition
-//! still contributes one `Outer(i)` entry on each side) and then
-//! rotated so the lex-smallest element leads. This yields IDs stable
-//! under unrelated geometry edits.
+//! edge kinds bounding each face. Boundary edges are keyed by the
+//! `VertexId` of the segment's start vertex — stable across vertex
+//! insertions, deletions, and reorderings elsewhere on the loop —
+//! rather than by positional segment index, which renumbered every
+//! later edge whenever any vertex was added or removed. The sequence
+//! is deduped for consecutive identical kinds (an outer edge split
+//! by a partition still contributes one `Outer(id)` entry on each
+//! side) and then rotated so the lex-smallest element leads.
 
-use crate::types::{RegionId, Vec2};
+use crate::types::{RegionId, Vec2, VertexId};
 
 const EPS: f64 = 1e-6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EdgeKind {
-    Outer(u32),
-    Hole(u32, u32),
+    /// Outer-loop edge keyed by the `VertexId` of its start vertex
+    /// (in CCW orientation). Stable across edits elsewhere on the
+    /// loop. Synthetic chord vertices (post-arc-discretization) carry
+    /// synthetic ids; whether those persist across regenerations is
+    /// the caller's responsibility.
+    Outer(VertexId),
+    /// Hole-loop edge keyed by `(hole_index, start_vertex_id)` in CW
+    /// orientation. The hole index is positional (matches
+    /// `boundary.holes[i]`), consistent with `PerimeterLoop::Hole`.
+    Hole(u32, VertexId),
+    /// Partition (drive-line) edge keyed by the drive line's stable id.
     Partition(u32),
 }
 
@@ -35,14 +47,16 @@ pub struct PartitionedRegion {
 
 pub fn enumerate_regions(
     outer: &[Vec2],
-    holes: &[&[Vec2]],
+    outer_ids: &[VertexId],
+    holes: &[(&[Vec2], &[VertexId])],
     partitioning_lines: &[(u32, Vec2, Vec2)],
 ) -> Vec<PartitionedRegion> {
     // 1. Collect source segments with provenance. Orient outer CCW and
     //    each hole CW so that the "forward" half-edge of every boundary
-    //    segment has the lot interior on its left.
-    let outer_ccw = ensure_orientation(outer, true);
-    let segments = collect_segments(&outer_ccw, holes, partitioning_lines);
+    //    segment has the lot interior on its left. Parallel ids are
+    //    reversed alongside if the orientation flips.
+    let (outer_ccw, outer_ids_ccw) = orient_with_ids(outer, outer_ids, true);
+    let segments = collect_segments(&outer_ccw, &outer_ids_ccw, holes, partitioning_lines);
 
     // 2. Intersect all pairs, split segments at every crossing and
     //    endpoint, produce sub-segments.
@@ -76,30 +90,39 @@ struct Segment {
 
 fn collect_segments(
     outer_ccw: &[Vec2],
-    holes: &[&[Vec2]],
+    outer_ids_ccw: &[VertexId],
+    holes: &[(&[Vec2], &[VertexId])],
     partitions: &[(u32, Vec2, Vec2)],
 ) -> Vec<Segment> {
     let mut out = Vec::new();
     let n = outer_ccw.len();
+    // Map each segment's start vertex to its *upstream sketch corner*
+    // (most recent non-synthetic id at or before this position around
+    // the loop). Multiple chord segments along one arc all share the
+    // same anchor — region-id dedup then collapses them into a single
+    // EdgeKind entry, making the region id invariant to chord count
+    // (which fluctuates with bulge magnitude vs discretize tolerance).
+    let outer_anchors = ancestors_for_loop(outer_ids_ccw, n);
     for i in 0..n {
         out.push(Segment {
             p0: outer_ccw[i],
             p1: outer_ccw[(i + 1) % n],
-            kind: EdgeKind::Outer(i as u32),
+            kind: EdgeKind::Outer(outer_anchors[i]),
             boundary: true,
         });
     }
-    for (h, hole) in holes.iter().enumerate() {
+    for (h, (hole, hole_ids)) in holes.iter().enumerate() {
         if hole.len() < 3 {
             continue;
         }
-        let hole_cw = ensure_orientation(hole, false);
+        let (hole_cw, hole_ids_cw) = orient_with_ids(hole, hole_ids, false);
         let m = hole_cw.len();
+        let hole_anchors = ancestors_for_loop(&hole_ids_cw, m);
         for i in 0..m {
             out.push(Segment {
                 p0: hole_cw[i],
                 p1: hole_cw[(i + 1) % m],
-                kind: EdgeKind::Hole(h as u32, i as u32),
+                kind: EdgeKind::Hole(h as u32, hole_anchors[i]),
                 boundary: true,
             });
         }
@@ -118,13 +141,67 @@ fn collect_segments(
     out
 }
 
-fn ensure_orientation(poly: &[Vec2], ccw: bool) -> Vec<Vec2> {
+/// For each position `i` in a loop of `length` vertices, return the
+/// most-recent non-synthetic `VertexId` at or before `i` walking
+/// forward through the loop with wrap-around. Lets boundary edges
+/// produced by arc discretization (interior chord samples carrying
+/// synthetic ids) inherit their parent sketch corner as a stable
+/// anchor.
+///
+/// If `ids.len() != length` the input is treated as missing — the
+/// returned vec is filled with synthetic positional ids so collect
+/// still produces unique-but-unstable EdgeKinds (matching pre-fix
+/// behavior).
+///
+/// If every id in the loop is synthetic, the function returns the ids
+/// as-is — the loop has no sketch anchor to attach to.
+fn ancestors_for_loop(ids: &[VertexId], length: usize) -> Vec<VertexId> {
+    if ids.len() != length {
+        return (0..length as u32)
+            .map(|i| VertexId(VertexId::SYNTHETIC_BASE | (i & !VertexId::SYNTHETIC_BASE)))
+            .collect();
+    }
+    let Some(start_idx) = ids.iter().position(|id| !id.is_synthetic()) else {
+        return ids.to_vec();
+    };
+    let mut out = vec![VertexId(0); length];
+    let mut current = ids[start_idx];
+    for k in 0..length {
+        let i = (start_idx + k) % length;
+        if !ids[i].is_synthetic() {
+            current = ids[i];
+        }
+        out[i] = current;
+    }
+    out
+}
+
+/// `ensure_orientation` paired with a parallel `VertexId` array. Reverses
+/// the ids alongside the polygon so `ids[i]` remains the start vertex of
+/// segment `i` after orientation. If `ids.len()` doesn't match `poly.len()`
+/// the ids array is returned empty (caller falls back to synthetic ids).
+fn orient_with_ids(
+    poly: &[Vec2],
+    ids: &[VertexId],
+    ccw: bool,
+) -> (Vec<Vec2>, Vec<VertexId>) {
     let mut v = poly.to_vec();
     let area = signed_area(&v);
-    if (ccw && area < 0.0) || (!ccw && area > 0.0) {
+    let must_reverse = (ccw && area < 0.0) || (!ccw && area > 0.0);
+    let mut ids_out: Vec<VertexId> =
+        if ids.len() == poly.len() { ids.to_vec() } else { Vec::new() };
+    if must_reverse {
         v.reverse();
+        if !ids_out.is_empty() {
+            // After reversing both arrays, segment `i` in the reversed
+            // polygon goes from v[i] to v[i+1] — which is the *reverse*
+            // of the original edge ending at v[i]. The start vertex of
+            // segment i in the reversed poly is the original vertex
+            // n-1-i, whose id sits at ids_reversed[i] after reverse.
+            ids_out.reverse();
+        }
     }
-    v
+    (v, ids_out)
 }
 
 fn signed_area(poly: &[Vec2]) -> f64 {
@@ -411,14 +488,20 @@ fn region_id_from_kinds(kinds: &[EdgeKind]) -> RegionId {
             break;
         }
     }
-    // Hash FNV-1a over the canonical sequence.
+    // Hash FNV-1a over the canonical sequence. Each kind packs a tag
+    // byte plus its payload (32-bit VertexId or 16-bit hole index +
+    // 32-bit VertexId or 32-bit partition id), all comfortably within
+    // a u64 — VertexId is u32 by definition, so even the dual-payload
+    // Hole variant fits.
     let mut h: u64 = 0xcbf29ce484222325;
     for j in 0..n {
         let k = &kinds[(best + j) % n];
         let code: u64 = match *k {
-            EdgeKind::Outer(i) => (1 << 32) | i as u64,
-            EdgeKind::Hole(h_, e) => (2u64 << 40) | ((h_ as u64) << 20) | (e as u64),
-            EdgeKind::Partition(p) => (3u64 << 32) | p as u64,
+            EdgeKind::Outer(v) => (1u64 << 56) | v.0 as u64,
+            EdgeKind::Hole(h_, v) => {
+                (2u64 << 56) | ((h_ as u64 & 0xFFFF) << 32) | v.0 as u64
+            }
+            EdgeKind::Partition(p) => (3u64 << 56) | p as u64,
         };
         for b in code.to_le_bytes() {
             h ^= b as u64;
@@ -447,10 +530,15 @@ mod tests {
         ]
     }
 
+    fn ids(start: u32, n: usize) -> Vec<VertexId> {
+        (0..n as u32).map(|i| VertexId(start + i)).collect()
+    }
+
     #[test]
     fn outer_only_single_region() {
         let outer = rect(10.0, 10.0);
-        let regions = enumerate_regions(&outer, &[], &[]);
+        let oid = ids(1, outer.len());
+        let regions = enumerate_regions(&outer, &oid, &[], &[]);
         assert_eq!(regions.len(), 1);
         assert!((signed_area(&regions[0].clip_poly) - 100.0).abs() < 1e-6);
     }
@@ -458,13 +546,20 @@ mod tests {
     #[test]
     fn outer_with_hole_single_region() {
         let outer = rect(10.0, 10.0);
+        let oid = ids(1, outer.len());
         let hole = vec![
             Vec2::new(3.0, 3.0),
             Vec2::new(7.0, 3.0),
             Vec2::new(7.0, 7.0),
             Vec2::new(3.0, 7.0),
         ];
-        let regions = enumerate_regions(&outer, &[&hole], &[]);
+        let hid = ids(100, hole.len());
+        let regions = enumerate_regions(
+            &outer,
+            &oid,
+            &[(hole.as_slice(), hid.as_slice())],
+            &[],
+        );
         // Outer + hole → one annular face.
         assert_eq!(regions.len(), 1);
     }
@@ -472,9 +567,10 @@ mod tests {
     #[test]
     fn chord_splits_into_two_regions() {
         let outer = rect(10.0, 10.0);
+        let oid = ids(1, outer.len());
         // Horizontal chord from (0, 5) to (10, 5).
         let parts = vec![(42u32, Vec2::new(0.0, 5.0), Vec2::new(10.0, 5.0))];
-        let regions = enumerate_regions(&outer, &[], &parts);
+        let regions = enumerate_regions(&outer, &oid, &[], &parts);
         assert_eq!(regions.len(), 2);
         // Both regions should have area ≈ 50.
         for r in &regions {
@@ -487,33 +583,144 @@ mod tests {
     #[test]
     fn dangling_partition_does_not_split() {
         let outer = rect(10.0, 10.0);
+        let oid = ids(1, outer.len());
         // Partition from (0,5) to (5,5) — endpoint (5,5) is interior.
         let parts = vec![(7u32, Vec2::new(0.0, 5.0), Vec2::new(5.0, 5.0))];
-        let regions = enumerate_regions(&outer, &[], &parts);
+        let regions = enumerate_regions(&outer, &oid, &[], &parts);
         assert_eq!(regions.len(), 1, "dangling partition must not split");
     }
 
     #[test]
     fn two_chords_three_regions() {
         let outer = rect(10.0, 10.0);
+        let oid = ids(1, outer.len());
         let parts = vec![
             (1u32, Vec2::new(3.0, 0.0), Vec2::new(3.0, 10.0)),
             (2u32, Vec2::new(7.0, 0.0), Vec2::new(7.0, 10.0)),
         ];
-        let regions = enumerate_regions(&outer, &[], &parts);
+        let regions = enumerate_regions(&outer, &oid, &[], &parts);
         assert_eq!(regions.len(), 3);
     }
 
     #[test]
     fn region_ids_stable_across_runs() {
         let outer = rect(10.0, 10.0);
+        let oid = ids(1, outer.len());
         let parts = vec![(42u32, Vec2::new(0.0, 5.0), Vec2::new(10.0, 5.0))];
-        let r1 = enumerate_regions(&outer, &[], &parts);
-        let r2 = enumerate_regions(&outer, &[], &parts);
+        let r1 = enumerate_regions(&outer, &oid, &[], &parts);
+        let r2 = enumerate_regions(&outer, &oid, &[], &parts);
         let mut ids1: Vec<_> = r1.iter().map(|r| r.id).collect();
         let mut ids2: Vec<_> = r2.iter().map(|r| r.id).collect();
         ids1.sort_by_key(|r| r.0);
         ids2.sort_by_key(|r| r.0);
         assert_eq!(ids1, ids2);
+    }
+
+    #[test]
+    fn region_ids_stable_when_unrelated_vertex_inserted() {
+        // Region IDs must not change when a vertex is inserted on a part
+        // of the outer loop that doesn't bound the region. Original loop
+        // is a 4-vertex rect split horizontally; inserting a vertex on
+        // the bottom edge (between v0 and v1) should leave the upper
+        // region's ID unchanged, since none of its bounding edges touch
+        // the new vertex.
+        let outer = rect(10.0, 10.0);
+        let oid = ids(1, outer.len()); // [V1, V2, V3, V4] for [P0..P3]
+        let parts = vec![(42u32, Vec2::new(0.0, 5.0), Vec2::new(10.0, 5.0))];
+        let r1 = enumerate_regions(&outer, &oid, &[], &parts);
+
+        // Insert (5,0) between v0 (0,0) and v1 (10,0) with a *new* id.
+        // The original v1..v3 keep their ids — exactly the stability
+        // property positional indexing failed to provide.
+        let outer2 = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(5.0, 0.0),
+            Vec2::new(10.0, 0.0),
+            Vec2::new(10.0, 10.0),
+            Vec2::new(0.0, 10.0),
+        ];
+        let oid2 = vec![
+            VertexId(1),
+            VertexId(99), // new vertex
+            VertexId(2),
+            VertexId(3),
+            VertexId(4),
+        ];
+        let r2 = enumerate_regions(&outer2, &oid2, &[], &parts);
+
+        // Upper region (above the chord) should have the same id in
+        // both runs — its boundary touches v3 (top-right corner),
+        // v4 (top-left), and the partition; none of those changed.
+        let pick = |rs: &[PartitionedRegion]| -> RegionId {
+            rs.iter()
+                .find(|r| r.clip_poly.iter().all(|p| p.y >= 5.0 - EPS))
+                .expect("upper region")
+                .id
+        };
+        assert_eq!(pick(&r1), pick(&r2));
+    }
+
+    #[test]
+    fn region_ids_stable_across_chord_count_changes() {
+        // Simulate what `discretize_polygon` produces when an arc edge
+        // gets discretized into different numbers of chord segments.
+        // The polygon is [V1, V2, ...synth chords..., V3, V4] — a
+        // rectangle whose top edge is replaced by chord samples
+        // standing in for an arc from V2 to V3. The number of chord
+        // samples differs between the two runs; region IDs must match
+        // because all chord segments share the same upstream sketch
+        // corner (V2).
+        let parts = vec![(42u32, Vec2::new(0.0, 5.0), Vec2::new(10.0, 5.0))];
+
+        // Loop 1 — three chord interiors along the top edge.
+        let mut outer1 = vec![
+            Vec2::new(0.0, 0.0),  // V1
+            Vec2::new(10.0, 0.0), // V2 (arc start)
+        ];
+        let mut ids1 = vec![VertexId(1), VertexId(2)];
+        for i in 0..3 {
+            outer1.push(Vec2::new(10.0 - 1.0, 10.0 + 0.1 * i as f64));
+            ids1.push(VertexId(VertexId::SYNTHETIC_BASE + i as u32));
+        }
+        outer1.push(Vec2::new(0.0, 10.0)); // V3 (arc end)
+        outer1.push(Vec2::new(0.0, 5.0)); // bend so chord crosses
+        ids1.push(VertexId(3));
+        ids1.push(VertexId(4));
+
+        // Loop 2 — five chord interiors. Different chord count.
+        let mut outer2 = vec![Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0)];
+        let mut ids2 = vec![VertexId(1), VertexId(2)];
+        for i in 0..5 {
+            outer2.push(Vec2::new(10.0 - 1.5, 10.0 + 0.1 * i as f64));
+            ids2.push(VertexId(VertexId::SYNTHETIC_BASE + i as u32));
+        }
+        outer2.push(Vec2::new(0.0, 10.0));
+        outer2.push(Vec2::new(0.0, 5.0));
+        ids2.push(VertexId(3));
+        ids2.push(VertexId(4));
+
+        let r1 = enumerate_regions(&outer1, &ids1, &[], &parts);
+        let r2 = enumerate_regions(&outer2, &ids2, &[], &parts);
+
+        // Lower region is bounded by V1, V2, and the partition — no
+        // chord segments touch it. Its id was already stable; assert
+        // the chord-touching upper region is now also stable.
+        let upper = |rs: &[PartitionedRegion]| -> RegionId {
+            rs.iter()
+                .max_by(|a, b| {
+                    let ay: f64 =
+                        a.clip_poly.iter().map(|p| p.y).sum::<f64>() / a.clip_poly.len() as f64;
+                    let by: f64 =
+                        b.clip_poly.iter().map(|p| p.y).sum::<f64>() / b.clip_poly.len() as f64;
+                    ay.partial_cmp(&by).unwrap()
+                })
+                .expect("a region")
+                .id
+        };
+        assert_eq!(
+            upper(&r1),
+            upper(&r2),
+            "region id flipped when chord count changed",
+        );
     }
 }

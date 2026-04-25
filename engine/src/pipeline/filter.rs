@@ -12,8 +12,6 @@
 //!     the stall faces a parking bay instead of a drive aisle — it's
 //!     unreachable. Overhang past the boundary is *not* this filter's
 //!     concern; `clip_stalls_to_faces` governs that.
-//!   - `shrink_toward_centroid` — overlap-test helper shared with
-//!     extension-stall greedy placement.
 
 use crate::geom::boolean::{self, FillRule};
 use crate::geom::clip::point_in_polygon;
@@ -224,26 +222,6 @@ fn modifier_hit(polyline: &[Vec2], p: Vec2, radius: f64) -> bool {
 fn is_retypeable(kind: &StallKind) -> bool {
     matches!(
         kind,
-        StallKind::Standard | StallKind::Compact | StallKind::Ev | StallKind::Extension
+        StallKind::Standard | StallKind::Compact | StallKind::Ev
     )
-}
-
-/// Shrink polygon vertices toward the centroid by a fixed distance
-/// (overlap-test helper for conflict removal).
-pub(crate) fn shrink_toward_centroid(corners: &[Vec2], amount: f64) -> Vec<Vec2> {
-    let n = corners.len() as f64;
-    let cx = corners.iter().map(|c| c.x).sum::<f64>() / n;
-    let cy = corners.iter().map(|c| c.y).sum::<f64>() / n;
-    let centroid = Vec2::new(cx, cy);
-    corners
-        .iter()
-        .map(|c| {
-            let d = *c - centroid;
-            let len = d.length();
-            if len < 1e-12 {
-                return *c;
-            }
-            *c - d * (amount / len)
-        })
-        .collect()
 }

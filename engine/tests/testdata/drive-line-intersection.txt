@@ -17,7 +17,7 @@ drive-line: 50,100 -> 130,100
 
 generate
 ----
-total_stalls: 138
+total_stalls: 120
 
 graph vertices
 ----

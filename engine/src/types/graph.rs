@@ -18,6 +18,11 @@ use super::geom::Vec2;
 pub enum AisleDirection {
     TwoWay,
     TwoWayOriented,
+    /// Two-way oriented but with stall strips on each side angled the
+    /// opposite way from the default — visually a mirrored slash
+    /// pattern. Treated as TwoWay for spine generation; the only
+    /// downstream effect is a forced `flip_angle` in stall placement.
+    TwoWayOrientedReverse,
     OneWay,
 }
 

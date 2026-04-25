@@ -202,8 +202,14 @@ fn format_target(t: &crate::types::Target) -> String {
         Target::DriveLine { id, t } => {
             format!("on=drive-line id={} t={}", id, fmt_coord(*t))
         }
-        Target::Perimeter { loop_, arc } => {
-            format!("on=perimeter loop={} arc={}", format_loop(loop_), fmt_coord(*arc))
+        Target::Perimeter { loop_, start, end, t } => {
+            format!(
+                "on=perimeter loop={} edge={}→{} t={}",
+                format_loop(loop_),
+                start.0,
+                end.0,
+                fmt_coord(*t),
+            )
         }
     }
 }

@@ -84,6 +84,24 @@ const PARAM_DEFS: ParamDef[] = [
     unit: "stalls",
     type: "range",
   },
+  {
+    key: "arc_discretize_tolerance",
+    label: "Arc Tolerance",
+    min: 0.1,
+    max: 20,
+    step: 0.1,
+    unit: "ft",
+    type: "range",
+  },
+  {
+    key: "island_corner_radius",
+    label: "Island Corner Radius",
+    min: 0,
+    max: 20,
+    step: 0.5,
+    unit: "ft",
+    type: "range",
+  },
 ];
 
 export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () => void): void {
@@ -165,7 +183,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     { key: "driveLines", label: "Drive Lines" },
     { key: "spines", label: "Spines" },
     { key: "faces", label: "Faces" },
-    { key: "faceColors", label: "Face Colors" },
     { key: "miterFills", label: "Miter Fills" },
     { key: "islands", label: "Islands" },
     { key: "regions", label: "Regions" },
@@ -207,23 +224,18 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
         { key: "miter_fills", label: "Miter Fills" },
 
         { key: "spike_removal", label: "Spike Removal" },
-        { key: "contour_simplification", label: "Contour Simplification" },
-        { key: "hole_filtering", label: "Hole Filtering" },
       ],
     },
     {
       label: "Spine Generation",
       toggles: [
-        { key: "face_simplification", label: "Face Simplification" },
-        { key: "spine_clipping", label: "Spine Clipping" },
+        { key: "spine_end_trim", label: "Spine End Trim" },
       ],
     },
     {
       label: "Spine Post-processing",
       toggles: [
-        { key: "spine_dedup", label: "Spine Dedup" },
         { key: "spine_merging", label: "Spine Merging" },
-        { key: "paired_spine_normalization", label: "Paired Spine Normalization" },
         { key: "spine_extensions", label: "Spine Extensions" },
       ],
     },
@@ -233,6 +245,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
         { key: "stall_face_clipping", label: "Stall-to-Face Clipping" },
         { key: "entrance_on_face_filter", label: "Entrance-on-Face Filter" },
         { key: "island_stall_dilation", label: "Island Stall Dilation" },
+        { key: "island_corner_rounding", label: "Island Corner Rounding" },
       ],
     },
     {

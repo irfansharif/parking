@@ -14,4 +14,31 @@ stalls_per_face: number, use_regions: boolean, island_stall_interval: number,
  * to survive the short-segment filter. 1 is an effective no-op —
  * every spine with any stall meets the threshold.
  */
-min_stalls_per_spine: number, };
+min_stalls_per_spine: number, 
+/**
+ * Chord-deflection tolerance (feet) used when discretizing curved
+ * boundary edges into straight-line polylines. Smaller = smoother
+ * arcs but more perimeter vertices. See `geom::arc::discretize_polygon`.
+ */
+arc_discretize_tolerance: number, 
+/**
+ * Maximum angular difference (degrees) between two spine segments
+ * for them to be considered colinear and fused. Controls how
+ * aggressively chord-derived spines along a discretized arc collapse
+ * into a single straight segment in `try_merge_spines`.
+ */
+spine_merge_angle_deg: number, 
+/**
+ * Endpoint-share tolerance (feet) for the spine-merge pass. Two
+ * spines must have a pair of endpoints within this distance to be
+ * candidates for fusion in `merge_collinear_spines`.
+ */
+spine_merge_endpoint_tol: number, 
+/**
+ * Turn radius (feet) for island corner rounding. A disk of this
+ * radius is rolled inside each face polygon (morphological
+ * opening) before residual island extraction, so convex face
+ * corners become arcs rather than 90° wedges. Only takes effect
+ * when `DebugToggles.island_corner_rounding` is on.
+ */
+island_corner_radius: number, };

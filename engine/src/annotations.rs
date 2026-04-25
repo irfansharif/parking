@@ -19,16 +19,9 @@
 //!   apply_annotations           — resolve and mutate in one pass
 
 use crate::geom::clip::point_in_polygon;
-use crate::geom::inset::{inset_polygon, signed_area};
+use crate::geom::inset::{inset_polygon, inset_polygon_with_ids, signed_area};
 use crate::graph::{decompose_regions, Region};
 use crate::types::*;
-
-fn ensure_ccw(mut poly: Vec<Vec2>) -> Vec<Vec2> {
-    if signed_area(&poly) < 0.0 {
-        poly.reverse();
-    }
-    poly
-}
 
 /// One region's abstract frame plus its clip polygon — what
 /// `apply_annotations` needs to resolve Grid-target annotations.
@@ -45,28 +38,53 @@ pub(crate) fn resolve_regions_for_frames(
     input: &GenerateInput,
     partitioning_lines: &[(u32, Vec2, Vec2)],
 ) -> Vec<ResolvedRegion> {
-    let outer_loop = if input.params.site_offset > 0.0 {
-        let p = inset_polygon(&input.boundary.outer, input.params.site_offset);
+    let (outer_loop, outer_loop_ids) = if input.params.site_offset > 0.0 {
+        let (p, p_ids) = inset_polygon_with_ids(
+            &input.boundary.outer,
+            &input.boundary.outer_ids,
+            input.params.site_offset,
+        );
         if p.is_empty() {
-            input.boundary.outer.clone()
+            let raw_ids = if input.boundary.outer_ids.len() == input.boundary.outer.len() {
+                input.boundary.outer_ids.clone()
+            } else {
+                Vec::new()
+            };
+            ensure_ccw_with_ids(input.boundary.outer.clone(), raw_ids)
         } else {
-            ensure_ccw(p)
+            ensure_ccw_with_ids(p, p_ids)
         }
     } else {
-        ensure_ccw(input.boundary.outer.clone())
+        let raw_ids = if input.boundary.outer_ids.len() == input.boundary.outer.len() {
+            input.boundary.outer_ids.clone()
+        } else {
+            Vec::new()
+        };
+        ensure_ccw_with_ids(input.boundary.outer.clone(), raw_ids)
     };
-    let hole_loops: Vec<Vec<Vec2>> = input
-        .boundary
-        .holes
-        .iter()
-        .filter(|h| !h.is_empty())
-        .cloned()
-        .collect();
+    let mut hole_loops: Vec<Vec<Vec2>> = Vec::new();
+    let mut hole_loop_ids: Vec<Vec<VertexId>> = Vec::new();
+    for (i, h) in input.boundary.holes.iter().enumerate() {
+        if h.is_empty() {
+            continue;
+        }
+        hole_loops.push(h.clone());
+        let ids = input
+            .boundary
+            .hole_ids
+            .get(i)
+            .filter(|v| v.len() == h.len())
+            .cloned()
+            .unwrap_or_default();
+        hole_loop_ids.push(ids);
+    }
 
     let mut region_list = if !partitioning_lines.is_empty() {
         decompose_regions(
             &outer_loop,
+            &outer_loop_ids,
             &hole_loops,
+            &hole_loop_ids,
             partitioning_lines,
             input.params.aisle_angle_deg,
             input.params.aisle_offset,
@@ -150,8 +168,9 @@ fn build_abstract_vertex_lookup(
 const GRID_ABS_TOL: f64 = 0.05;
 
 /// Resolve the set of graph-edge indices covered by a `Target::Grid`.
-/// Returns `None` if the target addresses a vertex (range = Some((s, s))),
-/// if the range's stops can't be resolved, or if no edges match.
+/// Returns an error string explaining why if the target addresses a
+/// vertex (range = Some((s, s))), if the range's stops can't be resolved,
+/// or if no edges match.
 fn resolve_grid_edges(
     graph: &DriveAisleGraph,
     regions: &[ResolvedRegion],
@@ -159,8 +178,10 @@ fn resolve_grid_edges(
     axis: Axis,
     coord: i32,
     range: &Option<(GridStop, GridStop)>,
-) -> Option<Vec<usize>> {
-    let region_data = regions.iter().find(|r| r.id == region)?;
+) -> Result<Vec<usize>, String> {
+    let region_data = regions.iter().find(|r| r.id == region).ok_or_else(|| {
+        format!("region {region:?} not in current decomposition")
+    })?;
     let frame = &region_data.frame;
     // axis=X → line fixed at x=coord, runs along Y (varying axis = y).
     // axis=Y → line fixed at y=coord, runs along X (varying axis = x).
@@ -173,7 +194,9 @@ fn resolve_grid_edges(
             let pa = grid_stop_to_other_axis(a)?;
             let pb = grid_stop_to_other_axis(b)?;
             if pa == pb {
-                return None; // point (vertex), not an edge target
+                return Err(format!(
+                    "grid range collapses to a single lattice point ({pa}); use vertex addressing"
+                ));
             }
             (pa.min(pb), pa.max(pb))
         }
@@ -181,6 +204,11 @@ fn resolve_grid_edges(
 
     let mut hits = Vec::new();
     for (i, edge) in graph.edges.iter().enumerate() {
+        // Grid targets address only the interior abstract grid. Perimeter
+        // edges have their own addressing scheme via Target::Perimeter, and
+        // letting them match here would let a wide grid-axis range punch
+        // holes in the perimeter aisle when the boundary is grid-aligned.
+        if !edge.interior { continue; }
         let s = graph.vertices[edge.start];
         let e = graph.vertices[edge.end];
         let abs_s = frame.inverse(s);
@@ -206,17 +234,28 @@ fn resolve_grid_edges(
         }
         hits.push(i);
     }
-    if hits.is_empty() { None } else { Some(hits) }
+    if hits.is_empty() {
+        Err(format!(
+            "no graph edge along grid line {axis:?}={fixed} in region {region:?}"
+        ))
+    } else {
+        Ok(hits)
+    }
 }
 
 /// Convert a GridStop to its coordinate along the grid line's varying axis.
 /// Only `Lattice` is supported in this prototype; `CrossesDriveLine` and
-/// `CrossesPerimeter` stops return `None` (dormant) until their resolution
-/// is implemented.
-fn grid_stop_to_other_axis(s: &GridStop) -> Option<i32> {
+/// `CrossesPerimeter` stops return an error (dormant) until their
+/// resolution is implemented.
+fn grid_stop_to_other_axis(s: &GridStop) -> Result<i32, String> {
     match s {
-        GridStop::Lattice { other } => Some(*other),
-        _ => None, // Cross* stops not yet implemented; annotation goes dormant.
+        GridStop::Lattice { other } => Ok(*other),
+        GridStop::CrossesDriveLine { .. } => {
+            Err("grid stop kind CrossesDriveLine not yet supported".to_string())
+        }
+        GridStop::CrossesPerimeter { .. } => {
+            Err("grid stop kind CrossesPerimeter not yet supported".to_string())
+        }
     }
 }
 
@@ -231,16 +270,24 @@ fn apply_direction_to_edges(
     frame_opt: Option<&AbstractFrame>,
     traffic: TrafficDirection,
 ) {
-    let want_canonical = matches!(
-        traffic,
-        TrafficDirection::OneWay | TrafficDirection::TwoWayOriented
-    );
-    let aisle_dir = match traffic {
-        TrafficDirection::OneWay | TrafficDirection::OneWayReverse => AisleDirection::OneWay,
-        TrafficDirection::TwoWayOriented | TrafficDirection::TwoWayOrientedReverse => {
-            AisleDirection::TwoWayOriented
+    // TwoWayOriented variants leave the graph orientation alone (the
+    // default lot already renders as a two-way layout with stalls on
+    // opposite sides of every aisle). The annotation only has to
+    // (a) tag the edges so the SVG can show direction marks, and
+    // (b) flip the stall lean for the *Reverse variant via the new
+    // `AisleDirection::TwoWayOrientedReverse` enum.
+    if let Some(dir) = match traffic {
+        TrafficDirection::TwoWayOriented => Some(AisleDirection::TwoWayOriented),
+        TrafficDirection::TwoWayOrientedReverse => Some(AisleDirection::TwoWayOrientedReverse),
+        _ => None,
+    } {
+        for &i in hits {
+            graph.edges[i].direction = dir.clone();
         }
-    };
+        return;
+    }
+    let want_canonical = matches!(traffic, TrafficDirection::OneWay);
+    let aisle_dir = AisleDirection::OneWay;
     for &i in hits {
         let s = graph.vertices[graph.edges[i].start];
         let e = graph.vertices[graph.edges[i].end];
@@ -277,25 +324,35 @@ fn apply_drive_line_direction(
     t: f64,
     pitch: f64,
     traffic: TrafficDirection,
-) -> bool {
-    let Some(hits) = resolve_drive_line_edges_containing(graph, splice_lookup, line_lengths, drive_line_id, t, pitch) else {
-        return false;
-    };
+) -> Result<(), String> {
+    let hits = resolve_drive_line_edges_containing(
+        graph, splice_lookup, line_lengths, drive_line_id, t, pitch,
+    )?;
     if hits.is_empty() {
-        return false;
+        return Err(format!(
+            "no drive-line {drive_line_id} sub-edge contains t={t:.4}"
+        ));
     }
-    let want_canonical = matches!(
-        traffic,
-        TrafficDirection::OneWay | TrafficDirection::TwoWayOriented
-    );
-    let aisle_dir = match traffic {
-        TrafficDirection::OneWay | TrafficDirection::OneWayReverse => AisleDirection::OneWay,
-        TrafficDirection::TwoWayOriented | TrafficDirection::TwoWayOrientedReverse => {
-            AisleDirection::TwoWayOriented
+    // TwoWayOriented variants — see apply_direction_to_edges. Tag the
+    // edges (without flipping start/end) so the SVG renderer can show
+    // arrowhead markers and so placement can flip stall lean for the
+    // *Reverse variant.
+    if let Some(dir) = match traffic {
+        TrafficDirection::TwoWayOriented => Some(AisleDirection::TwoWayOriented),
+        TrafficDirection::TwoWayOrientedReverse => Some(AisleDirection::TwoWayOrientedReverse),
+        _ => None,
+    } {
+        for i in hits {
+            graph.edges[i].direction = dir.clone();
         }
-    };
+        return Ok(());
+    }
+    let want_canonical = matches!(traffic, TrafficDirection::OneWay);
+    let aisle_dir = AisleDirection::OneWay;
     // For drive-line edges we orient using the splice-anchored t of each endpoint.
-    let Some(entries) = splice_lookup.get(&drive_line_id) else { return false };
+    let entries = splice_lookup
+        .get(&drive_line_id)
+        .ok_or_else(|| format!("drive line {drive_line_id} has no splice anchors"))?;
     let mut v_to_t: std::collections::HashMap<usize, f64> =
         std::collections::HashMap::with_capacity(entries.len());
     for &(et, vi) in entries {
@@ -316,7 +373,7 @@ fn apply_drive_line_direction(
         }
         graph.edges[i].direction = aisle_dir.clone();
     }
-    true
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +391,14 @@ struct PerimeterLookupEntry {
     entries: Vec<(f64, usize)>,
     /// Total world-space length of the loop.
     total_length: f64,
+    /// The polygon the lookup was built against (after site_offset
+    /// inset and ensure_ccw). Used to convert sketch (start, end, t)
+    /// addresses into arc-length values consistent with `entries`.
+    poly: Vec<Vec2>,
+    /// Per-vertex `VertexId`s parallel to `poly`. Same value as the
+    /// boundary's `outer_ids` / `hole_ids[index]`, possibly reversed
+    /// to match the polygon's stored winding.
+    ids: Vec<VertexId>,
 }
 
 /// World-space tolerance for considering a graph vertex "on" a perimeter
@@ -350,26 +415,44 @@ fn build_perimeter_lookup(
 
     // Effective outer loop: inset by site_offset to match auto_generate's
     // perimeter. Holes are used directly (they're already the aisle-edge
-    // rings stored on the Polygon).
-    let outer_loop = if params.site_offset > 0.0 {
-        let p = inset_polygon(&boundary.outer, params.site_offset);
-        if p.is_empty() { boundary.outer.clone() } else { ensure_ccw(p) }
+    // rings stored on the Polygon). For each loop we also carry parallel
+    // `VertexId`s — `inset_polygon` preserves vertex count and order, so
+    // ids stay aligned; `ensure_ccw` may reverse, in which case we
+    // reverse the ids alongside.
+    let outer_ids_aligned: Vec<VertexId> = if boundary.outer_ids.len() == boundary.outer.len() {
+        boundary.outer_ids.clone()
     } else {
-        ensure_ccw(boundary.outer.clone())
+        Vec::new()
+    };
+    let (outer_loop, outer_loop_ids) = if params.site_offset > 0.0 {
+        let p = inset_polygon(&boundary.outer, params.site_offset);
+        if p.is_empty() {
+            (boundary.outer.clone(), outer_ids_aligned.clone())
+        } else {
+            ensure_ccw_with_ids(p, outer_ids_aligned.clone())
+        }
+    } else {
+        ensure_ccw_with_ids(boundary.outer.clone(), outer_ids_aligned.clone())
     };
 
-    // Collect (PerimeterLoop, polygon) pairs.
-    let mut loops: Vec<(PerimeterLoop, Vec<Vec2>)> = Vec::new();
+    // Collect (PerimeterLoop, polygon, ids) triples.
+    let mut loops: Vec<(PerimeterLoop, Vec<Vec2>, Vec<VertexId>)> = Vec::new();
     if outer_loop.len() >= 3 {
-        loops.push((PerimeterLoop::Outer, outer_loop));
+        loops.push((PerimeterLoop::Outer, outer_loop, outer_loop_ids));
     }
     for (i, h) in boundary.holes.iter().enumerate() {
         if h.len() >= 3 {
-            loops.push((PerimeterLoop::Hole { index: i }, h.clone()));
+            let ids = boundary
+                .hole_ids
+                .get(i)
+                .filter(|v| v.len() == h.len())
+                .cloned()
+                .unwrap_or_default();
+            loops.push((PerimeterLoop::Hole { index: i }, h.clone(), ids));
         }
     }
 
-    for (loop_id, poly) in &loops {
+    for (loop_id, poly, ids) in &loops {
         let n = poly.len();
         let mut cum: Vec<f64> = Vec::with_capacity(n + 1);
         cum.push(0.0);
@@ -417,26 +500,70 @@ fn build_perimeter_lookup(
 
         out.insert(
             *loop_id,
-            PerimeterLookupEntry { entries, total_length: total },
+            PerimeterLookupEntry {
+                entries,
+                total_length: total,
+                poly: poly.clone(),
+                ids: ids.clone(),
+            },
         );
     }
 
     out
 }
 
-/// Find the graph vertex nearest the given arc-length on `loop_`, within
-/// world-space tolerance `world_tol`. Arc-distance wrapping across the
-/// 0↔1 seam is handled.
+/// `ensure_ccw` applied to a polygon while keeping a parallel
+/// `VertexId` array aligned with the (possibly reversed) winding.
+fn ensure_ccw_with_ids(mut poly: Vec<Vec2>, mut ids: Vec<VertexId>) -> (Vec<Vec2>, Vec<VertexId>) {
+    if signed_area(&poly) < 0.0 {
+        poly.reverse();
+        if ids.len() == poly.len() {
+            ids.reverse();
+        }
+    }
+    (poly, ids)
+}
+
+/// Convert a sketch-edge anchor `(start, end, t)` on `entry.poly`
+/// into a normalized arc length along that loop. Returns an error if
+/// the edge can't be addressed in the current sketch — either an id
+/// is missing, or a non-synthetic id appears between them (the user
+/// split the edge), in which case the annotation goes dormant.
+fn perim_target_to_arc(
+    entry: &PerimeterLookupEntry,
+    start: VertexId,
+    end: VertexId,
+    t: f64,
+) -> Result<f64, String> {
+    let world = crate::resolve::evaluate_perim_edge(&entry.poly, &entry.ids, start, end, t)
+        .ok_or_else(|| {
+            format!(
+                "perimeter edge {start:?}→{end:?} not addressable (vertex deleted or edge split)"
+            )
+        })?;
+    crate::resolve::project_onto_loop(world, &entry.poly, 1.0).ok_or_else(|| {
+        format!("perimeter projection failed for edge {start:?}→{end:?} at t={t:.4}")
+    })
+}
+
+/// Find the graph vertex nearest the addressed sketch edge anchor
+/// `(start, end, t)` on `loop_`, within world-space tolerance
+/// `world_tol`. Arc-distance wrapping across the 0↔1 seam is handled.
 fn resolve_perimeter_vertex(
     perim_lookup: &std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry>,
     loop_id: PerimeterLoop,
-    arc: f64,
+    start: VertexId,
+    end: VertexId,
+    t: f64,
     world_tol: f64,
-) -> Option<usize> {
-    let entry = perim_lookup.get(&loop_id)?;
+) -> Result<usize, String> {
+    let entry = perim_lookup
+        .get(&loop_id)
+        .ok_or_else(|| format!("perimeter loop {loop_id:?} not in current sketch"))?;
     if entry.total_length < 1e-9 {
-        return None;
+        return Err(format!("perimeter loop {loop_id:?} has zero length"));
     }
+    let arc = perim_target_to_arc(entry, start, end, t)?;
     let tol = world_tol / entry.total_length;
     let mut best: Option<(f64, usize)> = None;
     for &(e_arc, vi) in &entry.entries {
@@ -451,18 +578,28 @@ fn resolve_perimeter_vertex(
             best = Some((d, vi));
         }
     }
-    best.map(|(_, vi)| vi)
+    best.map(|(_, vi)| vi).ok_or_else(|| {
+        format!(
+            "no graph vertex on perimeter loop {loop_id:?} within {world_tol} of arc {arc:.4}"
+        )
+    })
 }
 
-/// Find the sub-edges of `loop_` whose arc range contains `arc`. Handles
+/// Find the sub-edges of `loop_` whose arc range contains the
+/// addressed sketch edge anchor `(start, end, t)`. Handles
 /// wrap-around for sub-edges that span the 0↔1 seam.
 fn resolve_perimeter_edges_containing(
     graph: &DriveAisleGraph,
     perim_lookup: &std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry>,
     loop_id: PerimeterLoop,
-    arc: f64,
-) -> Option<Vec<usize>> {
-    let entry = perim_lookup.get(&loop_id)?;
+    start: VertexId,
+    end: VertexId,
+    t: f64,
+) -> Result<Vec<usize>, String> {
+    let entry = perim_lookup
+        .get(&loop_id)
+        .ok_or_else(|| format!("perimeter loop {loop_id:?} not in current sketch"))?;
+    let arc = perim_target_to_arc(entry, start, end, t)?;
     let v_to_arc: std::collections::HashMap<usize, f64> =
         entry.entries.iter().map(|&(a, v)| (v, a)).collect();
 
@@ -487,37 +624,57 @@ fn resolve_perimeter_edges_containing(
             hits.push(i);
         }
     }
-    if hits.is_empty() { None } else { Some(hits) }
+    if hits.is_empty() {
+        Err(format!(
+            "no graph edge on perimeter loop {loop_id:?} contains arc derived from edge {start:?}→{end:?} at t={t:.4}"
+        ))
+    } else {
+        Ok(hits)
+    }
 }
 
 /// Apply a `TrafficDirection` to the perimeter sub-edge(s) containing
-/// `arc`, aligning each edge's stored `start→end` with the carrier's
-/// canonical +arc direction (or its reverse, per `traffic`).
+/// the addressed sketch edge anchor `(start, end, t)`, aligning each
+/// edge's stored `start→end` with the carrier's canonical +arc
+/// direction (or its reverse, per `traffic`).
 fn apply_perimeter_direction(
     graph: &mut DriveAisleGraph,
     perim_lookup: &std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry>,
     loop_id: PerimeterLoop,
-    arc: f64,
+    start: VertexId,
+    end: VertexId,
+    t: f64,
     traffic: TrafficDirection,
-) -> bool {
-    let Some(hits) = resolve_perimeter_edges_containing(graph, perim_lookup, loop_id, arc) else {
-        return false;
-    };
+) -> Result<(), String> {
+    let hits =
+        resolve_perimeter_edges_containing(graph, perim_lookup, loop_id, start, end, t)?;
     if hits.is_empty() {
-        return false;
+        return Err(format!(
+            "no graph edge on perimeter loop {loop_id:?} contains arc derived from edge {start:?}→{end:?} at t={t:.4}"
+        ));
     }
-    let Some(entry) = perim_lookup.get(&loop_id) else { return false };
+    let entry = perim_lookup
+        .get(&loop_id)
+        .ok_or_else(|| format!("perimeter loop {loop_id:?} not in current sketch"))?;
     let v_to_arc: std::collections::HashMap<usize, f64> =
         entry.entries.iter().map(|&(a, v)| (v, a)).collect();
 
-    let want_canonical = matches!(
-        traffic,
-        TrafficDirection::OneWay | TrafficDirection::TwoWayOriented
-    );
-    let aisle_dir = match traffic {
-        TrafficDirection::OneWay | TrafficDirection::OneWayReverse => AisleDirection::OneWay,
-        _ => AisleDirection::TwoWayOriented,
-    };
+    // TwoWayOriented variants — see apply_direction_to_edges. Tag the
+    // edges (without flipping start/end) so the SVG renderer can show
+    // arrowhead markers and so placement can flip stall lean for the
+    // *Reverse variant.
+    if let Some(dir) = match traffic {
+        TrafficDirection::TwoWayOriented => Some(AisleDirection::TwoWayOriented),
+        TrafficDirection::TwoWayOrientedReverse => Some(AisleDirection::TwoWayOrientedReverse),
+        _ => None,
+    } {
+        for i in hits {
+            graph.edges[i].direction = dir.clone();
+        }
+        return Ok(());
+    }
+    let want_canonical = matches!(traffic, TrafficDirection::OneWay);
+    let aisle_dir = AisleDirection::OneWay;
     for i in hits {
         let (Some(&as_), Some(&ae)) = (
             v_to_arc.get(&graph.edges[i].start),
@@ -541,7 +698,7 @@ fn apply_perimeter_direction(
         }
         graph.edges[i].direction = aisle_dir.clone();
     }
-    true
+    Ok(())
 }
 
 /// Find the drive-line sub-edges whose stored t-range contains the given
@@ -553,12 +710,17 @@ fn resolve_drive_line_edges_containing(
     drive_line_id: u32,
     t: f64,
     pitch: f64,
-) -> Option<Vec<usize>> {
-    let line_len = line_lengths.get(&drive_line_id).copied()?;
+) -> Result<Vec<usize>, String> {
+    let line_len = line_lengths
+        .get(&drive_line_id)
+        .copied()
+        .ok_or_else(|| format!("drive line {drive_line_id} not present in current sketch"))?;
     if line_len < 1e-9 {
-        return None;
+        return Err(format!("drive line {drive_line_id} has zero length"));
     }
-    let entries = splice_lookup.get(&drive_line_id)?;
+    let entries = splice_lookup
+        .get(&drive_line_id)
+        .ok_or_else(|| format!("drive line {drive_line_id} has no splice anchors"))?;
     let tol_t = pitch / line_len;
     let mut v_to_t: std::collections::HashMap<usize, f64> =
         std::collections::HashMap::with_capacity(entries.len());
@@ -576,7 +738,13 @@ fn resolve_drive_line_edges_containing(
             hits.push(i);
         }
     }
-    if hits.is_empty() { None } else { Some(hits) }
+    if hits.is_empty() {
+        Err(format!(
+            "no drive-line {drive_line_id} sub-edge contains t={t:.4}"
+        ))
+    } else {
+        Ok(hits)
+    }
 }
 
 /// Apply spatial annotations to a resolved graph. Each annotation carries a
@@ -592,7 +760,7 @@ pub(crate) fn apply_annotations(
     drive_lines: &[DriveLine],
     boundary: &Polygon,
     params: &ParkingParams,
-) -> Vec<usize> {
+) -> Vec<DormantAnnotation> {
     if annotations.is_empty() {
         return Vec::new();
     }
@@ -617,17 +785,22 @@ pub(crate) fn apply_annotations(
         std::collections::HashMap::new()
     };
 
-    let mut dormant: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    // index → reason. BTreeMap keeps the output sorted by index. The
+    // first failure for a given annotation wins (the only way to record
+    // a second one would be an annotation appearing in both passes,
+    // which doesn't happen — Direction is first-pass-only and the
+    // delete variants are second-pass-only).
+    let mut dormant: std::collections::BTreeMap<usize, String> =
+        std::collections::BTreeMap::new();
 
     // First pass: directions.
     for (ann_idx, ann) in annotations.iter().enumerate() {
         let Annotation::Direction { target, traffic } = ann else { continue };
-        let ok = apply_direction_target(
+        if let Err(reason) = apply_direction_target(
             graph, target, *traffic, regions,
             &splice_lookup, &line_lengths, &perim_lookup, pitch,
-        );
-        if !ok {
-            dormant.insert(ann_idx);
+        ) {
+            dormant.insert(ann_idx, reason);
         }
     }
 
@@ -638,24 +811,28 @@ pub(crate) fn apply_annotations(
     for (ann_idx, ann) in annotations.iter().enumerate() {
         match ann {
             Annotation::DeleteVertex { target } => {
-                let vi = resolve_target_vertex(
+                match resolve_target_vertex(
                     target, &abstract_lookup, &splice_lookup, &line_lengths, &perim_lookup, pitch,
-                );
-                match vi {
-                    Some(v) => { vertices_to_remove.insert(v); }
-                    None => { dormant.insert(ann_idx); }
+                ) {
+                    Ok(v) => { vertices_to_remove.insert(v); }
+                    Err(reason) => { dormant.insert(ann_idx, reason); }
                 }
             }
             Annotation::DeleteEdge { target } => {
-                let hits = resolve_target_edges(
+                match resolve_target_edges(
                     target, graph, regions,
                     &splice_lookup, &line_lengths, &perim_lookup, pitch,
-                );
-                match hits {
-                    Some(hs) if !hs.is_empty() => {
+                ) {
+                    Ok(hs) if !hs.is_empty() => {
                         for h in hs { edges_to_remove.insert(h); }
                     }
-                    _ => { dormant.insert(ann_idx); }
+                    Ok(_) => {
+                        dormant.insert(
+                            ann_idx,
+                            "target resolved to no graph edges".to_string(),
+                        );
+                    }
+                    Err(reason) => { dormant.insert(ann_idx, reason); }
                 }
             }
             Annotation::Direction { .. } => {} // handled in first pass
@@ -691,7 +868,10 @@ pub(crate) fn apply_annotations(
         // Orphaned vertices are harmless.
     }
 
-    dormant.into_iter().collect()
+    dormant
+        .into_iter()
+        .map(|(index, reason)| DormantAnnotation { index, reason })
+        .collect()
 }
 
 /// Iteratively merge degree-2 collinear interior vertices. After deleting
@@ -800,10 +980,16 @@ fn resolve_splice_vertex(
     drive_line_id: u32,
     t: f64,
     pitch: f64,
-) -> Option<usize> {
-    let entries = splice_lookup.get(&drive_line_id)?;
-    let line_len = *line_lengths.get(&drive_line_id)?;
-    if line_len < 1e-9 { return None; }
+) -> Result<usize, String> {
+    let entries = splice_lookup
+        .get(&drive_line_id)
+        .ok_or_else(|| format!("drive line {drive_line_id} has no splice anchors"))?;
+    let line_len = *line_lengths
+        .get(&drive_line_id)
+        .ok_or_else(|| format!("drive line {drive_line_id} not present in current sketch"))?;
+    if line_len < 1e-9 {
+        return Err(format!("drive line {drive_line_id} has zero length"));
+    }
     let tol_t = pitch / line_len;
     let mut best: Option<(f64, usize)> = None;
     for &(et, vi) in entries {
@@ -813,7 +999,11 @@ fn resolve_splice_vertex(
             best = Some((d, vi));
         }
     }
-    best.map(|(_, vi)| vi)
+    best.map(|(_, vi)| vi).ok_or_else(|| {
+        format!(
+            "no splice vertex on drive line {drive_line_id} within {pitch} of t={t:.4}"
+        )
+    })
 }
 
 /// Resolve a single-vertex `Target` to a graph vertex index.
@@ -824,25 +1014,31 @@ fn resolve_target_vertex(
     line_lengths: &std::collections::HashMap<u32, f64>,
     perim_lookup: &std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry>,
     pitch: f64,
-) -> Option<usize> {
+) -> Result<usize, String> {
     match target {
         Target::Grid { region, axis, coord, range } => {
-            let (s1, s2) = range.as_ref()?;
+            let (s1, s2) = range
+                .as_ref()
+                .ok_or_else(|| "grid vertex target missing range".to_string())?;
             let p1 = grid_stop_to_other_axis(s1)?;
             let p2 = grid_stop_to_other_axis(s2)?;
             if p1 != p2 {
-                return None; // span, not a point
+                return Err(format!(
+                    "grid range covers a span ({p1}..{p2}), not a single vertex"
+                ));
             }
             // axis=X: line x=coord, varying y → (xi=coord, yi=p1).
             // axis=Y: line y=coord, varying x → (xi=p1, yi=coord).
             let (xi, yi) = if *axis == Axis::X { (*coord, p1) } else { (p1, *coord) };
-            abstract_lookup.get(&(*region, xi, yi)).copied()
+            abstract_lookup.get(&(*region, xi, yi)).copied().ok_or_else(|| {
+                format!("no graph vertex at region {region:?} grid ({xi},{yi})")
+            })
         }
         Target::DriveLine { id, t } => {
             resolve_splice_vertex(splice_lookup, line_lengths, *id, *t, pitch)
         }
-        Target::Perimeter { loop_, arc } => {
-            resolve_perimeter_vertex(perim_lookup, *loop_, *arc, pitch)
+        Target::Perimeter { loop_, start, end, t } => {
+            resolve_perimeter_vertex(perim_lookup, *loop_, *start, *end, *t, pitch)
         }
     }
 }
@@ -856,7 +1052,7 @@ fn resolve_target_edges(
     line_lengths: &std::collections::HashMap<u32, f64>,
     perim_lookup: &std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry>,
     pitch: f64,
-) -> Option<Vec<usize>> {
+) -> Result<Vec<usize>, String> {
     match target {
         Target::Grid { region, axis, coord, range } => {
             resolve_grid_edges(graph, regions, *region, *axis, *coord, range)
@@ -864,8 +1060,8 @@ fn resolve_target_edges(
         Target::DriveLine { id, t } => {
             resolve_drive_line_edges_containing(graph, splice_lookup, line_lengths, *id, *t, pitch)
         }
-        Target::Perimeter { loop_, arc } => {
-            resolve_perimeter_edges_containing(graph, perim_lookup, *loop_, *arc)
+        Target::Perimeter { loop_, start, end, t } => {
+            resolve_perimeter_edges_containing(graph, perim_lookup, *loop_, *start, *end, *t)
         }
     }
 }
@@ -880,18 +1076,18 @@ fn apply_direction_target(
     line_lengths: &std::collections::HashMap<u32, f64>,
     perim_lookup: &std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry>,
     pitch: f64,
-) -> bool {
+) -> Result<(), String> {
     match target {
         Target::Grid { region, axis, coord, range } => {
-            let Some(hits) = resolve_grid_edges(graph, regions, *region, *axis, *coord, range) else {
-                return false;
-            };
-            let Some(region_data) = regions.iter().find(|r| r.id == *region) else {
-                return false;
-            };
+            let hits =
+                resolve_grid_edges(graph, regions, *region, *axis, *coord, range)?;
+            let region_data = regions
+                .iter()
+                .find(|r| r.id == *region)
+                .ok_or_else(|| format!("region {region:?} not in current decomposition"))?;
             let along_x = *axis == Axis::Y;
             apply_direction_to_edges(graph, &hits, 1.0, along_x, Some(&region_data.frame), traffic);
-            true
+            Ok(())
         }
         Target::DriveLine { id, t } => apply_drive_line_direction(
             graph,
@@ -902,11 +1098,13 @@ fn apply_direction_target(
             pitch,
             traffic,
         ),
-        Target::Perimeter { loop_, arc } => apply_perimeter_direction(
+        Target::Perimeter { loop_, start, end, t } => apply_perimeter_direction(
             graph,
             perim_lookup,
             *loop_,
-            *arc,
+            *start,
+            *end,
+            *t,
             traffic,
         ),
     }

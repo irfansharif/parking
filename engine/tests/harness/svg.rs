@@ -6,7 +6,8 @@
 
 use parking_lot_engine::geom::arc::discretize_polygon;
 use parking_lot_engine::types::{
-    AisleDirection, DriveAisleGraph, Island, ParkingLayout, Polygon, StallKind, StallQuad, Vec2,
+    AisleDirection, Annotation, DriveAisleGraph, DriveLine, Island, ParkingLayout, Polygon,
+    StallKind, StallQuad, Target, TrafficDirection, Vec2,
 };
 
 pub struct SvgOptions {
@@ -28,12 +29,19 @@ impl Default for SvgOptions {
     }
 }
 
-pub fn render(boundary: &Polygon, layout: &ParkingLayout, opts: &SvgOptions) -> String {
+pub fn render(
+    boundary: &Polygon,
+    layout: &ParkingLayout,
+    annotations: &[Annotation],
+    drive_lines: &[DriveLine],
+    opts: &SvgOptions,
+    arc_tolerance: f64,
+) -> String {
     // Render the boundary the engine actually sees — the sketch's
     // arcs are discretized before the pipeline runs (see
     // `pipeline/generate.rs`), so showing the raw arc polygon would
     // hide the curvature and desync from the generated aisles.
-    let discretized = discretize_polygon(boundary);
+    let discretized = discretize_polygon(boundary, arc_tolerance);
 
     let (min, max) = content_bbox(&discretized, layout);
     let w = (max.x - min.x).max(1.0);
@@ -66,6 +74,19 @@ pub fn render(boundary: &Polygon, layout: &ParkingLayout, opts: &SvgOptions) -> 
     // band. `vector-effect` doesn't inherit through `<g>` in the
     // spec, so apply it via CSS.
     out.push_str("<style>polygon,polyline,line,path{vector-effect:non-scaling-stroke}</style>\n");
+    // Arrow markers for direction-annotated aisles. Two color variants
+    // matching the interior/perimeter aisle palette. `markerUnits` is
+    // strokeWidth by default, so the arrow scales with line stroke.
+    // `orient="auto-start-reverse"` lets `marker-start` point outward
+    // from the line so back-to-back arrows on a TwoWayOriented edge
+    // form a clear double-headed indicator instead of two arrows
+    // pointing the same way.
+    out.push_str(
+        "<defs>\
+<marker id=\"arrow-i\" viewBox=\"0 0 10 10\" refX=\"10\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto-start-reverse\"><path d=\"M0 0L10 5L0 10z\" fill=\"#3e68a8\"/></marker>\
+<marker id=\"arrow-p\" viewBox=\"0 0 10 10\" refX=\"10\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto-start-reverse\"><path d=\"M0 0L10 5L0 10z\" fill=\"#a84a1e\"/></marker>\
+</defs>\n",
+    );
     // SVG y-axis flips down, but parking coords treat y-up. We mirror
     // the whole picture so a CCW outer boundary stays visually CCW.
     out.push_str(&format!(
@@ -82,6 +103,7 @@ pub fn render(boundary: &Polygon, layout: &ParkingLayout, opts: &SvgOptions) -> 
     render_stalls(&mut out, &layout.stalls);
     render_paint(&mut out, &layout.stalls, &layout.islands);
     render_graph(&mut out, &layout.resolved_graph);
+    render_annotations(&mut out, annotations, drive_lines);
 
     out.push_str("</g>\n</svg>\n");
     out
@@ -327,7 +349,11 @@ fn render_graph(out: &mut String, graph: &DriveAisleGraph) {
     // unordered vertex pair and draw each segment once; if the same
     // pair carries both perimeter and interior edges, perimeter wins
     // so the lot outline reads cleanly on top.
-    let mut seen: std::collections::HashMap<(usize, usize), (bool, AisleDirection)> =
+    // Track each unique edge by (min, max) vertex pair. For directional
+    // edges keep the actual `start → end` order (which the annotation
+    // pipeline aligns with travel direction) so we can orient
+    // arrowheads correctly.
+    let mut seen: std::collections::HashMap<(usize, usize), (bool, AisleDirection, usize, usize)> =
         std::collections::HashMap::new();
     let mut ordered_keys: Vec<(usize, usize)> = Vec::new();
     for edge in &graph.edges {
@@ -342,22 +368,35 @@ fn render_graph(out: &mut String, graph: &DriveAisleGraph) {
         match seen.get_mut(&key) {
             Some(entry) => {
                 // Promote to perimeter (interior=false) if any copy is
-                // perimeter; keep the first-seen direction.
+                // perimeter. If a directional copy shows up after a
+                // TwoWay copy, adopt its direction + travel order so
+                // the arrowhead points the right way.
                 if entry.0 && !edge.interior {
                     entry.0 = false;
                 }
+                if matches!(entry.1, AisleDirection::TwoWay)
+                    && !matches!(edge.direction, AisleDirection::TwoWay)
+                {
+                    entry.1 = edge.direction.clone();
+                    entry.2 = edge.start;
+                    entry.3 = edge.end;
+                }
             }
             None => {
-                seen.insert(key, (edge.interior, edge.direction.clone()));
+                seen.insert(
+                    key,
+                    (edge.interior, edge.direction.clone(), edge.start, edge.end),
+                );
                 ordered_keys.push(key);
             }
         }
     }
     for key in &ordered_keys {
-        let (interior, direction) = &seen[key];
-        let a = graph.vertices[key.0];
-        let b = graph.vertices[key.1];
+        let (interior, direction, sidx, didx) = &seen[key];
+        let a = graph.vertices[*sidx];
+        let b = graph.vertices[*didx];
         let color = if *interior { "#3e68a8" } else { "#a84a1e" };
+        let marker_id = if *interior { "arrow-i" } else { "arrow-p" };
         // Road-style centerline: every aisle is dashed so the graph
         // reads as a drivable path. Dash numbers are in world units
         // (feet) — an 8-ft dash + 5-ft gap reads as road paint at the
@@ -366,16 +405,31 @@ fn render_graph(out: &mut String, graph: &DriveAisleGraph) {
         let dash = match *direction {
             AisleDirection::TwoWay => " stroke-dasharray=\"8 5\"",
             AisleDirection::OneWay => " stroke-dasharray=\"4 2\"",
-            AisleDirection::TwoWayOriented => " stroke-dasharray=\"8 2\"",
+            AisleDirection::TwoWayOriented | AisleDirection::TwoWayOrientedReverse => {
+                " stroke-dasharray=\"8 2\""
+            }
+        };
+        // Arrowheads encode direction:
+        //   OneWay           → single arrow at the travel-end of each segment.
+        //   TwoWayOriented   → arrows at both ends, pointing outward, so the
+        //                       segment reads as a double-headed arrow.
+        //   TwoWay           → no markers.
+        let markers = match *direction {
+            AisleDirection::TwoWay => String::new(),
+            AisleDirection::OneWay => format!(" marker-end=\"url(#{marker_id})\""),
+            AisleDirection::TwoWayOriented | AisleDirection::TwoWayOrientedReverse => format!(
+                " marker-start=\"url(#{marker_id})\" marker-end=\"url(#{marker_id})\""
+            ),
         };
         out.push_str(&format!(
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"0.6\"{}/>\n",
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"0.6\"{}{}/>\n",
             f(a.x),
             f(a.y),
             f(b.x),
             f(b.y),
             color,
             dash,
+            markers,
         ));
     }
     // Vertices.
@@ -392,6 +446,84 @@ fn render_graph(out: &mut String, graph: &DriveAisleGraph) {
     out.push_str("</g>\n");
 }
 
+/// Overlay annotation badges on top of the graph layer so the user can
+/// see *where* a Direction annotation was applied. Each badge is a
+/// filled chevron pointing in the annotated traffic direction:
+///   - OneWay / OneWayReverse           → single chevron.
+///   - TwoWayOriented / *Reverse        → double chevron (back-to-back).
+///
+/// Only DriveLine targets are resolved here — Perimeter and Grid
+/// targets need carrier-substrate context that the harness doesn't
+/// have direct access to. Unresolved annotations are silently skipped.
+fn render_annotations(out: &mut String, annotations: &[Annotation], drive_lines: &[DriveLine]) {
+    let mut emitted = false;
+    let open = |out: &mut String, emitted: &mut bool| {
+        if !*emitted {
+            out.push_str("<g id=\"annotations\" fill=\"#d97706\" stroke=\"#7c3a06\" stroke-width=\"0.3\">\n");
+            *emitted = true;
+        }
+    };
+    for ann in annotations {
+        let Annotation::Direction { target, traffic } = ann else { continue };
+        let Target::DriveLine { id, t } = target else { continue };
+        let Some(line) = drive_lines.iter().find(|d| d.id == *id) else { continue };
+        let pos = Vec2::new(
+            line.start.x + (line.end.x - line.start.x) * t,
+            line.start.y + (line.end.y - line.start.y) * t,
+        );
+        // Direction unit vector along the drive line, flipped for the
+        // *Reverse variants so the chevron always points along traffic flow.
+        let dx = line.end.x - line.start.x;
+        let dy = line.end.y - line.start.y;
+        let len = (dx * dx + dy * dy).sqrt().max(1e-9);
+        let (mut ux, mut uy) = (dx / len, dy / len);
+        if matches!(
+            traffic,
+            TrafficDirection::OneWayReverse | TrafficDirection::TwoWayOrientedReverse
+        ) {
+            ux = -ux;
+            uy = -uy;
+        }
+        // Perpendicular (left-perp) for chevron base width.
+        let (px, py) = (-uy, ux);
+        let two_way = matches!(
+            traffic,
+            TrafficDirection::TwoWayOriented | TrafficDirection::TwoWayOrientedReverse
+        );
+        // Chevron geometry: tip ahead of `pos` along travel, wings behind.
+        let tip_len = 5.0_f64;
+        let half_w = 3.0_f64;
+        let tail = if two_way { tip_len * 0.4 } else { 0.0 };
+        let chevron = |center_along: f64| -> String {
+            let cx = pos.x + ux * center_along;
+            let cy = pos.y + uy * center_along;
+            let tip = (cx + ux * tip_len, cy + uy * tip_len);
+            let lwing = (cx - ux * tail + px * half_w, cy - uy * tail + py * half_w);
+            let rwing = (cx - ux * tail - px * half_w, cy - uy * tail - py * half_w);
+            format!(
+                "<polygon points=\"{},{} {},{} {},{}\"/>\n",
+                f(tip.0),
+                f(tip.1),
+                f(lwing.0),
+                f(lwing.1),
+                f(rwing.0),
+                f(rwing.1),
+            )
+        };
+        open(out, &mut emitted);
+        if two_way {
+            // Two stacked chevrons offset along travel axis.
+            out.push_str(&chevron(-tip_len));
+            out.push_str(&chevron(tip_len * 0.2));
+        } else {
+            out.push_str(&chevron(0.0));
+        }
+    }
+    if emitted {
+        out.push_str("</g>\n");
+    }
+}
+
 fn stall_color(kind: &StallKind) -> Option<&'static str> {
     // Only semantic "non-default" kinds get a fill. Standard stalls are
     // left transparent so the paint lines carry the stall shape on their
@@ -402,7 +534,6 @@ fn stall_color(kind: &StallKind) -> Option<&'static str> {
         StallKind::Standard | StallKind::Island => None,
         StallKind::Compact => Some("#d8d096"),
         StallKind::Ev => Some("#7ec6d9"),
-        StallKind::Extension => Some("#d4b86a"),
         // Unreachable — render_stalls skips Suppressed before dispatching
         // here — but the match must be exhaustive.
         StallKind::Suppressed => None,

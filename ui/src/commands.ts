@@ -35,7 +35,14 @@ export function createCommandAPI(app: App): CommandAPI {
       switch (cmd) {
         case "clear": {
           const lot = app.state.lot;
-          lot.boundary = { outer: [], holes: [], outer_arcs: [], hole_arcs: [] };
+          lot.boundary = {
+            outer: [],
+            holes: [],
+            outer_arcs: [],
+            hole_arcs: [],
+            outer_ids: [],
+            hole_ids: [],
+          };
           lot.driveLines = [];
           lot.annotations = [];
           return "cleared";
@@ -103,15 +110,17 @@ export function createCommandAPI(app: App): CommandAPI {
         }
 
         case "dormant": {
-          // Report the dormant annotation indices from the most recent
-          // generate. Each entry is an index into lot.annotations.
+          // Report the dormant annotations from the most recent generate.
+          // Each entry pairs an index into lot.annotations with the
+          // engine's reason for skipping it.
           const layout = app.state.lot.layout;
           if (!layout) return "error: no layout";
-          const dormant = (layout as any).dormant_annotations ?? [];
+          const dormant = layout.dormant_annotations ?? [];
           if (dormant.length === 0) {
             return "dormant_annotations: 0";
           }
-          return `dormant_annotations: ${dormant.length} (${dormant.join(",")})`;
+          const lines = dormant.map((d) => `  ${d.index}: ${d.reason}`);
+          return `dormant_annotations: ${dormant.length}\n${lines.join("\n")}`;
         }
 
         case "screenshot": {
@@ -449,7 +458,7 @@ function formatTarget(t: Target): string {
   if (t.on === "DriveLine") {
     return `on=drive-line id=${t.id} t=${fmtNum(t.t)}`;
   }
-  return `on=perimeter loop=${formatLoop(t.loop)} arc=${fmtNum(t.arc)}`;
+  return `on=perimeter loop=${formatLoop(t.loop)} edge=${t.start}→${t.end} t=${fmtNum(t.t)}`;
 }
 
 function formatStop(s: GridStop): string {
@@ -544,11 +553,13 @@ function parseAnnotationArgs(
     target = { on: "DriveLine", id, t };
   } else if (on === "perimeter") {
     const loop = parseLoop(kv["loop"]);
-    const arc = Number(kv["arc"]);
-    if (!loop || Number.isNaN(arc)) {
-      return "perimeter requires loop=<loop> arc=<arc>";
+    const start = Number(kv["start"]);
+    const end = Number(kv["end"]);
+    const tNum = Number(kv["t"]);
+    if (!loop || Number.isNaN(start) || Number.isNaN(end) || Number.isNaN(tNum)) {
+      return "perimeter requires loop=<loop> start=<vid> end=<vid> t=<t>";
     }
-    target = { on: "Perimeter", loop, arc };
+    target = { on: "Perimeter", loop, start, end, t: tNum };
   } else {
     return `unknown substrate 'on=${on}'`;
   }

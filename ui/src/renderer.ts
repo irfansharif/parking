@@ -60,7 +60,7 @@ export class Renderer {
 
       if (state.layers.faces && layout.faces) {
         for (let i = 0; i < layout.faces.length; i++) {
-          this.drawFace(layout.faces[i], i, state.layers.faceColors);
+          this.drawFace(layout.faces[i]);
         }
       }
 
@@ -139,13 +139,7 @@ export class Renderer {
 
       if (state.layers.islands && layout.islands) {
         for (const island of layout.islands) {
-          let fillR: number, fillG: number, fillB: number;
-          if (state.layers.faceColors) {
-            const [fr, fg, fb] = Renderer.FACE_COLORS[island.face_idx % Renderer.FACE_COLORS.length];
-            [fillR, fillG, fillB] = [Math.round(fr * 0.45), Math.round(fg * 0.45), Math.round(fb * 0.45)];
-          } else {
-            [fillR, fillG, fillB] = [75, 140, 60];
-          }
+          const [fillR, fillG, fillB] = [75, 140, 60];
           const { ctx } = this;
           ctx.beginPath();
           this.tracePath(island.contour);
@@ -373,15 +367,9 @@ export class Renderer {
     [50, 200, 150],  // seafoam
   ];
 
-  private drawFace(face: Face, index: number, perFaceColors: boolean): void {
+  private drawFace(face: Face): void {
     const { ctx } = this;
-    let r: number, g: number, b: number;
-    if (perFaceColors) {
-      const colors = Renderer.FACE_COLORS;
-      [r, g, b] = colors[index % colors.length];
-    } else {
-      [r, g, b] = [200, 200, 220];
-    }
+    const [r, g, b] = [200, 200, 220];
     ctx.beginPath();
     this.tracePath(face.contour);
     if (face.holes) {
@@ -467,10 +455,6 @@ export class Renderer {
         fill: "rgba(100, 200, 100, 0.4)",
         stroke: "rgba(80, 180, 80, 0.7)",
       },
-      Extension: {
-        fill: "rgba(200, 200, 220, 0.4)",
-        stroke: "rgba(180, 180, 200, 0.7)",
-      },
       Island: {
         fill: "rgba(75, 140, 60, 0.5)",
         stroke: "rgba(60, 120, 45, 0.7)",
@@ -510,19 +494,22 @@ export class Renderer {
     ctx.lineWidth = 0.5;
     ctx.lineCap = "round";
 
-    // Stall paint lines: draw three sides, leaving one edge open.
+    // Stall paint lines.
     // corners: [0]=back_left, [1]=back_right, [2]=aisle_right, [3]=aisle_left
-    // Regular stalls: [2]→[3] open (aisle/entrance).
-    // Island stalls: [0]→[1] open (back, connects to island).
+    // Regular stalls: paint three sides — left/back/right — leaving
+    //   the aisle entrance ([2]→[3]) open.
+    // Island stalls: fully closed rectangle — no usable entrance, so
+    //   all four sides paint (including the entrance).
     if (lot.layout) {
       ctx.beginPath();
       for (const stall of lot.layout.stalls) {
         const c = stall.corners;
         if (stall.kind === "Island") {
-          ctx.moveTo(c[1].x, c[1].y);
+          ctx.moveTo(c[0].x, c[0].y);
+          ctx.lineTo(c[1].x, c[1].y);
           ctx.lineTo(c[2].x, c[2].y);
           ctx.lineTo(c[3].x, c[3].y);
-          ctx.lineTo(c[0].x, c[0].y);
+          ctx.closePath();
         } else {
           ctx.moveTo(c[3].x, c[3].y);
           ctx.lineTo(c[0].x, c[0].y);
@@ -607,13 +594,12 @@ export class Renderer {
     const color = `hsla(${hue}, 100%, 70%, 0.95)`;
     const colorFaint = `hsla(${hue}, 100%, 70%, 0.8)`;
 
-    // Draw the spine line — dashed for primary, dotted for extensions.
     ctx.beginPath();
     ctx.moveTo(spine.start.x, spine.start.y);
     ctx.lineTo(spine.end.x, spine.end.y);
     ctx.strokeStyle = color;
     ctx.lineWidth = 0.8;
-    ctx.setLineDash(spine.is_extension ? [1, 2] : [3, 2]);
+    ctx.setLineDash([3, 2]);
     ctx.stroke();
     ctx.setLineDash([]);
 

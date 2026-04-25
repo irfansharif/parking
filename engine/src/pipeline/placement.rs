@@ -1,14 +1,8 @@
-//! §3.6 Stall placement along spines + extension greedy fill.
+//! §3.6 Stall placement along spines.
 //!
 //! The `fill_strip` primitive (one-side-of-an-edge stall row) plus
-//! spine-level orchestration: compute centering shift, iterate each
-//! spine, place extension spines greedily in longest-first order with
-//! conflict avoidance against already-placed primary stalls.
+//! spine-level orchestration that iterates each spine and emits stalls.
 
-use crate::geom::poly::ray_hit_face_edge;
-use crate::pipeline::filter::{
-    quad_fully_in_face, shrink_toward_centroid,
-};
 use crate::types::*;
 
 /// Fill one side of a drive-aisle edge with a strip of angled stalls.
@@ -127,7 +121,19 @@ pub(crate) fn spine_fill_params(seg: &SpineSegment) -> (Vec2, Vec2, Option<f64>,
     let (start, end) = seg.oriented_endpoints();
     let oriented_dir = (end - start).normalize();
     let angle_override = if seg.is_interior { None } else { Some(90.0) };
-    let flip_angle = seg.travel_dir.map_or(false, |td| oriented_dir.dot(td) > 0.0);
+    // OneWay aisles flip on the side where oriented_dir aligns with
+    // travel — the per-side mismatch produces the chevron.
+    // TwoWayOrientedReverse aisles flip *every* spine, mirroring the
+    // default two-way slash pattern across the aisle axis.
+    let direction_flip = seg.travel_dir.map_or(false, |td| oriented_dir.dot(td) > 0.0);
+    let flip_angle = direction_flip ^ seg.reverse_lean;
+    if seg.reverse_lean {
+        eprintln!(
+            "[reverse] spine ({:.0},{:.0})->({:.0},{:.0}) outward=({:.1},{:.1}) flip_angle={}",
+            seg.start.x, seg.start.y, seg.end.x, seg.end.y,
+            seg.outward_normal.x, seg.outward_normal.y, flip_angle
+        );
+    }
     // Stagger grid by half a pitch for one-way spines whose outward_normal
     // points to the right of the travel direction (cross product >= 0).
     let grid_offset = seg.travel_dir.map_or(0.0, |td| {
@@ -164,130 +170,3 @@ pub(crate) fn place_stalls_on_spines(
     stalls
 }
 
-
-
-
-
-
-/// Place extension stalls greedily, prioritised by source primary spine
-/// length (longest primary spine's extensions first). Each candidate stall
-/// is checked against all already-placed stalls (primary + earlier
-/// extensions) and silently skipped on conflict, avoiding the
-/// mutual-removal behaviour of remove_conflicting_stalls.
-pub(crate) fn place_extension_stalls_greedy(
-    ext_spines_with_src: &[(SpineSegment, usize)],
-    primary_spines: &[SpineSegment],
-    primary_stalls: &[(StallQuad, usize)],
-    faces: &[Vec<Vec<Vec2>>],
-    _merged_corridors: &[Vec<Vec<Vec2>>],
-    params: &ParkingParams,
-    debug: &DebugToggles,
-    tagged_faces: &[TaggedFace],
-) -> Vec<(StallQuad, usize, usize)> {
-    use crate::geom::clip::polygons_overlap;
-
-    // Sort by source primary spine length (longest first), breaking ties
-    // by extension spine length.
-    let mut ordered: Vec<(usize, f64, f64)> = ext_spines_with_src
-        .iter()
-        .enumerate()
-        .map(|(i, (ext, src_idx))| {
-            let src = &primary_spines[*src_idx];
-            let src_len = (src.end - src.start).length();
-            let ext_len = (ext.end - ext.start).length();
-            (i, src_len, ext_len)
-        })
-        .collect();
-    ordered.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap()
-        .then(b.2.partial_cmp(&a.2).unwrap()));
-
-    // Seed the occupied set with shrunk primary stall polygons, grouped by face.
-    let mut occupied_by_face: std::collections::HashMap<usize, Vec<Vec<Vec2>>> =
-        std::collections::HashMap::new();
-    for (stall, face_idx) in primary_stalls {
-        let shrunk = shrink_toward_centroid(&stall.corners, 0.1);
-        occupied_by_face.entry(*face_idx).or_default().push(shrunk);
-    }
-
-    let mut result = Vec::new();
-
-    for (spine_idx, _, _) in ordered {
-        let (seg, src_idx) = &ext_spines_with_src[spine_idx];
-
-        let candidates: Vec<(StallQuad, usize, usize)> =
-            fill_spine(seg, params)
-                .into_iter().map(|q| (q, seg.face_idx, 0)).collect();
-
-        for (mut quad, face_idx, _) in candidates {
-            quad.kind = StallKind::Extension;
-
-            if debug.stall_face_clipping && face_idx < faces.len() && !faces[face_idx].is_empty() {
-                if !quad_fully_in_face(&quad.corners, &faces[face_idx]) {
-                    continue;
-                }
-            }
-
-            //
-            // Corner check: rays from p2 (dir p1→p2) and p3 (dir p0→p3).
-            // Both must hit the same face boundary edge. Origins are
-            // pulled 20% inward toward centroid to avoid starting outside
-            // the face (angled stall corners can protrude).
-            if face_idx < faces.len() && !faces[face_idx].is_empty() {
-                let cx = (quad.corners[0].x + quad.corners[1].x + quad.corners[2].x + quad.corners[3].x) / 4.0;
-                let cy = (quad.corners[0].y + quad.corners[1].y + quad.corners[2].y + quad.corners[3].y) / 4.0;
-                let centroid = Vec2::new(cx, cy);
-                let origin_a = quad.corners[2] + (centroid - quad.corners[2]) * 0.2;
-                let origin_b = quad.corners[3] + (centroid - quad.corners[3]) * 0.2;
-                let dir_a = (quad.corners[2] - quad.corners[1]).normalize();
-                let dir_b = (quad.corners[3] - quad.corners[0]).normalize();
-                let hit_a = ray_hit_face_edge(origin_a, dir_a, &faces[face_idx]);
-                let hit_b = ray_hit_face_edge(origin_b, dir_b, &faces[face_idx]);
-                match (hit_a, hit_b) {
-                    (Some((ci_a, ei_a)), Some((ci_b, ei_b))) => {
-                        if ci_a != ci_b || ei_a != ei_b { continue; }
-                        // Reject extensions aimed at wall edges.
-                        if face_idx < tagged_faces.len() {
-                            let tf = &tagged_faces[face_idx];
-                            let edges = if ci_a == 0 { &tf.edges } else if ci_a - 1 < tf.hole_edges.len() { &tf.hole_edges[ci_a - 1] } else { &tf.edges };
-                            // Find the tagged edge closest to the hit edge midpoint.
-                            if !faces[face_idx].is_empty() && ci_a < faces[face_idx].len() {
-                                let contour = &faces[face_idx][ci_a];
-                                if ei_a < contour.len() {
-                                    let ej = (ei_a + 1) % contour.len();
-                                    let mid = (contour[ei_a] + contour[ej]) * 0.5;
-                                    let mut best_dist = f64::INFINITY;
-                                    let mut is_wall = false;
-                                    for te in edges {
-                                        let te_mid = (te.start + te.end) * 0.5;
-                                        let d = (te_mid - mid).length();
-                                        if d < best_dist {
-                                            best_dist = d;
-                                            is_wall = matches!(te.source, EdgeSource::Wall);
-                                        }
-                                    }
-                                    if is_wall { continue; }
-                                }
-                            }
-                        }
-                    }
-                    _ => { continue; }
-                }
-            }
-
-            // Conflict check against all occupied stalls in the same face.
-            let shrunk = shrink_toward_centroid(&quad.corners, 0.1);
-            let dominated = occupied_by_face
-                .get(&face_idx)
-                .map_or(false, |occ| occ.iter().any(|p| polygons_overlap(&shrunk, p)));
-            if dominated {
-                continue;
-            }
-
-            // Accept this stall — add to occupied set.
-            occupied_by_face.entry(face_idx).or_default().push(shrunk);
-            result.push((quad, face_idx, *src_idx));
-        }
-    }
-
-    result
-}

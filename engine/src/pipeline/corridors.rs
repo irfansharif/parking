@@ -8,20 +8,27 @@
 use crate::geom::boolean::{self, FillRule};
 use crate::geom::inset::signed_area;
 use crate::types::*;
-use geo::{Coord, LineString, Simplify};
 
 /// Build the corridor rectangle for a single aisle edge.
+///
+/// Direction-annotated edges flip their stored start/end to encode
+/// traffic direction. Independent of that orientation, the corridor
+/// rectangle's vertex order must stay consistent so downstream boolean
+/// union and face extraction see a stable winding for every edge.
 pub(crate) fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2> {
-    let start = vertices[edge.start];
-    let end = vertices[edge.end];
-    let dir = (end - start).normalize();
+    let s = vertices[edge.start];
+    let e = vertices[edge.end];
+    // Canonicalize endpoint order by world position so reversed
+    // direction annotations don't flip the polygon's winding.
+    let (a, b) = if (s.x, s.y) <= (e.x, e.y) { (s, e) } else { (e, s) };
+    let dir = (b - a).normalize();
     let normal = Vec2::new(-dir.y, dir.x);
     let w = edge.width;
     vec![
-        start + normal * w,
-        end + normal * w,
-        end - normal * w,
-        start - normal * w,
+        a + normal * w,
+        b + normal * w,
+        b - normal * w,
+        a - normal * w,
     ]
 }
 
@@ -43,11 +50,23 @@ pub(crate) fn deduplicate_corridors(
         if !seen.insert(key) {
             continue;
         }
+        // Only OneWay aisles affect stall lean — they need per-side
+        // flip_angle to produce a herringbone chevron in travel direction.
+        // TwoWayOriented is a metadata-only annotation: stalls placed
+        // around a two-way oriented aisle should match the default
+        // TwoWay pattern (the SVG markers / arrowheads carry the
+        // direction information visually). Without this, the flip
+        // mechanism in spines.rs interacts asymmetrically with
+        // normalize_paired_spines and conflict_removal and produces
+        // one bay parallel + one bay herringbone instead of clean
+        // matching pairs.
         let travel_dir = match edge.direction {
-            AisleDirection::OneWay | AisleDirection::TwoWayOriented => {
+            AisleDirection::OneWay => {
                 Some((graph.vertices[edge.end] - graph.vertices[edge.start]).normalize())
             }
-            AisleDirection::TwoWay => None,
+            AisleDirection::TwoWay
+            | AisleDirection::TwoWayOriented
+            | AisleDirection::TwoWayOrientedReverse => None,
         };
         corridors.push((corridor_polygon(&graph.vertices, edge), edge.interior, travel_dir));
     }
@@ -182,31 +201,18 @@ pub(crate) fn merge_corridor_shapes(
 
     let result = boolean::union(&subj, &[], FillRule::NonZero);
 
-    let max_width = graph.edges.iter().map(|e| e.width).fold(0.0f64, f64::max);
-    let min_hole_area = max_width * max_width;
-
     result
         .into_iter()
         .filter(|shape| !shape.is_empty())
         .map(|shape| {
             shape
                 .into_iter()
-                .enumerate()
-                .filter_map(|(i, pts)| {
-                    let pts = if debug.spike_removal {
+                .map(|pts| {
+                    if debug.spike_removal {
                         remove_contour_spikes(pts, 2.0)
                     } else {
                         pts
-                    };
-                    let pts = if debug.contour_simplification {
-                        rdp_simplify_contour(pts, 2.0)
-                    } else {
-                        pts
-                    };
-                    if i > 0 && debug.hole_filtering && signed_area(&pts).abs() < min_hole_area {
-                        return None;
                     }
-                    Some(pts)
                 })
                 .collect()
         })
@@ -233,42 +239,26 @@ fn remove_contour_spikes(mut contour: Vec<Vec2>, tolerance: f64) -> Vec<Vec2> {
             let bc = c - b;
             let ab_len = ab.length();
             let bc_len = bc.length();
-            if ab_len < tolerance || bc_len < tolerance {
+            if ab_len < f64::EPSILON || bc_len < f64::EPSILON {
                 contour.remove(i);
                 changed = true;
                 break;
             }
             let ab_n = ab * (1.0 / ab_len);
             let bc_n = bc * (1.0 / bc_len);
-            if ab_n.dot(bc_n) < -0.95 {
-                if (c - a).length() < tolerance {
-                    let remove_second = next;
-                    if remove_second > i {
-                        contour.remove(remove_second);
-                        contour.remove(i);
-                    } else {
-                        contour.remove(i);
-                        contour.remove(remove_second);
-                    }
-                    changed = true;
-                    break;
+            if ab_n.dot(bc_n) < -0.95 && (c - a).length() < tolerance {
+                let remove_second = next;
+                if remove_second > i {
+                    contour.remove(remove_second);
+                    contour.remove(i);
+                } else {
+                    contour.remove(i);
+                    contour.remove(remove_second);
                 }
+                changed = true;
+                break;
             }
         }
     }
     contour
-}
-
-/// Ramer-Douglas-Peucker simplification (via the `geo` crate).
-fn rdp_simplify_contour(contour: Vec<Vec2>, epsilon: f64) -> Vec<Vec2> {
-    if contour.len() < 4 {
-        return contour;
-    }
-    let coords: Vec<Coord<f64>> = contour.iter().map(|v| Coord { x: v.x, y: v.y }).collect();
-    let ring = LineString::new(coords);
-    let poly = geo::Polygon::new(ring, vec![]);
-    let simplified = poly.simplify(&epsilon);
-    let ext = simplified.exterior();
-    let n = ext.0.len().saturating_sub(1);
-    ext.0[..n].iter().map(|c| Vec2::new(c.x, c.y)).collect()
 }
