@@ -349,8 +349,7 @@ fn clip_drive_lines(
                 let vib = find_or_add_vertex_anchored(
                     &mut vertices, &mut anchors, pb, 1.0, dl.id, pair[1] / seg_len);
                 if via != vib {
-                    edges.push(AisleEdge { start: via, end: vib, width: hw, interior: true, direction: AisleDirection::TwoWay });
-                    edges.push(AisleEdge { start: vib, end: via, width: hw, interior: true, direction: AisleDirection::TwoWay });
+                    edges.push(AisleEdge { start: via, end: vib, width: hw, interior: true, direction: None });
                 }
             }
         }
@@ -387,19 +386,15 @@ fn find_or_add_vertex_anchored(
 }
 
 /// Find all intersection t-values of an infinite line with graph edge segments.
-/// Returns sorted t values. Deduplicates bidirectional edges.
+/// Returns sorted t values.
 fn intersect_line_with_graph_edges(
     origin: Vec2,
     dir: Vec2,
     graph: &DriveAisleGraph,
 ) -> Vec<f64> {
     let mut hits: Vec<f64> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
 
     for edge in &graph.edges {
-        let key = (edge.start.min(edge.end), edge.start.max(edge.end));
-        if !seen.insert(key) { continue; }
-
         let s = graph.vertices[edge.start];
         let e = graph.vertices[edge.end];
         let seg = e - s;
@@ -508,36 +503,41 @@ fn append_graph(
 
         if let Some((ei, _t)) = best_split {
             // Split edge ei at new_vi: replace edge (s->e) with (s->new_vi) + (new_vi->e).
-            // Since edges are stored bidirectionally, find and split the reverse too.
             let s = edges[ei].start;
             let e = edges[ei].end;
             let w = edges[ei].width;
             let interior = edges[ei].interior;
             let direction = edges[ei].direction.clone();
 
-            // Replace the forward edge with s->new_vi, add new_vi->e.
             edges[ei] = AisleEdge { start: s, end: new_vi, width: w, interior, direction: direction.clone() };
-            edges.push(AisleEdge { start: new_vi, end: e, width: w, interior, direction: direction.clone() });
-
-            // Find and split the reverse edge (e->s).
-            for ri in 0..edges.len() {
-                if ri == ei { continue; }
-                if edges[ri].start == e && edges[ri].end == s {
-                    let rd = edges[ri].direction.clone();
-                    edges[ri] = AisleEdge { start: e, end: new_vi, width: w, interior, direction: rd.clone() };
-                    edges.push(AisleEdge { start: new_vi, end: s, width: w, interior, direction: rd });
-                    break;
-                }
-            }
+            edges.push(AisleEdge { start: new_vi, end: e, width: w, interior, direction });
         }
 
         b_to_merged.push(new_vi);
     }
 
+    // Skip b-edges whose merged endpoints already share an edge in a.
+    // This happens when a drive-line vertex lands on an existing a-edge:
+    // the split spawns a half-edge between the same merged endpoints
+    // that the b-edge would otherwise contribute.
+    let mut existing_keys: std::collections::HashSet<(usize, usize)> =
+        std::collections::HashSet::with_capacity(edges.len());
+    for ex in &edges {
+        existing_keys.insert((ex.start.min(ex.end), ex.start.max(ex.end)));
+    }
     for e in &b.edges {
+        let s = b_to_merged[e.start];
+        let t = b_to_merged[e.end];
+        if s == t {
+            continue;
+        }
+        let key = (s.min(t), s.max(t));
+        if !existing_keys.insert(key) {
+            continue;
+        }
         edges.push(AisleEdge {
-            start: b_to_merged[e.start],
-            end: b_to_merged[e.end],
+            start: s,
+            end: t,
             width: e.width,
             interior: e.interior,
             direction: e.direction.clone(),
@@ -663,33 +663,21 @@ pub fn generate_from_spines(
     // boolean-union them into merged shapes (preserving holes for loops).
     let dedup_corridors_with_flags = deduplicate_corridors(graph);
     let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors_with_flags.iter().map(|(p, _, _)| p.clone()).collect();
-    // Per-deduped-corridor "reverse lean" flag, encoded in the
-    // legacy Option<Vec2> slot (Some = reverse, None = normal). This
-    // slot used to carry the canonical travel direction for
-    // TwoWayOriented aisles back when those flipped stall geometry;
-    // now only TwoWayOrientedReverse populates it, so placement can
-    // negate cos_a on the affected spines and produce the mirrored
-    // slash pattern the user wants.
-    let two_way_oriented_dirs: Vec<Option<Vec2>> = {
-        let mut seen = std::collections::HashSet::new();
-        let mut dirs = Vec::new();
-        for edge in &graph.edges {
-            let key = if edge.start < edge.end {
-                (edge.start, edge.end)
+    // Per-corridor "reverse lean" flag, encoded in the legacy
+    // Option<Vec2> slot (Some = reverse, None = normal). Only
+    // TwoWayReverse populates it, so placement can negate cos_a on
+    // the affected spines and produce the mirrored slash pattern.
+    let two_way_oriented_dirs: Vec<Option<Vec2>> = graph
+        .edges
+        .iter()
+        .map(|edge| {
+            if edge.direction == Some(AisleDirection::TwoWayReverse) {
+                Some(Vec2::new(0.0, 0.0))
             } else {
-                (edge.end, edge.start)
-            };
-            if !seen.insert(key) {
-                continue;
+                None
             }
-            if edge.direction == AisleDirection::TwoWayOrientedReverse {
-                dirs.push(Some(Vec2::new(0.0, 0.0)));
-            } else {
-                dirs.push(None);
-            }
-        }
-        dirs
-    };
+        })
+        .collect();
     let miter_fills = generate_miter_fills(graph, debug);
     let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, graph, debug);
 
@@ -814,20 +802,19 @@ pub fn generate_from_spines(
     // handing the contest to the shorter spine.
     let tagged_stalls = if debug.conflict_removal {
         // Build per-stall spine lengths by matching surviving stalls back
-        // to their spine_idx via corner identity. Spines that carry a
-        // `travel_dir` (i.e., come from direction-annotated aisles) get
-        // a small length bonus so they outrank a TwoWay neighbor of
-        // identical geometry — without this, the longer-spine tiebreak
-        // collapses on equal-length back-to-back spines and the
-        // annotated side's distinctive lean gets eaten by the
-        // unannotated default.
+        // to their spine_idx via corner identity. Spines on direction-
+        // annotated aisles get a small length bonus so they outrank a
+        // TwoWay neighbor of identical geometry — without this, the
+        // longer-spine tiebreak collapses on equal-length back-to-back
+        // spines and the annotated side's distinctive lean gets eaten
+        // by the unannotated default.
         let stall_spine_lengths: Vec<f64> = {
             let key_to_spine_len: std::collections::HashMap<[u64; 8], f64> = tagged_stalls_3
                 .iter()
                 .map(|(s, _, si)| {
                     let spine = &all_spines[*si];
                     let mut len = (spine.end - spine.start).length();
-                    if spine.travel_dir.is_some() || spine.reverse_lean {
+                    if spine.is_annotated {
                         len += 0.5;
                     }
                     (stall_key(s), len)

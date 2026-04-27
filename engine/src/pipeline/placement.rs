@@ -116,30 +116,14 @@ pub fn fill_strip(
     stalls
 }
 
-/// Compute fill_strip parameters for a spine segment.
+/// Compute fill_strip parameters for a spine segment. All direction
+/// math is precomputed at spine construction; this function just maps
+/// flag bits to the fill_strip args.
 pub(crate) fn spine_fill_params(seg: &SpineSegment) -> (Vec2, Vec2, Option<f64>, bool, f64) {
     let (start, end) = seg.oriented_endpoints();
-    let oriented_dir = (end - start).normalize();
     let angle_override = if seg.is_interior { None } else { Some(90.0) };
-    // OneWay aisles flip on the side where oriented_dir aligns with
-    // travel — the per-side mismatch produces the chevron.
-    // TwoWayOrientedReverse aisles flip *every* spine, mirroring the
-    // default two-way slash pattern across the aisle axis.
-    let direction_flip = seg.travel_dir.map_or(false, |td| oriented_dir.dot(td) > 0.0);
-    let flip_angle = direction_flip ^ seg.reverse_lean;
-    if seg.reverse_lean {
-        eprintln!(
-            "[reverse] spine ({:.0},{:.0})->({:.0},{:.0}) outward=({:.1},{:.1}) flip_angle={}",
-            seg.start.x, seg.start.y, seg.end.x, seg.end.y,
-            seg.outward_normal.x, seg.outward_normal.y, flip_angle
-        );
-    }
-    // Stagger grid by half a pitch for one-way spines whose outward_normal
-    // points to the right of the travel direction (cross product >= 0).
-    let grid_offset = seg.travel_dir.map_or(0.0, |td| {
-        if td.cross(seg.outward_normal) >= 0.0 { 0.5 } else { 0.0 }
-    });
-    (start, end, angle_override, flip_angle, grid_offset)
+    let grid_offset = if seg.staggered { 0.5 } else { 0.0 };
+    (start, end, angle_override, seg.flip_angle, grid_offset)
 }
 
 /// Place stalls on a spine.

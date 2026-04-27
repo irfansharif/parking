@@ -83,7 +83,6 @@ export type {
   StallKind,
   StallModifier,
   StallQuad,
-  TrafficDirection,
   Vec2,
 } from "./bindings";
 

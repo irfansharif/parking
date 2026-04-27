@@ -31,7 +31,7 @@ total_stalls: 129
 # in it.
 edge-select near=200,120 mode=chain
 ----
-edge-select seed=164 mode=chain chain_len=8
+edge-select seed=82 mode=chain chain_len=8
 
 edge-cycle
 ----
@@ -39,14 +39,14 @@ edge-cycle
 
 annotations
 ----
-direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-8,lattice:1 traffic=two-way-oriented
+direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-8,lattice:1 traffic=two-way-reverse
 
 # Segment-mode direction on the same row. Extents collapse to just
 # the seed sub-edge; 'f' on the distinct scope creates a second
 # annotation rather than cycling the row-wide one.
 edge-select near=200,120 mode=segment
 ----
-edge-select seed=164 mode=segment chain_len=1
+edge-select seed=82 mode=segment chain_len=1
 
 edge-cycle
 ----
@@ -54,14 +54,14 @@ edge-cycle
 
 annotations
 ----
-direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-8,lattice:1 traffic=two-way-oriented
-direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-4,lattice:-3 traffic=two-way-oriented
+direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-8,lattice:1 traffic=two-way-reverse
+direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-4,lattice:-3 traffic=two-way-reverse
 
 # Chain-mode delete on a vertical column. Chain expansion picks up
 # the whole column.
 edge-select near=200,180 mode=chain
 ----
-edge-select seed=98 mode=chain chain_len=6
+edge-select seed=49 mode=chain chain_len=6
 
 edge-delete
 ----
@@ -69,15 +69,15 @@ edge-delete
 
 annotations
 ----
-direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-8,lattice:1 traffic=two-way-oriented
-direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-4,lattice:-3 traffic=two-way-oriented
+direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-8,lattice:1 traffic=two-way-reverse
+direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-4,lattice:-3 traffic=two-way-reverse
 delete-edge on=grid region=0x0001000000000000 axis=x coord=-4 range=lattice:0,lattice:6
 
 # Segment-mode delete on a horizontal sub-edge. After the chain
 # delete above the graph regenerates; extents match the seed.
 edge-select near=200,180 mode=segment
 ----
-edge-select seed=98 mode=segment chain_len=1
+edge-select seed=49 mode=segment chain_len=1
 
 edge-delete
 ----
@@ -85,7 +85,7 @@ edge-delete
 
 annotations
 ----
-direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-8,lattice:1 traffic=two-way-oriented
-direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-4,lattice:-3 traffic=two-way-oriented
+direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-8,lattice:1 traffic=two-way-reverse
+direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-4,lattice:-3 traffic=two-way-reverse
 delete-edge on=grid region=0x0001000000000000 axis=x coord=-4 range=lattice:0,lattice:6
 delete-edge on=grid region=0x0001000000000000 axis=x coord=-4 range=lattice:3,lattice:4

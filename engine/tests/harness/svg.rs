@@ -7,7 +7,7 @@
 use parking_lot_engine::geom::arc::discretize_polygon;
 use parking_lot_engine::types::{
     AisleDirection, Annotation, DriveAisleGraph, DriveLine, Island, ParkingLayout, Polygon,
-    StallKind, StallQuad, Target, TrafficDirection, Vec2,
+    StallKind, StallQuad, Target, Vec2,
 };
 
 pub struct SvgOptions {
@@ -18,6 +18,11 @@ pub struct SvgOptions {
     /// `height` so stalls render at a fixed physical size regardless of
     /// which viewer is showing the file.
     pub px_per_unit: f64,
+    /// When true, overlay annotation badges (chevrons) on top of the
+    /// graph layer so tests can visually surface where Direction
+    /// annotations were applied. Default false — most snapshots want
+    /// clean lot output without annotation chrome.
+    pub show_annotations: bool,
 }
 
 impl Default for SvgOptions {
@@ -25,6 +30,7 @@ impl Default for SvgOptions {
         Self {
             margin: 0.05,
             px_per_unit: 2.0,
+            show_annotations: false,
         }
     }
 }
@@ -74,13 +80,11 @@ pub fn render(
     // band. `vector-effect` doesn't inherit through `<g>` in the
     // spec, so apply it via CSS.
     out.push_str("<style>polygon,polyline,line,path{vector-effect:non-scaling-stroke}</style>\n");
-    // Arrow markers for direction-annotated aisles. Two color variants
-    // matching the interior/perimeter aisle palette. `markerUnits` is
-    // strokeWidth by default, so the arrow scales with line stroke.
-    // `orient="auto-start-reverse"` lets `marker-start` point outward
-    // from the line so back-to-back arrows on a TwoWayOriented edge
-    // form a clear double-headed indicator instead of two arrows
-    // pointing the same way.
+    // Arrow markers for OneWay aisles. Two color variants matching the
+    // interior/perimeter aisle palette. `markerUnits` is strokeWidth
+    // by default, so the arrow scales with line stroke.
+    // `orient="auto-start-reverse"` is kept so the marker geometry is
+    // future-proof against being reused for back-to-back arrows.
     out.push_str(
         "<defs>\
 <marker id=\"arrow-i\" viewBox=\"0 0 10 10\" refX=\"10\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto-start-reverse\"><path d=\"M0 0L10 5L0 10z\" fill=\"#3e68a8\"/></marker>\
@@ -103,7 +107,9 @@ pub fn render(
     render_stalls(&mut out, &layout.stalls);
     render_paint(&mut out, &layout.stalls, &layout.islands);
     render_graph(&mut out, &layout.resolved_graph);
-    render_annotations(&mut out, annotations, drive_lines);
+    if opts.show_annotations {
+        render_annotations(&mut out, annotations, drive_lines);
+    }
 
     out.push_str("</g>\n</svg>\n");
     out
@@ -341,85 +347,45 @@ fn render_graph(out: &mut String, graph: &DriveAisleGraph) {
     }
     out.push_str("<g id=\"graph\">\n");
     // Edges. Perimeter = brown-orange, interior = blue, matching the
-    // DESIGN.md figure conventions. Undirected edges are frequently
-    // stored twice (A→B and B→A) in `resolved_graph.edges`, which
-    // would double-draw the same dashed segment with opposing dash
-    // phases — producing a solid-looking line instead of dashes, or
-    // the appearance of a second overlapping color. Dedupe by
-    // unordered vertex pair and draw each segment once; if the same
-    // pair carries both perimeter and interior edges, perimeter wins
-    // so the lot outline reads cleanly on top.
-    // Track each unique edge by (min, max) vertex pair. For directional
-    // edges keep the actual `start → end` order (which the annotation
-    // pipeline aligns with travel direction) so we can orient
-    // arrowheads correctly.
-    let mut seen: std::collections::HashMap<(usize, usize), (bool, AisleDirection, usize, usize)> =
-        std::collections::HashMap::new();
-    let mut ordered_keys: Vec<(usize, usize)> = Vec::new();
+    // DESIGN.md figure conventions. Each edge is stored once in
+    // `resolved_graph.edges`, so iterate flat.
     for edge in &graph.edges {
         if edge.start >= graph.vertices.len() || edge.end >= graph.vertices.len() {
             continue;
         }
-        let key = if edge.start <= edge.end {
-            (edge.start, edge.end)
-        } else {
-            (edge.end, edge.start)
+        // For OneWayReverse, swap endpoints so the line is stroked
+        // along traffic direction and marker-end naturally lands at
+        // the traffic-end without needing marker-start gymnastics.
+        let (a, b) = match edge.direction {
+            Some(AisleDirection::OneWayReverse) => {
+                (graph.vertices[edge.end], graph.vertices[edge.start])
+            }
+            _ => (graph.vertices[edge.start], graph.vertices[edge.end]),
         };
-        match seen.get_mut(&key) {
-            Some(entry) => {
-                // Promote to perimeter (interior=false) if any copy is
-                // perimeter. If a directional copy shows up after a
-                // TwoWay copy, adopt its direction + travel order so
-                // the arrowhead points the right way.
-                if entry.0 && !edge.interior {
-                    entry.0 = false;
-                }
-                if matches!(entry.1, AisleDirection::TwoWay)
-                    && !matches!(edge.direction, AisleDirection::TwoWay)
-                {
-                    entry.1 = edge.direction.clone();
-                    entry.2 = edge.start;
-                    entry.3 = edge.end;
-                }
-            }
-            None => {
-                seen.insert(
-                    key,
-                    (edge.interior, edge.direction.clone(), edge.start, edge.end),
-                );
-                ordered_keys.push(key);
-            }
-        }
-    }
-    for key in &ordered_keys {
-        let (interior, direction, sidx, didx) = &seen[key];
-        let a = graph.vertices[*sidx];
-        let b = graph.vertices[*didx];
-        let color = if *interior { "#3e68a8" } else { "#a84a1e" };
-        let marker_id = if *interior { "arrow-i" } else { "arrow-p" };
+        let color = if edge.interior { "#3e68a8" } else { "#a84a1e" };
+        let marker_id = if edge.interior { "arrow-i" } else { "arrow-p" };
         // Road-style centerline: every aisle is dashed so the graph
         // reads as a drivable path. Dash numbers are in world units
         // (feet) — an 8-ft dash + 5-ft gap reads as road paint at the
-        // typical parking-lot scale. Directional variants add density
+        // typical parking-lot scale. Annotated variants add density
         // on top of the base cadence.
-        let dash = match *direction {
-            AisleDirection::TwoWay => " stroke-dasharray=\"8 5\"",
-            AisleDirection::OneWay => " stroke-dasharray=\"4 2\"",
-            AisleDirection::TwoWayOriented | AisleDirection::TwoWayOrientedReverse => {
-                " stroke-dasharray=\"8 2\""
+        let dash = match edge.direction {
+            None => " stroke-dasharray=\"8 5\"",
+            Some(AisleDirection::TwoWayReverse) => " stroke-dasharray=\"8 2\"",
+            Some(AisleDirection::OneWay) | Some(AisleDirection::OneWayReverse) => {
+                " stroke-dasharray=\"4 2\""
             }
         };
-        // Arrowheads encode direction:
-        //   OneWay           → single arrow at the travel-end of each segment.
-        //   TwoWayOriented   → arrows at both ends, pointing outward, so the
-        //                       segment reads as a double-headed arrow.
-        //   TwoWay           → no markers.
-        let markers = match *direction {
-            AisleDirection::TwoWay => String::new(),
-            AisleDirection::OneWay => format!(" marker-end=\"url(#{marker_id})\""),
-            AisleDirection::TwoWayOriented | AisleDirection::TwoWayOrientedReverse => format!(
-                " marker-start=\"url(#{marker_id})\" marker-end=\"url(#{marker_id})\""
-            ),
+        // OneWay edges get a marker-end arrow because the tag carries
+        // lane direction (endpoints were already swapped above for
+        // OneWayReverse). TwoWayReverse + default don't carry per-edge
+        // direction; the mirrored stall lean is the only signal that
+        // distinguishes *Reverse from default.
+        let markers = match edge.direction {
+            None | Some(AisleDirection::TwoWayReverse) => String::new(),
+            Some(AisleDirection::OneWay) | Some(AisleDirection::OneWayReverse) => {
+                format!(" marker-end=\"url(#{marker_id})\"")
+            }
         };
         out.push_str(&format!(
             "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"0.6\"{}{}/>\n",
@@ -449,8 +415,8 @@ fn render_graph(out: &mut String, graph: &DriveAisleGraph) {
 /// Overlay annotation badges on top of the graph layer so the user can
 /// see *where* a Direction annotation was applied. Each badge is a
 /// filled chevron pointing in the annotated traffic direction:
-///   - OneWay / OneWayReverse           → single chevron.
-///   - TwoWayOriented / *Reverse        → double chevron (back-to-back).
+///   - OneWay / OneWayReverse → single chevron.
+///   - TwoWayReverse          → double chevron (back-to-back).
 ///
 /// Only DriveLine targets are resolved here — Perimeter and Grid
 /// targets need carrier-substrate context that the harness doesn't
@@ -479,17 +445,14 @@ fn render_annotations(out: &mut String, annotations: &[Annotation], drive_lines:
         let (mut ux, mut uy) = (dx / len, dy / len);
         if matches!(
             traffic,
-            TrafficDirection::OneWayReverse | TrafficDirection::TwoWayOrientedReverse
+            AisleDirection::OneWayReverse | AisleDirection::TwoWayReverse
         ) {
             ux = -ux;
             uy = -uy;
         }
         // Perpendicular (left-perp) for chevron base width.
         let (px, py) = (-uy, ux);
-        let two_way = matches!(
-            traffic,
-            TrafficDirection::TwoWayOriented | TrafficDirection::TwoWayOrientedReverse
-        );
+        let two_way = matches!(traffic, AisleDirection::TwoWayReverse);
         // Chevron geometry: tip ahead of `pos` along travel, wings behind.
         let tip_len = 5.0_f64;
         let half_w = 3.0_f64;

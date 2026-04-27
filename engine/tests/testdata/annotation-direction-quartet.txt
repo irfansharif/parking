@@ -1,14 +1,17 @@
-# Direction-annotation snapshot covering all four TrafficDirection
-# variants on the same lot. 12 vertical drive lines at 100ft pitch;
-# every other one carries a different direction so each annotated
-# aisle has a default (TwoWay) bay between it and the next, isolating
-# the stall-lean pattern of each variant.
+# Direction-annotation snapshot covering all three annotation
+# variants on the same lot (TwoWay isn't an annotation alphabet —
+# the unannotated default already produces a two-way layout). 12
+# vertical drive lines at 100ft pitch; every other one carries a
+# different direction so each annotated aisle has a default-TwoWay
+# bay between it and the next, isolating the stall-lean pattern of
+# each variant.
 #
 # Stall angle is 45° so the lean direction is unambiguous: at 90° the
 # cosine vanishes and the four variants would render identically.
 #
 # Drive-line ids are auto-allocated 1..12 in declaration order. We
-# annotate ids 2, 4, 6, 8.
+# annotate ids 2, 4, 8 (id 6 stays unannotated — its default-TwoWay
+# bay separates the OneWayReverse from the TwoWayReverse).
 
 polygon outer
 0,0
@@ -102,13 +105,9 @@ annotation direction on=drive-line id=4 t=0.5 traffic=one-way-reverse
 ----
 annotation direction on=drive-line id=4 t=0.50 traffic=one-way-reverse
 
-annotation direction on=drive-line id=6 t=0.5 traffic=two-way-oriented
+annotation direction on=drive-line id=8 t=0.5 traffic=two-way-reverse
 ----
-annotation direction on=drive-line id=6 t=0.50 traffic=two-way-oriented
-
-annotation direction on=drive-line id=8 t=0.5 traffic=two-way-oriented-reverse
-----
-annotation direction on=drive-line id=8 t=0.50 traffic=two-way-oriented-reverse
+annotation direction on=drive-line id=8 t=0.50 traffic=two-way-reverse
 
 generate
 ----
@@ -118,8 +117,11 @@ annotations
 ----
 direction on=drive-line id=2 t=0.50 traffic=one-way
 direction on=drive-line id=4 t=0.50 traffic=one-way-reverse
-direction on=drive-line id=6 t=0.50 traffic=two-way-oriented
-direction on=drive-line id=8 t=0.50 traffic=two-way-oriented-reverse
+direction on=drive-line id=8 t=0.50 traffic=two-way-reverse
+
+show-annotations
+----
+show-annotations: on
 
 snapshot
 ----

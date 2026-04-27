@@ -632,12 +632,10 @@ pub fn auto_generate(
 
         let mut prev = vi_start;
         for &(_, split_vi) in &perim_splits[i] {
-            edges.push(AisleEdge { start: prev, end: split_vi, width: hw, interior: false, direction: AisleDirection::TwoWay });
-            edges.push(AisleEdge { start: split_vi, end: prev, width: hw, interior: false, direction: AisleDirection::TwoWay });
+            edges.push(AisleEdge { start: prev, end: split_vi, width: hw, interior: false, direction: None });
             prev = split_vi;
         }
-        edges.push(AisleEdge { start: prev, end: vi_end, width: hw, interior: false, direction: AisleDirection::TwoWay });
-        edges.push(AisleEdge { start: vi_end, end: prev, width: hw, interior: false, direction: AisleDirection::TwoWay });
+        edges.push(AisleEdge { start: prev, end: vi_end, width: hw, interior: false, direction: None });
     }
 
     // 5. Build hole loop edges with splits spliced in (mirrors perimeter).
@@ -653,19 +651,16 @@ pub fn auto_generate(
 
             let mut prev = vi_start;
             for &(_, split_vi) in &hole_splits[hi][i] {
-                edges.push(AisleEdge { start: prev, end: split_vi, width: hw, interior: false, direction: AisleDirection::TwoWay });
-                edges.push(AisleEdge { start: split_vi, end: prev, width: hw, interior: false, direction: AisleDirection::TwoWay });
+                edges.push(AisleEdge { start: prev, end: split_vi, width: hw, interior: false, direction: None });
                 prev = split_vi;
             }
-            edges.push(AisleEdge { start: prev, end: vi_end, width: hw, interior: false, direction: AisleDirection::TwoWay });
-            edges.push(AisleEdge { start: vi_end, end: prev, width: hw, interior: false, direction: AisleDirection::TwoWay });
+            edges.push(AisleEdge { start: prev, end: vi_end, width: hw, interior: false, direction: None });
         }
     }
 
     // 6. Build interior aisle edges (main + cross).
     for &(via, vib) in interior_pairs.iter().chain(cross_pairs.iter()) {
-        edges.push(AisleEdge { start: via, end: vib, width: hw, interior: true, direction: AisleDirection::TwoWay });
-        edges.push(AisleEdge { start: vib, end: via, width: hw, interior: true, direction: AisleDirection::TwoWay });
+        edges.push(AisleEdge { start: via, end: vib, width: hw, interior: true, direction: None });
     }
 
     // 7. Hole-to-interior connectivity edges removed — they created
@@ -694,8 +689,7 @@ pub fn auto_generate(
                 }
             }
             if best_dist < row_spacing {
-                edges.push(AisleEdge { start: vi, end: best_vi, width: hw, interior: true, direction: AisleDirection::TwoWay });
-                edges.push(AisleEdge { start: best_vi, end: vi, width: hw, interior: true, direction: AisleDirection::TwoWay });
+                edges.push(AisleEdge { start: vi, end: best_vi, width: hw, interior: true, direction: None });
             }
         }
     }

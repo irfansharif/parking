@@ -11,7 +11,7 @@ use parking_lot_engine::pipeline::generate::generate;
 use parking_lot_engine::types::{
     AisleDirection, Annotation, Axis, DebugToggles, DriveLine,
     EdgeArc, GenerateInput, GridStop, HolePin, ParkingLayout, ParkingParams, PerimeterLoop,
-    Polygon, RegionId, Target, TrafficDirection, Vec2, VertexId,
+    Polygon, RegionId, Target, Vec2, VertexId,
 };
 use std::path::{Path, PathBuf};
 
@@ -36,6 +36,9 @@ pub struct FixtureCtx {
     /// mirrors the UI's `app.state.selectedEdge`. Set by `edge-select`,
     /// consumed by `edge-delete` / `edge-cycle`.
     selected_edge: Option<SelectedEdge>,
+    /// When true, snapshots overlay annotation chevrons on top of the
+    /// graph. Toggled by the `show-annotations` directive.
+    show_annotations: bool,
 }
 
 /// Engine-harness analogue of the UI's `EdgeRef`. Kept in the
@@ -67,6 +70,7 @@ impl FixtureCtx {
             update_snapshots: update,
             next_drive_line_id: 1,
             selected_edge: None,
+            show_annotations: false,
         }
     }
 }
@@ -103,6 +107,7 @@ pub fn execute(ctx: &mut FixtureCtx, command: &str, body: &str) -> Result<Outcom
         "edge-delete" => edge_delete_cmd(ctx),
         "edge-cycle" => edge_cycle_cmd(ctx),
         "dormant" => dormant_cmd(ctx),
+        "show-annotations" => show_annotations_cmd(ctx),
         "snapshot" => snapshot(ctx, rest),
         _ => Err(format!("unknown directive: {}", verb)),
     }
@@ -499,10 +504,10 @@ fn graph_cmd(ctx: &mut FixtureCtx, mode: &str) -> Result<Outcome, String> {
             for (i, e) in g.edges.iter().enumerate() {
                 let kind = if e.interior { "interior" } else { "perimeter" };
                 let dir = match e.direction {
-                    AisleDirection::TwoWay => "two-way",
-                    AisleDirection::TwoWayOriented => "two-way-oriented",
-                    AisleDirection::TwoWayOrientedReverse => "two-way-oriented-reverse",
-                    AisleDirection::OneWay => "one-way",
+                    None => "two-way",
+                    Some(AisleDirection::TwoWayReverse) => "two-way-reverse",
+                    Some(AisleDirection::OneWay) => "one-way",
+                    Some(AisleDirection::OneWayReverse) => "one-way-reverse",
                 };
                 out.push_str(&format!(
                     "  {}: {}->{} {} {} w={}\n",
@@ -543,6 +548,14 @@ fn generate_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
     })
 }
 
+fn show_annotations_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
+    ctx.show_annotations = true;
+    Ok(Outcome {
+        output: "show-annotations: on".to_string(),
+        ..Default::default()
+    })
+}
+
 fn snapshot(ctx: &mut FixtureCtx, rest: &str) -> Result<Outcome, String> {
     let layout = ctx
         .last_layout
@@ -561,12 +574,16 @@ fn snapshot(ctx: &mut FixtureCtx, rest: &str) -> Result<Outcome, String> {
     };
     let path: PathBuf = ctx.snapshot_root.join(&file_name);
 
+    let opts = svg::SvgOptions {
+        show_annotations: ctx.show_annotations,
+        ..svg::SvgOptions::default()
+    };
     let svg_text = svg::render(
         &ctx.input.boundary,
         layout,
         &ctx.input.annotations,
         &ctx.input.drive_lines,
-        &svg::SvgOptions::default(),
+        &opts,
         ctx.input.params.arc_discretize_tolerance,
     );
 
@@ -884,13 +901,16 @@ fn parse_loop(s: &str) -> Result<PerimeterLoop, String> {
     Err(format!("unknown loop {:?}", s))
 }
 
-fn parse_traffic(s: &str) -> Result<TrafficDirection, String> {
+fn parse_traffic(s: &str) -> Result<AisleDirection, String> {
     match s {
-        "one-way" => Ok(TrafficDirection::OneWay),
-        "one-way-reverse" => Ok(TrafficDirection::OneWayReverse),
-        "two-way-oriented" => Ok(TrafficDirection::TwoWayOriented),
-        "two-way-oriented-reverse" => Ok(TrafficDirection::TwoWayOrientedReverse),
-        other => Err(format!("unknown traffic {:?}", other)),
+        "one-way" => Ok(AisleDirection::OneWay),
+        "one-way-reverse" => Ok(AisleDirection::OneWayReverse),
+        "two-way-reverse" => Ok(AisleDirection::TwoWayReverse),
+        other => Err(format!(
+            "unknown traffic {:?} (annotation can only carry one-way, \
+             one-way-reverse, two-way-reverse)",
+            other
+        )),
     }
 }
 
@@ -981,7 +1001,7 @@ fn edge_delete_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
 }
 
 fn edge_cycle_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
-    use parking_lot_engine::types::{Annotation, TrafficDirection};
+    use parking_lot_engine::types::{Annotation, AisleDirection};
     let sel = ctx
         .selected_edge
         .take()
@@ -992,20 +1012,21 @@ fn edge_cycle_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
             && parking_lot_engine::resolve::targets_equal(annotation_target(ann), &target)
     });
     if let Some(idx) = existing {
-        // Non-tombstone cycle: TwoWayOriented → TwoWayOrientedReverse
-        // → OneWay → OneWayReverse → TwoWayOriented.
+        // Non-tombstone cycle: TwoWayReverse → OneWay → OneWayReverse
+        // → TwoWayReverse. (TwoWay isn't an annotation alphabet —
+        // unannotated edges are the default and live in the tombstone
+        // state.)
         if let Annotation::Direction { traffic, .. } = &mut ctx.input.annotations[idx] {
             *traffic = match traffic {
-                TrafficDirection::TwoWayOriented => TrafficDirection::TwoWayOrientedReverse,
-                TrafficDirection::TwoWayOrientedReverse => TrafficDirection::OneWay,
-                TrafficDirection::OneWay => TrafficDirection::OneWayReverse,
-                TrafficDirection::OneWayReverse => TrafficDirection::TwoWayOriented,
+                AisleDirection::TwoWayReverse => AisleDirection::OneWay,
+                AisleDirection::OneWay => AisleDirection::OneWayReverse,
+                AisleDirection::OneWayReverse => AisleDirection::TwoWayReverse,
             };
         }
     } else {
         ctx.input.annotations.push(Annotation::Direction {
             target,
-            traffic: TrafficDirection::TwoWayOriented,
+            traffic: AisleDirection::TwoWayReverse,
         });
     }
     Ok(Outcome {

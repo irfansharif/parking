@@ -25,8 +25,8 @@ total_stalls: 102
 
 graph summary
 ----
-vertices: 24, edges: 74, perim_vertex_count: 4
-  perimeter: 36, interior: 38
+vertices: 24, edges: 37, perim_vertex_count: 4
+  perimeter: 18, interior: 19
 
 snapshot
 ----

@@ -39,5 +39,4 @@ export type { StallKind } from "./StallKind";
 export type { StallModifier } from "./StallModifier";
 export type { StallQuad } from "./StallQuad";
 export type { Target } from "./Target";
-export type { TrafficDirection } from "./TrafficDirection";
 export type { Vec2 } from "./Vec2";

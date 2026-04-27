@@ -106,12 +106,19 @@ pub struct SpineSegment {
     pub outward_normal: Vec2,
     pub face_idx: usize,
     pub is_interior: bool,
-    /// Travel direction of the adjacent aisle. `None` for two-way or perimeter edges.
-    pub travel_dir: Option<Vec2>,
-    /// True for spines on a `TwoWayOrientedReverse` aisle — placement
-    /// negates the stall-angle cosine so the row leans the opposite way
-    /// from the default two-way layout.
-    pub reverse_lean: bool,
+    /// Stall-lean flip for this spine — the final XOR of OneWay's
+    /// per-side asymmetry and TwoWayReverse's face-wide policy.
+    /// Computed once at spine construction; placement just reads it.
+    pub flip_angle: bool,
+    /// Half-pitch stagger flag for OneWay sides whose outward_normal
+    /// is right-of-travel. Lets opposing OneWay rows interlock instead
+    /// of lining up.
+    pub staggered: bool,
+    /// True if this spine borders a direction-annotated aisle (OneWay,
+    /// OneWayReverse, or TwoWayReverse). Used to tie-break in stall
+    /// conflict removal so annotated rows aren't dropped in favor of
+    /// identically-long unannotated neighbors.
+    pub is_annotated: bool,
 }
 
 impl SpineSegment {

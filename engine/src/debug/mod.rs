@@ -233,13 +233,12 @@ fn format_loop(l: &crate::types::PerimeterLoop) -> String {
     }
 }
 
-fn format_traffic(t: crate::types::TrafficDirection) -> &'static str {
-    use crate::types::TrafficDirection;
+fn format_traffic(t: crate::types::AisleDirection) -> &'static str {
+    use crate::types::AisleDirection;
     match t {
-        TrafficDirection::OneWay => "one-way",
-        TrafficDirection::OneWayReverse => "one-way-reverse",
-        TrafficDirection::TwoWayOriented => "two-way-oriented",
-        TrafficDirection::TwoWayOrientedReverse => "two-way-oriented-reverse",
+        AisleDirection::OneWay => "one-way",
+        AisleDirection::OneWayReverse => "one-way-reverse",
+        AisleDirection::TwoWayReverse => "two-way-reverse",
     }
 }
 

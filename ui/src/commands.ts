@@ -4,7 +4,7 @@ import {
   GridStop,
   PerimeterLoop,
   Target,
-  TrafficDirection,
+  AisleDirection,
   Vec2,
   computeBoundaryPin,
 } from "./types";
@@ -471,16 +471,14 @@ function formatLoop(l: PerimeterLoop): string {
   return l.kind === "Outer" ? "outer" : `hole:${l.index}`;
 }
 
-function formatTraffic(t: TrafficDirection): string {
+function formatTraffic(t: AisleDirection): string {
   switch (t) {
     case "OneWay":
       return "one-way";
     case "OneWayReverse":
       return "one-way-reverse";
-    case "TwoWayOriented":
-      return "two-way-oriented";
-    case "TwoWayOrientedReverse":
-      return "two-way-oriented-reverse";
+    case "TwoWayReverse":
+      return "two-way-reverse";
   }
 }
 
@@ -503,12 +501,12 @@ function fmtNum(n: number): string {
 
 /**
  * Parse the `key=value` arg list following an `annotation <kind> ...`
- * command into a `Target` plus optional `TrafficDirection`. Returns an
+ * command into a `Target` plus optional `AisleDirection`. Returns an
  * error message on malformed input.
  */
 function parseAnnotationArgs(
   args: string[],
-): { target: Target; traffic: TrafficDirection | null } | string {
+): { target: Target; traffic: AisleDirection | null } | string {
   const kv: Record<string, string> = {};
   for (const p of args) {
     const eq = p.indexOf("=");
@@ -564,7 +562,7 @@ function parseAnnotationArgs(
     return `unknown substrate 'on=${on}'`;
   }
   const trafficStr = kv["traffic"];
-  const traffic: TrafficDirection | null = trafficStr ? parseTraffic(trafficStr) : null;
+  const traffic: AisleDirection | null = trafficStr ? parseTraffic(trafficStr) : null;
   if (trafficStr && !traffic) return `bad traffic '${trafficStr}'`;
   return { target, traffic };
 }
@@ -605,16 +603,14 @@ function parseLoop(v: string | undefined): PerimeterLoop | null {
   return null;
 }
 
-function parseTraffic(v: string): TrafficDirection | null {
+function parseTraffic(v: string): AisleDirection | null {
   switch (v) {
     case "one-way":
       return "OneWay";
     case "one-way-reverse":
       return "OneWayReverse";
-    case "two-way-oriented":
-      return "TwoWayOriented";
-    case "two-way-oriented-reverse":
-      return "TwoWayOrientedReverse";
+    case "two-way-reverse":
+      return "TwoWayReverse";
     default:
       return null;
   }

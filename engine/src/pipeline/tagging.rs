@@ -276,7 +276,7 @@ pub(crate) fn classify_face_edges(
         .collect()
 }
 
-/// Extended version that also reports which edges are two-way-oriented.
+/// Extended version that also reports which edges are two-way-reverse.
 pub(crate) fn classify_face_edges_ext(
     contour: &[Vec2],
     corridor_shapes: &[Vec<Vec<Vec2>>],

@@ -290,14 +290,14 @@ mod tests {
             end: 1,
             width: w,
             interior: false,
-            direction: AisleDirection::default(),
+            direction: None,
         };
         let edge_b = AisleEdge {
             start: 1,
             end: 2,
             width: w,
             interior: false,
-            direction: AisleDirection::default(),
+            direction: None,
         };
 
         let rect_a = corridor_polygon(&vertices, &edge_a);
@@ -899,10 +899,10 @@ mod tests {
     }
 
 
-    /// End-to-end test: use the full generate pipeline with a TwoWayOriented
+    /// End-to-end test: use the full generate pipeline with a TwoWay
     /// annotation on an auto-generated graph (simulating the UI flow).
     #[test]
-    fn test_two_way_oriented_annotation_e2e() {
+    fn test_two_way_annotation_e2e() {
         use crate::pipeline::generate::generate;
         use crate::types::{GenerateInput, DriveLine};
 
@@ -929,7 +929,7 @@ mod tests {
                 // Point at the midpoint picks the sub-edge containing it.
                 Annotation::Direction {
                     target: Target::DriveLine { id: 1, t: 0.5 },
-                    traffic: TrafficDirection::TwoWayOriented,
+                    traffic: AisleDirection::TwoWayReverse,
                 },
             ],
             params: ParkingParams::default(),
@@ -938,16 +938,15 @@ mod tests {
         };
 
         let layout = generate(input);
-        eprintln!("\n=== TwoWayOriented annotation e2e ===");
+        eprintln!("\n=== TwoWayReverse annotation e2e ===");
         eprintln!("stalls: {}, spines: {}, faces: {}",
             layout.stalls.len(), layout.spines.len(), layout.faces.len());
 
-        // Check the resolved graph has TwoWayOriented edges.
-        let two_way_ori_count = layout.resolved_graph.edges.iter()
-            .filter(|e| e.direction == AisleDirection::TwoWayOriented)
+        let reverse_count = layout.resolved_graph.edges.iter()
+            .filter(|e| e.direction == Some(AisleDirection::TwoWayReverse))
             .count();
-        eprintln!("TwoWayOriented edges in resolved graph: {}", two_way_ori_count);
-        assert!(two_way_ori_count > 0, "should have TwoWayOriented edges after annotation");
+        eprintln!("TwoWayReverse edges in resolved graph: {}", reverse_count);
+        assert!(reverse_count > 0, "should have TwoWayReverse edges after annotation");
 
         // Verify stalls exist on both sides.
         assert!(layout.stalls.len() > 0, "should produce stalls");
@@ -978,8 +977,9 @@ mod tests {
                 outward_normal: Vec2::new(0.0, 1.0),
                 face_idx,
                 is_interior: true,
-                travel_dir: None,
-                reverse_lean: false,
+                flip_angle: false,
+                staggered: false,
+                is_annotated: false,
             };
             let stalls: Vec<(StallQuad, usize, usize)> = fill_spine(&seg, params)
                 .into_iter()

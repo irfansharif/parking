@@ -268,26 +268,17 @@ fn apply_direction_to_edges(
     canonical_sign_along_axis: f64, // +1 if edge's other-axis coord should increase start→end to match canonical
     along_x: bool,
     frame_opt: Option<&AbstractFrame>,
-    traffic: TrafficDirection,
+    traffic: AisleDirection,
 ) {
-    // TwoWayOriented variants leave the graph orientation alone (the
-    // default lot already renders as a two-way layout with stalls on
-    // opposite sides of every aisle). The annotation only has to
-    // (a) tag the edges so the SVG can show direction marks, and
-    // (b) flip the stall lean for the *Reverse variant via the new
-    // `AisleDirection::TwoWayOrientedReverse` enum.
-    if let Some(dir) = match traffic {
-        TrafficDirection::TwoWayOriented => Some(AisleDirection::TwoWayOriented),
-        TrafficDirection::TwoWayOrientedReverse => Some(AisleDirection::TwoWayOrientedReverse),
-        _ => None,
-    } {
+    // TwoWayReverse keeps edge orientation untouched and just tags
+    // the edge — the per-face flip in placement does the work.
+    if matches!(traffic, AisleDirection::TwoWayReverse) {
         for &i in hits {
-            graph.edges[i].direction = dir.clone();
+            graph.edges[i].direction = Some(AisleDirection::TwoWayReverse);
         }
         return;
     }
-    let want_canonical = matches!(traffic, TrafficDirection::OneWay);
-    let aisle_dir = AisleDirection::OneWay;
+    let want_canonical = matches!(traffic, AisleDirection::OneWay);
     for &i in hits {
         let s = graph.vertices[graph.edges[i].start];
         let e = graph.vertices[graph.edges[i].end];
@@ -303,12 +294,11 @@ fn apply_direction_to_edges(
             1.0
         };
         let edge_aligned_with_canonical = edge_var_sign * canonical_sign_along_axis > 0.0;
-        if edge_aligned_with_canonical != want_canonical {
-            let t = graph.edges[i].start;
-            graph.edges[i].start = graph.edges[i].end;
-            graph.edges[i].end = t;
-        }
-        graph.edges[i].direction = aisle_dir.clone();
+        graph.edges[i].direction = Some(if edge_aligned_with_canonical == want_canonical {
+            AisleDirection::OneWay
+        } else {
+            AisleDirection::OneWayReverse
+        });
     }
 }
 
@@ -323,7 +313,7 @@ fn apply_drive_line_direction(
     drive_line_id: u32,
     t: f64,
     pitch: f64,
-    traffic: TrafficDirection,
+    traffic: AisleDirection,
 ) -> Result<(), String> {
     let hits = resolve_drive_line_edges_containing(
         graph, splice_lookup, line_lengths, drive_line_id, t, pitch,
@@ -333,22 +323,13 @@ fn apply_drive_line_direction(
             "no drive-line {drive_line_id} sub-edge contains t={t:.4}"
         ));
     }
-    // TwoWayOriented variants — see apply_direction_to_edges. Tag the
-    // edges (without flipping start/end) so the SVG renderer can show
-    // arrowhead markers and so placement can flip stall lean for the
-    // *Reverse variant.
-    if let Some(dir) = match traffic {
-        TrafficDirection::TwoWayOriented => Some(AisleDirection::TwoWayOriented),
-        TrafficDirection::TwoWayOrientedReverse => Some(AisleDirection::TwoWayOrientedReverse),
-        _ => None,
-    } {
+    if matches!(traffic, AisleDirection::TwoWayReverse) {
         for i in hits {
-            graph.edges[i].direction = dir.clone();
+            graph.edges[i].direction = Some(AisleDirection::TwoWayReverse);
         }
         return Ok(());
     }
-    let want_canonical = matches!(traffic, TrafficDirection::OneWay);
-    let aisle_dir = AisleDirection::OneWay;
+    let want_canonical = matches!(traffic, AisleDirection::OneWay);
     // For drive-line edges we orient using the splice-anchored t of each endpoint.
     let entries = splice_lookup
         .get(&drive_line_id)
@@ -366,12 +347,11 @@ fn apply_drive_line_direction(
             continue;
         };
         let edge_aligned_with_canonical = te > ts;
-        if edge_aligned_with_canonical != want_canonical {
-            let tmp = graph.edges[i].start;
-            graph.edges[i].start = graph.edges[i].end;
-            graph.edges[i].end = tmp;
-        }
-        graph.edges[i].direction = aisle_dir.clone();
+        graph.edges[i].direction = Some(if edge_aligned_with_canonical == want_canonical {
+            AisleDirection::OneWay
+        } else {
+            AisleDirection::OneWayReverse
+        });
     }
     Ok(())
 }
@@ -633,7 +613,7 @@ fn resolve_perimeter_edges_containing(
     }
 }
 
-/// Apply a `TrafficDirection` to the perimeter sub-edge(s) containing
+/// Apply a `AisleDirection` to the perimeter sub-edge(s) containing
 /// the addressed sketch edge anchor `(start, end, t)`, aligning each
 /// edge's stored `start→end` with the carrier's canonical +arc
 /// direction (or its reverse, per `traffic`).
@@ -644,7 +624,7 @@ fn apply_perimeter_direction(
     start: VertexId,
     end: VertexId,
     t: f64,
-    traffic: TrafficDirection,
+    traffic: AisleDirection,
 ) -> Result<(), String> {
     let hits =
         resolve_perimeter_edges_containing(graph, perim_lookup, loop_id, start, end, t)?;
@@ -659,22 +639,16 @@ fn apply_perimeter_direction(
     let v_to_arc: std::collections::HashMap<usize, f64> =
         entry.entries.iter().map(|&(a, v)| (v, a)).collect();
 
-    // TwoWayOriented variants — see apply_direction_to_edges. Tag the
-    // edges (without flipping start/end) so the SVG renderer can show
-    // arrowhead markers and so placement can flip stall lean for the
-    // *Reverse variant.
-    if let Some(dir) = match traffic {
-        TrafficDirection::TwoWayOriented => Some(AisleDirection::TwoWayOriented),
-        TrafficDirection::TwoWayOrientedReverse => Some(AisleDirection::TwoWayOrientedReverse),
-        _ => None,
-    } {
+    // TwoWay variants — see apply_direction_to_edges. Tag the edges
+    // (without flipping start/end) so placement can flip stall lean
+    // for the *Reverse variant.
+    if matches!(traffic, AisleDirection::TwoWayReverse) {
         for i in hits {
-            graph.edges[i].direction = dir.clone();
+            graph.edges[i].direction = Some(AisleDirection::TwoWayReverse);
         }
         return Ok(());
     }
-    let want_canonical = matches!(traffic, TrafficDirection::OneWay);
-    let aisle_dir = AisleDirection::OneWay;
+    let want_canonical = matches!(traffic, AisleDirection::OneWay);
     for i in hits {
         let (Some(&as_), Some(&ae)) = (
             v_to_arc.get(&graph.edges[i].start),
@@ -691,12 +665,11 @@ fn apply_perimeter_direction(
         } else {
             naive_diff > 0.0
         };
-        if edge_aligned_with_canonical != want_canonical {
-            let tmp = graph.edges[i].start;
-            graph.edges[i].start = graph.edges[i].end;
-            graph.edges[i].end = tmp;
-        }
-        graph.edges[i].direction = aisle_dir.clone();
+        graph.edges[i].direction = Some(if edge_aligned_with_canonical == want_canonical {
+            AisleDirection::OneWay
+        } else {
+            AisleDirection::OneWayReverse
+        });
     }
     Ok(())
 }
@@ -868,6 +841,11 @@ pub(crate) fn apply_annotations(
         // Orphaned vertices are harmless.
     }
 
+    debug_assert!(
+        edges_are_unique(graph),
+        "DriveAisleGraph carries duplicate undirected edges after apply_annotations"
+    );
+
     dormant
         .into_iter()
         .map(|(index, reason)| DormantAnnotation { index, reason })
@@ -884,19 +862,12 @@ fn simplify_collinear_degree2(graph: &mut crate::types::DriveAisleGraph) {
     use std::collections::HashMap;
     let perim_n = graph.perim_vertex_count;
     loop {
-        // Adjacency: vertex_idx -> Vec<edge_idx>. Deduplicate
-        // bidirectional edges by canonical (min, max) endpoint key.
+        // Adjacency: vertex_idx -> Vec<edge_idx>. Each undirected edge
+        // contributes one entry at each endpoint.
         let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
-        let mut canon_seen: std::collections::HashSet<(usize, usize)> =
-            std::collections::HashSet::new();
-        let mut canon_edges: Vec<usize> = Vec::new();
         for (i, e) in graph.edges.iter().enumerate() {
-            let key = (e.start.min(e.end), e.start.max(e.end));
-            if canon_seen.insert(key) {
-                canon_edges.push(i);
-                adj.entry(e.start).or_default().push(i);
-                adj.entry(e.end).or_default().push(i);
-            }
+            adj.entry(e.start).or_default().push(i);
+            adj.entry(e.end).or_default().push(i);
         }
 
         let mut merged_any = false;
@@ -924,19 +895,17 @@ fn simplify_collinear_degree2(graph: &mut crate::types::DriveAisleGraph) {
             // Direction must also match (no U-turns).
             // Already implied by dot>0.999.
 
-            // Merge: remove e1 and e2 (and their reverse twins, if any),
-            // add a single edge other1 → other2 with merged direction.
-            let key1 = (e1.start.min(e1.end), e1.start.max(e1.end));
-            let key2 = (e2.start.min(e2.end), e2.start.max(e2.end));
+            // Merge: remove e1 and e2, add a single edge
+            // other1 → other2 with merged direction.
+            let i1 = edges[0];
+            let i2 = edges[1];
             let direction = e1.direction.clone();
             let interior = e1.interior && e2.interior;
             let width = e1.width.max(e2.width);
             let new_edges: Vec<crate::types::AisleEdge> = graph.edges.iter()
-                .filter(|e| {
-                    let k = (e.start.min(e.end), e.start.max(e.end));
-                    k != key1 && k != key2
-                })
-                .cloned()
+                .enumerate()
+                .filter(|(i, _)| *i != i1 && *i != i2)
+                .map(|(_, e)| e.clone())
                 .collect();
             graph.edges = new_edges;
             graph.edges.push(crate::types::AisleEdge {
@@ -951,6 +920,23 @@ fn simplify_collinear_degree2(graph: &mut crate::types::DriveAisleGraph) {
         }
         if !merged_any { break; }
     }
+}
+
+/// Debug invariant: every aisle edge has a unique unordered endpoint
+/// pair. Catches a producer that accidentally re-introduces the
+/// forward+reverse duplication this pipeline used to carry.
+fn edges_are_unique(graph: &crate::types::DriveAisleGraph) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    for e in &graph.edges {
+        if e.start == e.end {
+            continue;
+        }
+        let key = (e.start.min(e.end), e.start.max(e.end));
+        if !seen.insert(key) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Build a per-drive-line lookup of (t, vertex_idx) sorted by t. Vertices
@@ -1066,11 +1052,11 @@ fn resolve_target_edges(
     }
 }
 
-/// Apply a `TrafficDirection` to every edge the target resolves to.
+/// Apply a `AisleDirection` to every edge the target resolves to.
 fn apply_direction_target(
     graph: &mut DriveAisleGraph,
     target: &Target,
-    traffic: TrafficDirection,
+    traffic: AisleDirection,
     regions: &[ResolvedRegion],
     splice_lookup: &std::collections::HashMap<u32, Vec<(f64, usize)>>,
     line_lengths: &std::collections::HashMap<u32, f64>,

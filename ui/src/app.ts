@@ -10,7 +10,7 @@ import {
   DebugToggles,
   GridStop,
   Target,
-  TrafficDirection,
+  AisleDirection,
   arcApex,
   bulgeFromApex,
   computeBoundaryPin,
@@ -842,17 +842,19 @@ export class App {
     if (!ann) return;
     if (ann.kind !== "Direction") return;
 
-    // Cycle: TwoWayOriented → TwoWayOrientedReverse → OneWay →
-    //        OneWayReverse → inactive (tombstone) → TwoWayOriented.
+    // Cycle: TwoWayReverse → OneWay → OneWayReverse → inactive
+    //        (tombstone) → TwoWayReverse.
+    // TwoWay isn't a valid annotation alphabet — the unannotated
+    // default already produces a two-way layout, so we tombstone the
+    // annotation instead of cycling through TwoWay.
     if (ann._active === false) {
-      ann.traffic = "TwoWayOriented";
+      ann.traffic = "TwoWayReverse";
       ann._active = true;
     } else {
-      const next: Record<TrafficDirection, { next: TrafficDirection; tombstone: boolean }> = {
-        TwoWayOriented: { next: "TwoWayOrientedReverse", tombstone: false },
-        TwoWayOrientedReverse: { next: "OneWay", tombstone: false },
+      const next: Record<AisleDirection, { next: AisleDirection; tombstone: boolean }> = {
+        TwoWayReverse: { next: "OneWay", tombstone: false },
         OneWay: { next: "OneWayReverse", tombstone: false },
-        OneWayReverse: { next: "TwoWayOriented", tombstone: true },
+        OneWayReverse: { next: "TwoWayReverse", tombstone: true },
       };
       const step = next[ann.traffic];
       ann.traffic = step.next;
@@ -1082,7 +1084,7 @@ export class App {
         lot.annotations.push({
           kind: "Direction",
           target: gridTarget,
-          traffic: "TwoWayOriented",
+          traffic: "TwoWayReverse",
           _active: true,
         });
         this.state.selectedVertex = { type: "annotation", index: annIdx };
@@ -1120,7 +1122,7 @@ export class App {
       lot.annotations.push({
         kind: "Direction",
         target: dlTarget,
-        traffic: "TwoWayOriented",
+        traffic: "TwoWayReverse",
         _active: true,
       });
       this.state.selectedVertex = { type: "annotation", index: annIdx };

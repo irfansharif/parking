@@ -34,7 +34,7 @@ total_stalls: 129
 # column.
 edge-select near=100,120 mode=chain
 ----
-edge-select seed=120 mode=chain chain_len=6
+edge-select seed=60 mode=chain chain_len=6
 
 edge-delete
 ----
@@ -54,7 +54,7 @@ total_stalls: 147
 # Chain-mode direction on a horizontal row in the right region.
 edge-select near=300,120 mode=chain
 ----
-edge-select seed=136 mode=chain chain_len=8
+edge-select seed=68 mode=chain chain_len=8
 
 edge-cycle
 ----
@@ -63,7 +63,7 @@ edge-cycle
 annotations
 ----
 delete-edge on=grid region=0x00009109e264ab44 axis=x coord=-2 range=lattice:0,lattice:6
-direction on=grid region=0x0000158801212a42 axis=y coord=2 range=lattice:-8,lattice:1 traffic=two-way-oriented
+direction on=grid region=0x0000158801212a42 axis=y coord=2 range=lattice:-8,lattice:1 traffic=two-way-reverse
 
 # Annotation must resolve (non-dormant) — apply_abstract_direction
 # should touch every sub-edge in the chain, not just the adjacent pair.

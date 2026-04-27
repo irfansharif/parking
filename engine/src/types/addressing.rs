@@ -5,13 +5,14 @@
 //! - `AbstractFrame` / `AbstractPoint2` — the per-region transform
 //!   between world and the integer aisle lattice.
 //! - `RegionId` — stable hash of a region's bounding signature.
-//! - `Annotation` + `Target` + `GridStop` + `PerimeterLoop` + `Axis` +
-//!   `TrafficDirection` — substrate-keyed edits that survive regen.
+//! - `Annotation` + `Target` + `GridStop` + `PerimeterLoop` + `Axis` —
+//!   substrate-keyed edits that survive regen.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::geom::{Vec2, VertexId};
+use super::graph::AisleDirection;
 use super::io::ParkingParams;
 
 // ---------------------------------------------------------------------------
@@ -205,21 +206,14 @@ pub enum Annotation {
     },
     Direction {
         target: Target,
-        traffic: TrafficDirection,
+        /// Direction in the *carrier's* canonical frame (Grid: low→high
+        /// along free axis; DriveLine: +t; Perimeter: +arc). The
+        /// pipeline translates this into the corresponding edge-frame
+        /// `AisleDirection` via `apply_*_direction` — which may map
+        /// `OneWay` → `OneWayReverse` (or vice versa) if the edge's
+        /// stored `(start, end)` order disagrees with carrier canonical.
+        traffic: AisleDirection,
     },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub enum TrafficDirection {
-    /// Traffic flows along the carrier's canonical direction (one lane).
-    OneWay,
-    /// Traffic flows against canonical.
-    OneWayReverse,
-    /// Two-way with oriented lanes, canonical orientation.
-    TwoWayOriented,
-    /// Two-way with oriented lanes, opposite side.
-    TwoWayOrientedReverse,
 }
 
 /// A referenceable region in one substrate's own coord system.

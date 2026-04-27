@@ -698,17 +698,12 @@ fn minmax<I: Iterator<Item = f64>>(iter: I) -> (f64, f64) {
 // from it along collinear neighbours.
 // ---------------------------------------------------------------------------
 
-/// Index of the canonical (lower-id-first) deduplicated edge nearest
-/// to `world` that lies within `world_radius`. Returns `None` if no
-/// edge is within radius or the graph is empty.
+/// Index of the edge nearest to `world` that lies within
+/// `world_radius`. Returns `None` if no edge is within radius or the
+/// graph is empty.
 pub fn hit_test_edge(world: Vec2, graph: &DriveAisleGraph, world_radius: f64) -> Option<usize> {
-    let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
     let mut best: Option<(usize, f64)> = None;
     for (i, edge) in graph.edges.iter().enumerate() {
-        let key = (edge.start.min(edge.end), edge.start.max(edge.end));
-        if !seen.insert(key) {
-            continue;
-        }
         let a = graph.vertices[edge.start];
         let b = graph.vertices[edge.end];
         let dist = point_to_segment_dist(world, a, b);
@@ -719,9 +714,9 @@ pub fn hit_test_edge(world: Vec2, graph: &DriveAisleGraph, world_radius: f64) ->
     best.map(|(i, _)| i)
 }
 
-/// All deduplicated edge indices that lie on the same collinear run as
-/// `seed_idx`. Starts at the seed and BFS-expands through vertices
-/// whose incident edges share the seed's direction (dot ≥ 0.99).
+/// All edge indices that lie on the same collinear run as `seed_idx`.
+/// Starts at the seed and BFS-expands through vertices whose incident
+/// edges share the seed's direction (dot ≥ 0.99).
 pub fn find_collinear_chain(graph: &DriveAisleGraph, seed_idx: usize) -> Vec<usize> {
     let seed = match graph.edges.get(seed_idx) {
         Some(e) => e,
@@ -736,15 +731,11 @@ pub fn find_collinear_chain(graph: &DriveAisleGraph, seed_idx: usize) -> Vec<usi
     }
     let seed_dir = Vec2::new(seed_d.x / seed_len, seed_d.y / seed_len);
 
-    // Adjacency over deduplicated edges.
+    // Adjacency: each undirected edge contributes one entry at each
+    // endpoint, with the unit direction pointing away from that endpoint.
     let mut adj: std::collections::HashMap<usize, Vec<(usize, usize, Vec2)>> =
         std::collections::HashMap::new();
-    let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
     for (i, edge) in graph.edges.iter().enumerate() {
-        let key = (edge.start.min(edge.end), edge.start.max(edge.end));
-        if !seen.insert(key) {
-            continue;
-        }
         let a = graph.vertices[edge.start];
         let b = graph.vertices[edge.end];
         let d = b - a;
@@ -988,10 +979,10 @@ mod tests {
                 Vec2::new(0.0, 10.0),
             ],
             edges: vec![
-                AisleEdge { start: 0, end: 1, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
-                AisleEdge { start: 1, end: 2, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
-                AisleEdge { start: 2, end: 3, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
-                AisleEdge { start: 3, end: 0, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
+                AisleEdge { start: 0, end: 1, width: 1.0, interior: false, direction: None },
+                AisleEdge { start: 1, end: 2, width: 1.0, interior: false, direction: None },
+                AisleEdge { start: 2, end: 3, width: 1.0, interior: false, direction: None },
+                AisleEdge { start: 3, end: 0, width: 1.0, interior: false, direction: None },
             ],
             perim_vertex_count: 4,
         }
@@ -1020,9 +1011,9 @@ mod tests {
                 Vec2::new(15.0, 0.0),
             ],
             edges: vec![
-                AisleEdge { start: 0, end: 1, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
-                AisleEdge { start: 1, end: 2, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
-                AisleEdge { start: 2, end: 3, width: 1.0, interior: false, direction: AisleDirection::TwoWay },
+                AisleEdge { start: 0, end: 1, width: 1.0, interior: false, direction: None },
+                AisleEdge { start: 1, end: 2, width: 1.0, interior: false, direction: None },
+                AisleEdge { start: 2, end: 3, width: 1.0, interior: false, direction: None },
             ],
             perim_vertex_count: 0,
         };

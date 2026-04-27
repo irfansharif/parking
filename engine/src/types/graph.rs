@@ -13,23 +13,21 @@ use super::geom::Vec2;
 // Drive-aisle graph
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, TS)]
 #[ts(export)]
 pub enum AisleDirection {
-    TwoWay,
-    TwoWayOriented,
-    /// Two-way oriented but with stall strips on each side angled the
-    /// opposite way from the default — visually a mirrored slash
-    /// pattern. Treated as TwoWay for spine generation; the only
-    /// downstream effect is a forced `flip_angle` in stall placement.
-    TwoWayOrientedReverse,
+    /// Two-way with stall strips angled the opposite way from the
+    /// default — a mirrored slash pattern. Treated as default two-way
+    /// for spine geometry; the downstream effect is a face-wide
+    /// `flip_angle` in stall placement.
+    TwoWayReverse,
+    /// One-way; traffic flows along the edge's stored start → end.
     OneWay,
-}
-
-impl Default for AisleDirection {
-    fn default() -> Self {
-        AisleDirection::TwoWay
-    }
+    /// One-way; traffic flows end → start (against stored order).
+    /// Avoids mutating `(start, end)` when an annotation is applied —
+    /// the canonical edge geometry stays stable, direction is carried
+    /// entirely in the tag.
+    OneWayReverse,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -40,8 +38,10 @@ pub struct AisleEdge {
     pub width: f64,
     #[serde(default)]
     pub interior: bool,
+    /// `None` = default two-way (the unannotated state). `Some(_)`
+    /// means an annotation has set this aisle's direction.
     #[serde(default)]
-    pub direction: AisleDirection,
+    pub direction: Option<AisleDirection>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]

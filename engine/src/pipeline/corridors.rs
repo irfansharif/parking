@@ -32,41 +32,25 @@ pub(crate) fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2>
     ]
 }
 
-/// Deduplicated corridor rectangles (one per undirected edge).
-/// Returns (polygon, interior, travel_dir); travel_dir is Some for
-/// one-way and two-way-oriented edges.
+/// Per-edge corridor rectangles. Returns (polygon, interior,
+/// travel_dir); travel_dir is Some for one-way edges only.
 pub(crate) fn deduplicate_corridors(
     graph: &DriveAisleGraph,
 ) -> Vec<(Vec<Vec2>, bool, Option<Vec2>)> {
-    let mut seen = std::collections::HashSet::new();
     let mut corridors = Vec::new();
     for edge in &graph.edges {
         if edge.start == edge.end { continue; }
-        let key = if edge.start < edge.end {
-            (edge.start, edge.end)
-        } else {
-            (edge.end, edge.start)
-        };
-        if !seen.insert(key) {
-            continue;
-        }
         // Only OneWay aisles affect stall lean — they need per-side
-        // flip_angle to produce a herringbone chevron in travel direction.
-        // TwoWayOriented is a metadata-only annotation: stalls placed
-        // around a two-way oriented aisle should match the default
-        // TwoWay pattern (the SVG markers / arrowheads carry the
-        // direction information visually). Without this, the flip
-        // mechanism in spines.rs interacts asymmetrically with
-        // normalize_paired_spines and conflict_removal and produces
-        // one bay parallel + one bay herringbone instead of clean
-        // matching pairs.
+        // flip_angle to produce a herringbone chevron in travel
+        // direction. TwoWay and TwoWayReverse keep the default
+        // mirror-symmetric stall pattern; *Reverse only mirrors the
+        // lean across the aisle axis (handled separately).
+        let s = graph.vertices[edge.start];
+        let e = graph.vertices[edge.end];
         let travel_dir = match edge.direction {
-            AisleDirection::OneWay => {
-                Some((graph.vertices[edge.end] - graph.vertices[edge.start]).normalize())
-            }
-            AisleDirection::TwoWay
-            | AisleDirection::TwoWayOriented
-            | AisleDirection::TwoWayOrientedReverse => None,
+            Some(AisleDirection::OneWay) => Some((e - s).normalize()),
+            Some(AisleDirection::OneWayReverse) => Some((s - e).normalize()),
+            Some(AisleDirection::TwoWayReverse) | None => None,
         };
         corridors.push((corridor_polygon(&graph.vertices, edge), edge.interior, travel_dir));
     }
@@ -83,21 +67,11 @@ pub(crate) fn generate_miter_fills(graph: &DriveAisleGraph, debug: &DebugToggles
         return vec![];
     }
     let mut fills = Vec::new();
-    let mut seen_edges: std::collections::HashSet<(usize, usize)> =
-        std::collections::HashSet::new();
 
     let nv = graph.vertices.len();
     let mut adj: Vec<Vec<(Vec2, f64, bool)>> = vec![vec![]; nv];
 
     for edge in &graph.edges {
-        let key = if edge.start < edge.end {
-            (edge.start, edge.end)
-        } else {
-            (edge.end, edge.start)
-        };
-        if !seen_edges.insert(key) {
-            continue;
-        }
         let s = graph.vertices[edge.start];
         let e = graph.vertices[edge.end];
         if (e - s).length() < 1e-9 { continue; }

@@ -94,11 +94,15 @@ pub(crate) fn try_merge_spines(
         return None;
     }
 
-    // Only merge spines with compatible travel directions.
-    match (&a.travel_dir, &b.travel_dir) {
-        (None, None) => {}
-        (Some(d1), Some(d2)) if d1.dot(*d2) > cos_tol => {}
-        _ => return None,
+    // Spines on the same physical aisle (same side) end up with the
+    // same flip_angle/staggered/is_annotated bits, so requiring exact
+    // equality both rules out cross-aisle merges and admits the
+    // intended within-aisle ones.
+    if a.flip_angle != b.flip_angle
+        || a.staggered != b.staggered
+        || a.is_annotated != b.is_annotated
+    {
+        return None;
     }
 
     let dir_a = (a.end - a.start).normalize();
@@ -149,8 +153,9 @@ pub(crate) fn try_merge_spines(
             outward_normal: a.outward_normal,
             face_idx: a.face_idx,
             is_interior: a.is_interior,
-            travel_dir: a.travel_dir,
-            reverse_lean: a.reverse_lean || b.reverse_lean,
+            flip_angle: a.flip_angle,
+            staggered: a.staggered,
+            is_annotated: a.is_annotated,
         });
     }
 
@@ -162,7 +167,7 @@ pub(crate) fn try_merge_spines(
 /// primary's direction. Extensions are colinear with their primary by
 /// construction (see `extend_spines_to_faces`), so this is a pure
 /// extent-union: the primary's `outward_normal`, `face_idx`,
-/// `is_interior`, and `travel_dir` carry through unchanged.
+/// `is_interior`, and the precomputed flag bits carry through unchanged.
 pub(crate) fn extend_primary_with_extensions(
     primary: SpineSegment,
     exts: &[SpineSegment],
@@ -188,8 +193,9 @@ pub(crate) fn extend_primary_with_extensions(
         outward_normal: primary.outward_normal,
         face_idx: primary.face_idx,
         is_interior: primary.is_interior,
-        travel_dir: primary.travel_dir,
-        reverse_lean: primary.reverse_lean,
+        flip_angle: primary.flip_angle,
+        staggered: primary.staggered,
+        is_annotated: primary.is_annotated,
     }
 }
 
@@ -307,33 +313,42 @@ fn offset_aisle_edges_to_spines(
             let e = trimmed_b + inward * ed;
 
             let is_interior = interior_flat.get(flat_idx).copied().unwrap_or(true);
-            let is_two_way_ori =
+            let face_reverse =
                 two_way_oriented_flat.get(flat_idx).copied().unwrap_or(false);
-            let travel_dir = travel_dir_flat.get(flat_idx).copied().flatten().map(|td| {
-                if is_two_way_ori {
-                    // Flip travel_dir on the canonical negative side
-                    // so both back-to-back spines end up with matching
-                    // flip_angle downstream (mirror-symmetric stalls).
-                    // OneWay aisles intentionally skip the flip so both
-                    // sides share the same travel_dir — yielding a
-                    // herringbone pattern across the aisle.
-                    let neg_side = outward.x < -1e-9
-                        || (outward.x.abs() < 1e-9 && outward.y < -1e-9);
-                    if neg_side { Vec2::new(-td.x, -td.y) } else { td }
-                } else {
-                    td
-                }
-            });
+            let travel_dir = travel_dir_flat.get(flat_idx).copied().flatten();
 
             if (e - s).length() > 1.0 {
+                // Three independent states determine flip + stagger:
+                //   1. face_reverse (any TwoWayReverse aisle in the face) →
+                //      every spine flips lean, no stagger. Mirror-symmetric
+                //      slash pattern, opposite of default.
+                //   2. OneWay/OneWayReverse without face_reverse → per-side
+                //      asymmetric flip from oriented_dir·travel_dir, plus
+                //      half-pitch stagger when outward is right-of-travel.
+                //      Produces herringbone across the aisle.
+                //   3. Default (TwoWay, no annotation) → no flip, no stagger.
+                let (flip_angle, staggered) = if face_reverse {
+                    (true, false)
+                } else if let Some(td) = travel_dir {
+                    let oriented_dir = {
+                        let d = (e - s).normalize();
+                        let left = Vec2::new(-d.y, d.x);
+                        if left.dot(outward) > 0.0 { d } else { d * -1.0 }
+                    };
+                    (oriented_dir.dot(td) > 0.0, td.cross(outward) >= 0.0)
+                } else {
+                    (false, false)
+                };
+                let is_annotated = travel_dir.is_some() || face_reverse;
                 spines.push(SpineSegment {
                     start: s,
                     end: e,
                     outward_normal: outward,
                     face_idx: 0,
                     is_interior,
-                    travel_dir,
-                    reverse_lean: is_two_way_ori,
+                    flip_angle,
+                    staggered,
+                    is_annotated,
                 });
             }
         }
@@ -438,10 +453,10 @@ pub(crate) fn compute_face_spines(
         eprintln!("[face] x=[{:.0},{:.0}] aisle_facing={:?} reverse_flags={:?}", mn, mx, aisle_facing_flat, two_way_oriented_flat);
     }
     // `reverse_lean` is a face-wide property: if any aisle edge of the
-    // bay borders a `TwoWayOrientedReverse` aisle, mirror every stall
-    // strip in the bay (so back-to-back rows on each side of the aisle
-    // both flip together — what the user means by "two-way reverse
-    // angles each stall strip on each side the other way").
+    // bay borders a `TwoWayReverse` aisle, mirror every stall strip in
+    // the bay (so back-to-back rows on each side of the aisle both
+    // flip together — what the user means by "two-way reverse angles
+    // each stall strip on each side the other way").
     let any_reverse = two_way_oriented_flat.iter().any(|&v| v);
     if any_reverse {
         for v in two_way_oriented_flat.iter_mut() {
@@ -566,8 +581,9 @@ pub(crate) fn extend_spines_to_faces(
                     outward_normal: spine.outward_normal,
                     face_idx: spine.face_idx,
                     is_interior: spine.is_interior,
-                    travel_dir: spine.travel_dir,
-                    reverse_lean: spine.reverse_lean,
+                    flip_angle: spine.flip_angle,
+                    staggered: spine.staggered,
+                    is_annotated: spine.is_annotated,
                 }, src_idx));
             }
         }
@@ -583,8 +599,9 @@ pub(crate) fn extend_spines_to_faces(
                     outward_normal: spine.outward_normal,
                     face_idx: spine.face_idx,
                     is_interior: spine.is_interior,
-                    travel_dir: spine.travel_dir,
-                    reverse_lean: spine.reverse_lean,
+                    flip_angle: spine.flip_angle,
+                    staggered: spine.staggered,
+                    is_annotated: spine.is_annotated,
                 }, src_idx));
             }
         }
