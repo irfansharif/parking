@@ -19,7 +19,8 @@
 //!   apply_annotations           — resolve and mutate in one pass
 
 use crate::geom::clip::point_in_polygon;
-use crate::geom::inset::{inset_polygon, inset_polygon_with_ids, signed_area};
+use crate::geom::inset::{inset_polygon, inset_polygon_with_ids};
+use crate::geom::poly::ensure_ccw_with_ids;
 use crate::graph::{decompose_regions, Region};
 use crate::types::*;
 
@@ -490,18 +491,6 @@ fn build_perimeter_lookup(
     }
 
     out
-}
-
-/// `ensure_ccw` applied to a polygon while keeping a parallel
-/// `VertexId` array aligned with the (possibly reversed) winding.
-fn ensure_ccw_with_ids(mut poly: Vec<Vec2>, mut ids: Vec<VertexId>) -> (Vec<Vec2>, Vec<VertexId>) {
-    if signed_area(&poly) < 0.0 {
-        poly.reverse();
-        if ids.len() == poly.len() {
-            ids.reverse();
-        }
-    }
-    (poly, ids)
 }
 
 /// Convert a sketch-edge anchor `(start, end, t)` on `entry.poly`

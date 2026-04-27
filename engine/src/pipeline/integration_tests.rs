@@ -11,12 +11,12 @@
 //! under `cargo test`.
 
 use crate::geom::clip::remove_conflicting_stalls;
-use crate::geom::inset::signed_area;
+use crate::geom::poly::signed_area;
 use crate::geom::poly::{point_in_face, point_to_segment_dist};
 use crate::graph::auto_generate;
 use crate::pipeline::bays::extract_faces;
 use crate::pipeline::corridors::{
-    corridor_polygon, deduplicate_corridors, generate_miter_fills, merge_corridor_shapes,
+    corridor_polygon, corridor_polygons, generate_miter_fills, merge_corridor_shapes,
 };
 use crate::pipeline::filter::clip_stalls_to_faces;
 use crate::pipeline::generate::generate_from_spines;
@@ -25,7 +25,7 @@ use crate::pipeline::placement::{fill_spine, place_stalls_on_spines};
 use crate::pipeline::spines::{
     compute_face_spines, merge_collinear_spines,
 };
-use crate::pipeline::tagging::{classify_face_edges, is_boundary_face};
+use crate::pipeline::tagging::classify_face_edges;
 use crate::types::*;
 
 mod tests {
@@ -90,7 +90,7 @@ mod tests {
 
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
-        let dedup_corridors = deduplicate_corridors(&graph);
+        let per_edge_corridors = corridor_polygons(&graph);
 
         eprintln!("\nMiter fills:");
         let miter_fills = generate_miter_fills(&graph, &DebugToggles::default());
@@ -102,17 +102,17 @@ mod tests {
             }
         }
 
-        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
+        let corridor_polys: Vec<Vec<Vec2>> = per_edge_corridors.iter().map(|(p, _, _)| p.clone()).collect();
 
         eprintln!("\nCorridor rects:");
-        for (i, c) in dedup_corridor_polys.iter().enumerate() {
+        for (i, c) in corridor_polys.iter().enumerate() {
             eprintln!("  rect {}: {} verts", i, c.len());
             for (vi, v) in c.iter().enumerate() {
                 eprintln!("    v{}: ({:.1}, {:.1})", vi, v.x, v.y);
             }
         }
 
-        let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &DebugToggles::default());
+        let merged_corridors = merge_corridor_shapes(&corridor_polys, &miter_fills, &DebugToggles::default());
 
         eprintln!("\nMerged corridors: {}", merged_corridors.len());
         for (ci, shape) in merged_corridors.iter().enumerate() {
@@ -141,7 +141,7 @@ mod tests {
                 }
             }
 
-            let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &DebugToggles::default(), &[], None);
+            let face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &per_edge_corridors, false, &DebugToggles::default(), &[], None);
             eprintln!("  spines from face {}: {}", fi, face_spines.len());
             for (si, s) in face_spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -222,17 +222,17 @@ mod tests {
 
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
-        let dedup_corridors = deduplicate_corridors(&graph);
-        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
-        let _miter_fills = generate_miter_fills(&graph, &debug);
-        let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &debug);
+        let per_edge_corridors = corridor_polygons(&graph);
+        let corridor_polys: Vec<Vec<Vec2>> = per_edge_corridors.iter().map(|(p, _, _)| p.clone()).collect();
+        let miter_fills = generate_miter_fills(&graph, &debug);
+        let merged_corridors = merge_corridor_shapes(&corridor_polys, &miter_fills, &debug);
         let faces = extract_faces(&boundary.outer, &merged_corridors, &[]);
 
         // Run through the full spine+stall pipeline.
         let mut raw_spines = Vec::new();
         let mut faces_with_spines = std::collections::HashSet::new();
         for (face_idx, shape) in faces.iter().enumerate() {
-            let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors, false, &debug, &[], None);
+            let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &per_edge_corridors, false, &debug, &[], None);
             if !face_spines.is_empty() {
                 faces_with_spines.insert(face_idx);
             }
@@ -314,7 +314,8 @@ mod tests {
             edges: vec![edge_a.clone(), edge_b.clone()],
             perim_vertex_count: 3,
         };
-        let merged = merge_corridor_shapes(&[rect_a.clone(), rect_b.clone()], &graph, &DebugToggles::default());
+        let miter_fills = generate_miter_fills(&graph, &DebugToggles::default());
+        let merged = merge_corridor_shapes(&[rect_a.clone(), rect_b.clone()], &miter_fills, &DebugToggles::default());
 
         eprintln!("\nUnmerged: 2 rects × 4 verts = 8 verts");
         eprintln!("Merged: {} shape(s)", merged.len());
@@ -700,16 +701,17 @@ mod tests {
 
         // Recompute corridor shapes for debug classification.
         let graph = auto_generate(&input.boundary, &input.params, &[], &[]);
-        let dedup_corridors = deduplicate_corridors(&graph);
-        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
-        let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &DebugToggles::default());
+        let per_edge_corridors = corridor_polygons(&graph);
+        let corridor_polys: Vec<Vec<Vec2>> = per_edge_corridors.iter().map(|(p, _, _)| p.clone()).collect();
+        let miter_fills = generate_miter_fills(&graph, &DebugToggles::default());
+        let merged_corridors = merge_corridor_shapes(&corridor_polys, &miter_fills, &DebugToggles::default());
 
         let effective_depth = input.params.stall_depth
             * input.params.stall_angle_deg.to_radians().sin();
 
         for (fi, face) in layout.faces.iter().enumerate() {
             let contour = &face.contour;
-            let area = crate::geom::inset::signed_area(contour).abs();
+            let area = crate::geom::poly::signed_area(contour).abs();
             let perimeter: f64 = contour.iter().enumerate().map(|(i, v)| {
                 let next = &contour[(i + 1) % contour.len()];
                 (*next - *v).length()
@@ -721,7 +723,7 @@ mod tests {
                 eprintln!("    v{}: ({:.1}, {:.1})", vi, v.x, v.y);
             }
 
-            let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors);
+            let classified = classify_face_edges(contour, &merged_corridors, &per_edge_corridors);
             let ed = effective_depth - 0.05;
             let min_edge_len = effective_depth * 2.0;
             for i in 0..contour.len() {
@@ -740,7 +742,7 @@ mod tests {
 
             for (hi, hole) in face.holes.iter().enumerate() {
                 eprintln!("    hole {}: {} verts", hi, hole.len());
-                let hole_classified = classify_face_edges(hole, &merged_corridors, &dedup_corridors);
+                let hole_classified = classify_face_edges(hole, &merged_corridors, &per_edge_corridors);
                 for i in 0..hole.len() {
                     let j = (i + 1) % hole.len();
                     let elen = (hole[j] - hole[i]).length();
@@ -751,7 +753,7 @@ mod tests {
             }
             let mut shape = vec![contour.clone()];
             shape.extend(face.holes.iter().cloned());
-            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &DebugToggles::default(), &[], None);
+            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &per_edge_corridors, false, &DebugToggles::default(), &[], None);
             eprintln!("    spines: {}", spines.len());
             for (si, s) in spines.iter().enumerate() {
                 let len = (s.end - s.start).length();
@@ -793,9 +795,10 @@ mod tests {
 
         // Recompute corridor shapes for debug classification.
         let graph = auto_generate(&input.boundary, &input.params, &[], &[]);
-        let dedup_corridors = deduplicate_corridors(&graph);
-        let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors.iter().map(|(p, _, _)| p.clone()).collect();
-        let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, &graph, &DebugToggles::default());
+        let per_edge_corridors = corridor_polygons(&graph);
+        let corridor_polys: Vec<Vec<Vec2>> = per_edge_corridors.iter().map(|(p, _, _)| p.clone()).collect();
+        let miter_fills = generate_miter_fills(&graph, &DebugToggles::default());
+        let merged_corridors = merge_corridor_shapes(&corridor_polys, &miter_fills, &DebugToggles::default());
 
         let effective_depth = input.params.stall_depth
             * input.params.stall_angle_deg.to_radians().sin();
@@ -803,14 +806,14 @@ mod tests {
         // Examine each face.
         for (fi, face) in layout.faces.iter().enumerate() {
             let contour = &face.contour;
-            let area = crate::geom::inset::signed_area(contour).abs();
+            let area = crate::geom::poly::signed_area(contour).abs();
             eprintln!("\n  face {}: {} vertices, area={:.1}", fi, contour.len(), area);
             for (vi, v) in contour.iter().enumerate() {
                 eprintln!("    v{}: ({:.1}, {:.1})", vi, v.x, v.y);
             }
 
             // Classify edges for this face.
-            let classified = classify_face_edges(contour, &merged_corridors, &dedup_corridors);
+            let classified = classify_face_edges(contour, &merged_corridors, &per_edge_corridors);
             let ed = effective_depth - 0.05;
             let min_edge_len = effective_depth * 2.0;
             for i in 0..contour.len() {
@@ -839,7 +842,7 @@ mod tests {
             // Compute spines for this face using full shape (contour + holes).
             let mut shape = vec![contour.clone()];
             shape.extend(face.holes.iter().cloned());
-            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &dedup_corridors, false, &DebugToggles::default(), &[], None);
+            let spines = compute_face_spines(&shape, effective_depth, &merged_corridors, &per_edge_corridors, false, &DebugToggles::default(), &[], None);
             eprintln!("    spines: {}", spines.len());
             for (si, s) in spines.iter().enumerate() {
                 let len = (s.end - s.start).length();

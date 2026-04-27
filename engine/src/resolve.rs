@@ -965,7 +965,7 @@ fn loops_equal(a: &PerimeterLoop, b: &PerimeterLoop) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AisleEdge, AisleDirection};
+    use crate::types::AisleEdge;
 
     // Build a minimal 2x2 aisle graph: 4 outer vertices at unit coords,
     // plus the four edges wrapping them. Canonical edge indices

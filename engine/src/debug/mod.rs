@@ -1,9 +1,8 @@
 //! Human-readable pretty-printers for engine inputs.
 //!
-//! The wasm `debug_input_js` entry point and the (forthcoming native)
-//! harness fixture exporter both go through `format_fixture` here —
-//! one source of truth for the `.txt` DSL used by Playwright-side
-//! fixtures. Keeps formatting logic off of `lib.rs`.
+//! Shared by the wasm `debug_input_js` entry point and the native
+//! test harness — one source of truth for the `.txt` fixture DSL.
+//! Keeps formatting logic off of `lib.rs`.
 
 use crate::types::*;
 

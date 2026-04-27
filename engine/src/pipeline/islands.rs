@@ -7,7 +7,8 @@
 //! island contours.
 
 use crate::geom::boolean::{self, FillRule};
-use crate::geom::inset::{raw_inset_polygon, signed_area};
+use crate::geom::inset::raw_inset_polygon;
+use crate::geom::poly::{ensure_ccw, ensure_cw, signed_area};
 use crate::types::*;
 
 /// Miter-outset applied to each non-island stall before face-subtraction.
@@ -106,15 +107,6 @@ pub(crate) fn compute_islands(
     min_area: f64,
     dilate_stalls: bool,
 ) -> Vec<Island> {
-    let ensure_ccw = |pts: &[Vec2]| -> Vec<Vec2> {
-        if signed_area(pts) >= 0.0 { pts.to_vec() }
-        else { pts.iter().rev().copied().collect() }
-    };
-    let ensure_cw = |pts: &[Vec2]| -> Vec<Vec2> {
-        if signed_area(pts) <= 0.0 { pts.to_vec() }
-        else { pts.iter().rev().copied().collect() }
-    };
-
     // Island stalls subtract from the face polygon just like any other
     // stall kind — they're tracked as explicit StallKind::Island quads
     // (rendered with hatching + 4-sided paintline), so the residual
@@ -136,14 +128,14 @@ pub(crate) fn compute_islands(
     for (face_idx, shape) in faces.iter().enumerate() {
         if shape.is_empty() || shape[0].len() < 3 { continue; }
 
-        let mut subj: Vec<Vec<Vec2>> = vec![ensure_ccw(&shape[0])];
+        let mut subj: Vec<Vec<Vec2>> = vec![ensure_ccw(shape[0].clone())];
         for hole in shape.iter().skip(1) {
-            subj.push(ensure_cw(hole));
+            subj.push(ensure_cw(hole.clone()));
         }
 
         let face_stalls = &stalls_by_face[face_idx];
         if face_stalls.is_empty() {
-            let contour = ensure_ccw(&shape[0]);
+            let contour = ensure_ccw(shape[0].clone());
             if signed_area(&contour).abs() >= min_area {
                 islands.push(Island { contour, holes: vec![], face_idx });
             }
@@ -154,7 +146,7 @@ pub(crate) fn compute_islands(
 
         for sc in raw {
             if sc.is_empty() { continue; }
-            let contour = ensure_ccw(&sc[0]);
+            let contour = ensure_ccw(sc[0].clone());
             let holes: Vec<Vec<Vec2>> = sc[1..].iter().cloned().collect();
             let net = signed_area(&contour).abs()
                 - holes.iter().map(|h| signed_area(h).abs()).sum::<f64>();

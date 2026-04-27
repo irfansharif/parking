@@ -1,5 +1,6 @@
 use crate::geom::boolean::{self, FillRule};
-use crate::geom::inset::{inset_polygon, inset_polygon_with_ids, raw_inset_polygon, signed_area};
+use crate::geom::inset::{inset_polygon, inset_polygon_with_ids, raw_inset_polygon};
+use crate::geom::poly::{ensure_ccw_with_ids, signed_area};
 use crate::types::*;
 
 /// Compute the inset distance for a given set of parking parameters.
@@ -663,38 +664,6 @@ pub fn auto_generate(
         edges.push(AisleEdge { start: via, end: vib, width: hw, interior: true, direction: None });
     }
 
-    // 7. Hole-to-interior connectivity edges removed — they created
-    // diagonal aisle rectangles at arbitrary angles, causing miter fill
-    // artifacts, face slivers, and boundary misclassification around holes.
-    if false {
-    for &(via, vib) in interior_pairs.iter().chain(cross_pairs.iter()) {
-        for &vi in &[via, vib] {
-            let v = vertices[vi];
-            let on_perim = perim_splits.iter().any(|splits| {
-                splits.iter().any(|&(_, svi)| svi == vi)
-            });
-            if on_perim {
-                continue;
-            }
-            let mut best_dist = f64::INFINITY;
-            let mut best_vi = 0;
-            for (hi, hl) in hole_loops.iter().enumerate() {
-                let base = hole_bases[hi];
-                for k in 0..hl.len() {
-                    let d = (vertices[base + k] - v).length();
-                    if d < best_dist {
-                        best_dist = d;
-                        best_vi = base + k;
-                    }
-                }
-            }
-            if best_dist < row_spacing {
-                edges.push(AisleEdge { start: vi, end: best_vi, width: hw, interior: true, direction: None });
-            }
-        }
-    }
-    } // end if false
-
     // Perimeter vertices are the first perim_n + all hole loop vertices.
     // Split vertices (interior aisle endpoints on the perimeter) are NOT
     // counted — the user needs to drag those to change the aisle angle.
@@ -714,24 +683,6 @@ fn empty_graph() -> DriveAisleGraph {
         perim_vertex_count: 0,
     }
 }
-
-/// `ensure_ccw` paired with a parallel `VertexId` array. Reverses ids
-/// alongside the polygon so segment-i's start vertex id stays at
-/// `ids[i]`. Caller passes empty `ids` to opt out — returned ids vec
-/// is then also empty.
-fn ensure_ccw_with_ids(
-    mut poly: Vec<Vec2>,
-    mut ids: Vec<crate::types::VertexId>,
-) -> (Vec<Vec2>, Vec<crate::types::VertexId>) {
-    if signed_area(&poly) < 0.0 {
-        poly.reverse();
-        if ids.len() == poly.len() {
-            ids.reverse();
-        }
-    }
-    (poly, ids)
-}
-
 
 /// Distance from point to segment, plus the closest point on the segment.
 fn point_to_segment_dist_with_proj(p: Vec2, a: Vec2, b: Vec2) -> (f64, Vec2) {

@@ -15,8 +15,7 @@
 
 use crate::geom::boolean::{self, FillRule};
 use crate::geom::clip::point_in_polygon;
-use crate::geom::inset::signed_area;
-use crate::geom::poly::point_to_segment_dist;
+use crate::geom::poly::{point_to_segment_dist, signed_area};
 use crate::pipeline::bays::normalize_face_winding;
 use crate::types::{StallKind, StallModifier, StallQuad, Vec2};
 

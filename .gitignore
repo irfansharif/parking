@@ -3,6 +3,11 @@ engine/target/
 # via TS_RS_EXPORT_DIR. If a cargo test is run without the Makefile
 # setting that var, ts-rs falls back here; ignore the stray output.
 engine/bindings/
+# wasm-pack default output dirs. The Makefile points wasm-pack at
+# ui/src/wasm via --out-dir; if anyone runs wasm-pack without that
+# flag, the output lands in pkg/ next to the Cargo.toml — ignore it.
+engine/pkg/
+ui/pkg/
 ui/dist/assets/
 test-results/
 ui/.vite/

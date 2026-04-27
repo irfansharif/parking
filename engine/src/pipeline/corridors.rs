@@ -6,7 +6,7 @@
 //! passes for spikes, simplification, and small junction holes.
 
 use crate::geom::boolean::{self, FillRule};
-use crate::geom::inset::signed_area;
+use crate::geom::poly::signed_area;
 use crate::types::*;
 
 /// Build the corridor rectangle for a single aisle edge.
@@ -32,9 +32,10 @@ pub(crate) fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2>
     ]
 }
 
-/// Per-edge corridor rectangles. Returns (polygon, interior,
-/// travel_dir); travel_dir is Some for one-way edges only.
-pub(crate) fn deduplicate_corridors(
+/// Build one corridor rectangle per aisle edge, paired with the
+/// edge's `interior` flag and a `travel_dir` when the edge is OneWay
+/// (None for two-way and TwoWayReverse).
+pub(crate) fn corridor_polygons(
     graph: &DriveAisleGraph,
 ) -> Vec<(Vec<Vec2>, bool, Option<Vec2>)> {
     let mut corridors = Vec::new();
@@ -146,16 +147,16 @@ pub(crate) fn generate_miter_fills(graph: &DriveAisleGraph, debug: &DebugToggles
 /// Boolean-union all corridor rectangles + miter fills into merged
 /// shapes. Each shape is `Vec<Vec<Vec2>>` where [0] = outer contour
 /// and [1..] = hole contours (for corridor loops enclosing faces).
+/// Miter fills are passed in (computed once per generate by
+/// `generate_miter_fills`) so the union doesn't re-walk them.
 pub(crate) fn merge_corridor_shapes(
     corridors: &[Vec<Vec2>],
-    graph: &DriveAisleGraph,
+    miter_fills: &[Vec<Vec2>],
     debug: &DebugToggles,
 ) -> Vec<Vec<Vec<Vec2>>> {
     if corridors.is_empty() {
         return vec![];
     }
-
-    let miter_fills = generate_miter_fills(graph, debug);
 
     let subj: Vec<Vec<Vec2>> = corridors
         .iter()

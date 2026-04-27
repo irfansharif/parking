@@ -35,8 +35,7 @@ pub struct ParkingParams {
     /// Number of stalls along the aisle direction in one face — i.e.,
     /// between adjacent cross driving aisles. Drives the canvas-space
     /// length of a face along the aisle: dy = stalls_per_face *
-    /// stall_pitch. Was `cross_aisle_max_run` (a float in stall-pitch
-    /// units); now an integer count.
+    /// stall_pitch.
     #[serde(default)]
     pub stalls_per_face: u32,
     #[serde(default)]

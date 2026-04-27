@@ -1,10 +1,11 @@
 use crate::annotations::{apply_annotations, resolve_regions_for_frames, ResolvedRegion};
 use crate::geom::clip::remove_conflicting_stalls;
-use crate::geom::inset::{inset_polygon, inset_polygon_with_ids, signed_area};
+use crate::geom::inset::{inset_polygon, inset_polygon_with_ids};
+use crate::geom::poly::{ensure_ccw, ensure_ccw_with_ids, signed_area};
 use crate::graph::{auto_generate, compute_inset_d, decompose_regions, derive_raw_holes, derive_raw_outer, intersect_line_polygon, subtract_intervals, Region};
 use crate::pipeline::bays::extract_faces;
 use crate::pipeline::corridors::{
-    deduplicate_corridors, generate_miter_fills, merge_corridor_shapes,
+    corridor_polygons, generate_miter_fills, merge_corridor_shapes,
 };
 use crate::pipeline::filter::{clip_stalls_to_faces, filter_stalls_by_entrance_coverage};
 use crate::pipeline::islands::{compute_islands, mark_island_stalls, stall_key};
@@ -414,28 +415,6 @@ fn intersect_line_with_graph_edges(
     hits
 }
 
-fn ensure_ccw(mut poly: Vec<Vec2>) -> Vec<Vec2> {
-    if signed_area(&poly) < 0.0 {
-        poly.reverse();
-    }
-    poly
-}
-
-/// `ensure_ccw` paired with a parallel `VertexId` array so segment-i's
-/// start vertex id stays at `ids[i]` after any orientation flip.
-fn ensure_ccw_with_ids(
-    mut poly: Vec<Vec2>,
-    mut ids: Vec<VertexId>,
-) -> (Vec<Vec2>, Vec<VertexId>) {
-    if signed_area(&poly) < 0.0 {
-        poly.reverse();
-        if ids.len() == poly.len() {
-            ids.reverse();
-        }
-    }
-    (poly, ids)
-}
-
 /// Append graph b into graph a. For each b vertex, either merge with a nearby
 /// existing vertex OR split the nearest a-edge that passes through it. This
 /// ensures drive line endpoints on the perimeter/hole loops create proper
@@ -661,8 +640,8 @@ pub fn generate_from_spines(
 
     // Build deduplicated corridor rectangles + miter wedge fills, then
     // boolean-union them into merged shapes (preserving holes for loops).
-    let dedup_corridors_with_flags = deduplicate_corridors(graph);
-    let dedup_corridor_polys: Vec<Vec<Vec2>> = dedup_corridors_with_flags.iter().map(|(p, _, _)| p.clone()).collect();
+    let per_edge_corridors = corridor_polygons(graph);
+    let corridor_polys: Vec<Vec<Vec2>> = per_edge_corridors.iter().map(|(p, _, _)| p.clone()).collect();
     // Per-corridor "reverse lean" flag, encoded in the legacy
     // Option<Vec2> slot (Some = reverse, None = normal). Only
     // TwoWayReverse populates it, so placement can negate cos_a on
@@ -679,7 +658,7 @@ pub fn generate_from_spines(
         })
         .collect();
     let miter_fills = generate_miter_fills(graph, debug);
-    let merged_corridors = merge_corridor_shapes(&dedup_corridor_polys, graph, debug);
+    let merged_corridors = merge_corridor_shapes(&corridor_polys, &miter_fills, debug);
 
     // Extract faces by subtracting the merged corridor union from the
     // boundary. Since the union resolves all internal seams between
@@ -730,7 +709,7 @@ pub fn generate_from_spines(
     let tagged_faces: Vec<TaggedFace> = faces.iter()
         .map(|shape| {
             if !shape.is_empty() && shape[0].len() >= 3 {
-                tag_face_edges(shape, &merged_corridors, &dedup_corridors_with_flags, &two_way_oriented_dirs)
+                tag_face_edges(shape, &merged_corridors, &per_edge_corridors, &two_way_oriented_dirs)
             } else {
                 TaggedFace { edges: vec![], hole_edges: vec![], is_boundary: true, wall_edge_indices: vec![] }
             }
@@ -744,7 +723,7 @@ pub fn generate_from_spines(
     for (face_idx, shape) in faces.iter().enumerate() {
         let face_is_boundary = tagged_faces[face_idx].is_boundary;
         let tagged_ref = Some(&tagged_faces[face_idx]);
-        let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &dedup_corridors_with_flags, face_is_boundary, debug, &two_way_oriented_dirs, tagged_ref);
+        let mut face_spines = compute_face_spines(shape, effective_depth, &merged_corridors, &per_edge_corridors, face_is_boundary, debug, &two_way_oriented_dirs, tagged_ref);
         for s in &mut face_spines {
             s.face_idx = face_idx;
         }

@@ -296,7 +296,6 @@ fn normalize_param_key(key: &str) -> String {
         "stall_angle" | "angle" => "stall_angle_deg".to_string(),
         "width" => "stall_width".to_string(),
         "depth" => "stall_depth".to_string(),
-        "cross_aisle_max_run" | "cross_aisle_spacing" => "stalls_per_face".to_string(),
         _ => k,
     }
 }

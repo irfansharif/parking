@@ -21,9 +21,6 @@ const KEY_ALIASES: Record<string, string> = {
   angle: "stall_angle_deg",
   width: "stall_width",
   depth: "stall_depth",
-  // Legacy aliases for the now-renamed stalls_per_face parameter.
-  cross_aisle_max_run: "stalls_per_face",
-  cross_aisle_spacing: "stalls_per_face",
 };
 
 export function createCommandAPI(app: App): CommandAPI {

@@ -18,6 +18,7 @@
 //! by a partition still contributes one `Outer(id)` entry on each
 //! side) and then rotated so the lex-smallest element leads.
 
+use crate::geom::poly::signed_area;
 use crate::types::{RegionId, Vec2, VertexId};
 
 const EPS: f64 = 1e-6;
@@ -204,20 +205,6 @@ fn orient_with_ids(
     (v, ids_out)
 }
 
-fn signed_area(poly: &[Vec2]) -> f64 {
-    let n = poly.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let mut a = 0.0;
-    for i in 0..n {
-        let p = poly[i];
-        let q = poly[(i + 1) % n];
-        a += p.x * q.y - q.x * p.y;
-    }
-    a * 0.5
-}
-
 // ---------------------------------------------------------------------------
 // Segment splitting via pairwise intersection
 // ---------------------------------------------------------------------------
@@ -332,17 +319,19 @@ impl Arrangement {
         if vi == vj {
             return;
         }
-        // Forward half-edge (vi → vj)
+        // Forward half-edge (vi → vj). Boundary forward has the lot
+        // interior on its left; partition forward has interior on both
+        // sides — either way, the LEFT face is interior.
         self.origin.push(vi);
         self.kind.push(ss.kind);
-        // For boundary segments, interior is on the left of forward.
-        // For partitions (non-boundary), both sides are interior.
-        self.interior_left.push(if ss.boundary { true } else { true });
+        self.interior_left.push(true);
         self.next.push(usize::MAX);
-        // Reverse half-edge (vj → vi)
+        // Reverse half-edge (vj → vi). For boundary edges this puts
+        // exterior/hole on the left (filtered out in face extraction).
+        // For partitions both sides are interior.
         self.origin.push(vj);
         self.kind.push(ss.kind);
-        self.interior_left.push(if ss.boundary { false } else { true });
+        self.interior_left.push(!ss.boundary);
         self.next.push(usize::MAX);
     }
 

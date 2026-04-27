@@ -446,12 +446,6 @@ pub(crate) fn compute_face_spines(
         }
     }
 
-    if !contours.is_empty() && !contours[0].is_empty() {
-        let xs: Vec<f64> = contours[0].iter().map(|p| p.x).collect();
-        let mn = xs.iter().cloned().fold(f64::INFINITY, f64::min);
-        let mx = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        eprintln!("[face] x=[{:.0},{:.0}] aisle_facing={:?} reverse_flags={:?}", mn, mx, aisle_facing_flat, two_way_oriented_flat);
-    }
     // `reverse_lean` is a face-wide property: if any aisle edge of the
     // bay borders a `TwoWayReverse` aisle, mirror every stall strip in
     // the bay (so back-to-back rows on each side of the aisle both

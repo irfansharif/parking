@@ -1,16 +1,5 @@
+use super::poly::signed_area;
 use crate::types::Vec2;
-
-/// Signed area of a polygon (positive = CCW, negative = CW).
-pub fn signed_area(polygon: &[Vec2]) -> f64 {
-    let n = polygon.len();
-    let mut area = 0.0;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        area += polygon[i].x * polygon[j].y;
-        area -= polygon[j].x * polygon[i].y;
-    }
-    area * 0.5
-}
 
 /// Raw miter polygon: offset each edge by `d` and compute miter intersections
 /// at each vertex. No edge-collapse detection — the result may self-intersect

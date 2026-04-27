@@ -13,7 +13,7 @@
 //! operation causes winding interference.
 
 use crate::geom::boolean::{self, FillRule};
-use crate::geom::inset::signed_area;
+use crate::geom::poly::{ensure_ccw, signed_area};
 use crate::types::Vec2;
 
 pub(crate) fn extract_faces(
@@ -34,7 +34,7 @@ pub(crate) fn extract_faces(
         return after_corridors;
     }
 
-    let hole_paths: Vec<Vec<Vec2>> = raw_holes.iter().map(|hole| ensure_ccw(hole)).collect();
+    let hole_paths: Vec<Vec<Vec2>> = raw_holes.iter().map(|hole| ensure_ccw(hole.clone())).collect();
 
     // Feed step 1 output as subject paths for the second subtraction.
     let subj2: Vec<Vec<Vec2>> = after_corridors
@@ -44,19 +44,11 @@ pub(crate) fn extract_faces(
     boolean::difference(&subj2, &hole_paths, FillRule::NonZero)
 }
 
-fn ensure_ccw(pts: &[Vec2]) -> Vec<Vec2> {
-    if signed_area(pts) >= 0.0 {
-        pts.to_vec()
-    } else {
-        pts.iter().rev().copied().collect()
-    }
-}
-
-/// Normalize winding for multi-contour skeleton input. Outer contour
+/// Normalize winding for multi-contour face input. Outer contour
 /// (index 0) → CCW (positive signed area); hole contours (index 1+)
 /// → CW (negative signed area). Skips contours with fewer than 3
-/// vertices. Used by spine generation before feeding a face to the
-/// weighted straight-skeleton solver.
+/// vertices. Used by spine generation (`offset_aisle_edges_to_spines`)
+/// and by the stall-vs-face containment check (`quad_fully_in_face`).
 pub(crate) fn normalize_face_winding(shape: &[Vec<Vec2>]) -> Vec<Vec<Vec2>> {
     shape
         .iter()

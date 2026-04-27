@@ -6,6 +6,7 @@
 //!   - point-in-polygon variants (faces with holes, tolerance-aware)
 //!   - point-to-segment distance
 //!   - segment clipping against a face (returns parameter intervals)
+//!   - signed area + winding orientation helpers
 //!   - contour simplification (colinearity-based)
 //!
 //! All functions here are parking-agnostic and take/return `Vec2` +
@@ -13,7 +14,59 @@
 //! module wholesale.
 
 use super::clip::point_in_polygon as point_in_loop;
-use crate::types::Vec2;
+use crate::types::{Vec2, VertexId};
+
+/// Signed area of a closed polygonal loop. Positive ↔ CCW in a y-up
+/// frame (sketch convention); negative ↔ CW. Loops with fewer than 3
+/// vertices return 0.
+pub fn signed_area(polygon: &[Vec2]) -> f64 {
+    let n = polygon.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut acc = 0.0;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        acc += polygon[i].x * polygon[j].y - polygon[j].x * polygon[i].y;
+    }
+    acc * 0.5
+}
+
+/// Reverse `poly` in place if it's wound CW so the result is CCW.
+pub fn ensure_ccw(mut poly: Vec<Vec2>) -> Vec<Vec2> {
+    if signed_area(&poly) < 0.0 {
+        poly.reverse();
+    }
+    poly
+}
+
+/// Reverse `poly` in place if it's wound CCW so the result is CW.
+/// Used when feeding hole contours into a boolean overlay that
+/// expects holes to be wound opposite from the outer ring.
+pub fn ensure_cw(mut poly: Vec<Vec2>) -> Vec<Vec2> {
+    if signed_area(&poly) > 0.0 {
+        poly.reverse();
+    }
+    poly
+}
+
+/// `ensure_ccw` paired with a parallel `VertexId` array. Reverses ids
+/// alongside so segment-i's start vertex id stays at `ids[i]` after
+/// any orientation flip. Caller passes empty `ids` (or a length
+/// mismatch) to opt out — the returned ids vec is then untouched
+/// alongside the polygon.
+pub fn ensure_ccw_with_ids(
+    mut poly: Vec<Vec2>,
+    mut ids: Vec<VertexId>,
+) -> (Vec<Vec2>, Vec<VertexId>) {
+    if signed_area(&poly) < 0.0 {
+        poly.reverse();
+        if ids.len() == poly.len() {
+            ids.reverse();
+        }
+    }
+    (poly, ids)
+}
 
 /// Test whether `p` lies inside a face shape: inside the outer contour
 /// AND outside every hole.
