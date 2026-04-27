@@ -57,7 +57,7 @@ set min_stalls_per_spine=3
 
 generate
 ----
-total_stalls: 797
+total_stalls: 799
 
 snapshot
 ----

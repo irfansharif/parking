@@ -20,7 +20,7 @@ set stall_angle_deg=90
 
 generate
 ----
-total_stalls: 134
+total_stalls: 142
 
 snapshot
 ----

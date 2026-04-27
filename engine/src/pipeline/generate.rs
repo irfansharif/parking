@@ -4,9 +4,7 @@ use crate::geom::inset::{inset_polygon, inset_polygon_with_ids};
 use crate::geom::poly::{ensure_ccw, ensure_ccw_with_ids, signed_area};
 use crate::graph::{auto_generate, compute_inset_d, decompose_regions, derive_raw_holes, derive_raw_outer, intersect_line_polygon, subtract_intervals, Region};
 use crate::pipeline::bays::extract_faces;
-use crate::pipeline::corridors::{
-    corridor_polygons, generate_miter_fills, merge_corridor_shapes,
-};
+use crate::pipeline::corridors::{corridor_polygons, merge_corridor_surface};
 use crate::pipeline::filter::{clip_stalls_to_faces, filter_stalls_by_entrance_coverage};
 use crate::pipeline::islands::{compute_islands, mark_island_stalls, stall_key};
 use crate::pipeline::placement::place_stalls_on_spines;
@@ -638,10 +636,10 @@ pub fn generate_from_spines(
     let raw_outer = derive_raw_outer(&boundary.outer, inset_d, params.site_offset);
     let raw_holes = derive_raw_holes(&boundary.holes, inset_d);
 
-    // Build deduplicated corridor rectangles + miter wedge fills, then
-    // boolean-union them into merged shapes (preserving holes for loops).
+    // Per-edge corridor rectangles (used by face-edge tagging only —
+    // the merged driveable surface comes straight from a stroke of the
+    // centerline graph below).
     let per_edge_corridors = corridor_polygons(graph);
-    let corridor_polys: Vec<Vec<Vec2>> = per_edge_corridors.iter().map(|(p, _, _)| p.clone()).collect();
     // Per-corridor "reverse lean" flag, encoded in the legacy
     // Option<Vec2> slot (Some = reverse, None = normal). Only
     // TwoWayReverse populates it, so placement can negate cos_a on
@@ -657,8 +655,7 @@ pub fn generate_from_spines(
             }
         })
         .collect();
-    let miter_fills = generate_miter_fills(graph, debug);
-    let merged_corridors = merge_corridor_shapes(&corridor_polys, &miter_fills, debug);
+    let merged_corridors = merge_corridor_surface(graph, params.aisle_width);
 
     // Extract faces by subtracting the merged corridor union from the
     // boundary. Since the union resolves all internal seams between
@@ -917,5 +914,9 @@ pub fn generate_from_spines(
         })
         .collect();
 
-    (all_stalls, spine_lines, face_list, miter_fills, islands)
+    // miter_fills was a debug overlay surfacing the hand-rolled junction
+    // wedges; the stroke-based corridor merge has no separate wedges,
+    // so the slot is now always empty (kept in the return to avoid
+    // churning the wasm boundary in this commit).
+    (all_stalls, spine_lines, face_list, vec![], islands)
 }

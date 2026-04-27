@@ -1,20 +1,36 @@
 //! Aisle polygon construction (DESIGN.md §3.2).
 //!
-//! Each undirected aisle edge is extruded into a rectangle. Miter-fill
-//! wedges close the gaps at junctions. Boolean union of all rectangles
-//! plus miter fills produces the merged driveable surface, with cleanup
-//! passes for spikes, simplification, and small junction holes.
+//! The merged driveable surface comes from stroking the centerline
+//! graph through `i_overlay::StrokeOffset`. Perimeter and hole loops
+//! are passed as closed polylines so their corners miter internally;
+//! interior aisles are passed as 2-point open polylines with butt
+//! caps (their perpendicular butts overlap at every interior 4-way
+//! crossing, so the centre is fully covered without explicit
+//! wedges). The stroker handles extrusion, joins, caps, and despike
+//! in one shot, so this module no longer carries hand-rolled
+//! rectangle building, junction wedge computation, or post-union
+//! spike cleanup.
+//!
+//! Matches the old `boundary_only_miters: true` semantics (mitered
+//! perimeter, no wedges at interior-only junctions) without the
+//! debug toggle — it falls out of the stroking strategy.
+//!
+//! `corridor_polygon` / `corridor_polygons` remain — they emit per-edge
+//! rectangles consumed by face-edge tagging (`tag_face_edges`) to
+//! classify each face contour edge against the corridor that carved it.
+
+use i_overlay::mesh::stroke::offset::StrokeOffset;
+use i_overlay::mesh::style::{LineJoin, StrokeStyle};
 
 use crate::geom::boolean::{self, FillRule};
-use crate::geom::poly::signed_area;
 use crate::types::*;
 
 /// Build the corridor rectangle for a single aisle edge.
 ///
 /// Direction-annotated edges flip their stored start/end to encode
 /// traffic direction. Independent of that orientation, the corridor
-/// rectangle's vertex order must stay consistent so downstream boolean
-/// union and face extraction see a stable winding for every edge.
+/// rectangle's vertex order must stay consistent so downstream
+/// face-edge tagging sees a stable winding for every edge.
 pub(crate) fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2> {
     let s = vertices[edge.start];
     let e = vertices[edge.end];
@@ -34,20 +50,21 @@ pub(crate) fn corridor_polygon(vertices: &[Vec2], edge: &AisleEdge) -> Vec<Vec2>
 
 /// Build one corridor rectangle per aisle edge, paired with the
 /// edge's `interior` flag and a `travel_dir` when the edge is OneWay
-/// (None for two-way and TwoWayReverse).
+/// (None for two-way and TwoWayReverse). Consumed by `tag_face_edges`
+/// to classify each face edge against its source corridor.
 pub(crate) fn corridor_polygons(
     graph: &DriveAisleGraph,
 ) -> Vec<(Vec<Vec2>, bool, Option<Vec2>)> {
     let mut corridors = Vec::new();
     for edge in &graph.edges {
         if edge.start == edge.end { continue; }
+        let s = graph.vertices[edge.start];
+        let e = graph.vertices[edge.end];
         // Only OneWay aisles affect stall lean — they need per-side
         // flip_angle to produce a herringbone chevron in travel
         // direction. TwoWay and TwoWayReverse keep the default
         // mirror-symmetric stall pattern; *Reverse only mirrors the
         // lean across the aisle axis (handled separately).
-        let s = graph.vertices[edge.start];
-        let e = graph.vertices[edge.end];
         let travel_dir = match edge.direction {
             Some(AisleDirection::OneWay) => Some((e - s).normalize()),
             Some(AisleDirection::OneWayReverse) => Some((s - e).normalize()),
@@ -58,182 +75,189 @@ pub(crate) fn corridor_polygons(
     corridors
 }
 
-/// Miter-fill wedges at graph vertices where edges meet. For each
-/// consecutive pair of outgoing edges (sorted by angle), produce a
-/// triangular/quadrilateral fill that bridges their offset rects.
-/// Outer/convex gaps are capped to prevent acute miters from
-/// shooting spikes across the lot.
-pub(crate) fn generate_miter_fills(graph: &DriveAisleGraph, debug: &DebugToggles) -> Vec<Vec<Vec2>> {
-    if !debug.miter_fills {
-        return vec![];
-    }
-    let mut fills = Vec::new();
+/// Minimum interior corner angle (radians) below which a miter join
+/// falls back to a bevel. Aisles meeting at very acute angles would
+/// otherwise produce miter spikes far longer than the aisle is wide;
+/// 15° is roughly where the miter length exceeds ~4× the half-width
+/// (the cap the previous hand-rolled implementation used).
+const MITER_MIN_SHARP_ANGLE: f64 = 15.0 * std::f64::consts::PI / 180.0;
 
-    let nv = graph.vertices.len();
-    let mut adj: Vec<Vec<(Vec2, f64, bool)>> = vec![vec![]; nv];
-
-    for edge in &graph.edges {
-        let s = graph.vertices[edge.start];
-        let e = graph.vertices[edge.end];
-        if (e - s).length() < 1e-9 { continue; }
-        let dir = (e - s).normalize();
-        let w = edge.width;
-
-        adj[edge.start].push((dir, w, edge.interior));
-        adj[edge.end].push((Vec2::new(-dir.x, -dir.y), w, edge.interior));
-    }
-
-    for vi in 0..nv {
-        if adj[vi].len() < 2 {
-            continue;
-        }
-
-        if debug.boundary_only_miters && adj[vi].iter().all(|(_, _, int)| *int) {
-            continue;
-        }
-
-        let v = graph.vertices[vi];
-
-        let mut edges_sorted: Vec<(f64, Vec2, f64)> = adj[vi]
-            .iter()
-            .map(|(d, w, _)| (d.y.atan2(d.x), *d, *w))
-            .collect();
-        edges_sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-
-        let ne = edges_sorted.len();
-        for i in 0..ne {
-            let j = (i + 1) % ne;
-            let (a1, d1, w1) = edges_sorted[i];
-            let (a2, d2, w2) = edges_sorted[j];
-
-            let n1 = Vec2::new(-d1.y, d1.x);
-            let n2 = Vec2::new(-d2.y, d2.x);
-
-            let p1 = v + n1 * w1;
-            let p2 = v - n2 * w2;
-
-            let denom = d1.cross(d2);
-            if denom.abs() < 1e-12 {
-                continue;
-            }
-
-            let t = (p2 - p1).cross(d2) / denom;
-            let miter = p1 + d1 * t;
-
-            let gap = if j > i {
-                a2 - a1
-            } else {
-                (a2 + std::f64::consts::TAU) - a1
-            };
-
-            if gap < std::f64::consts::PI {
-                let max_w = w1.max(w2);
-                if (miter - v).length() > max_w * 4.0 {
-                    continue;
-                }
-            }
-
-            let wedge = vec![v, p1, miter, p2];
-            if signed_area(&wedge).abs() < 1.0 {
-                continue;
-            }
-            fills.push(wedge);
-        }
-    }
-
-    fills
-}
-
-/// Boolean-union all corridor rectangles + miter fills into merged
-/// shapes. Each shape is `Vec<Vec<Vec2>>` where [0] = outer contour
-/// and [1..] = hole contours (for corridor loops enclosing faces).
-/// Miter fills are passed in (computed once per generate by
-/// `generate_miter_fills`) so the union doesn't re-walk them.
-pub(crate) fn merge_corridor_shapes(
-    corridors: &[Vec<Vec2>],
-    miter_fills: &[Vec<Vec2>],
-    debug: &DebugToggles,
+/// Stroke the centerline graph by `aisle_width` (mitered joins along
+/// closed perimeter/hole loops, butt caps on interior segment ends)
+/// and return the merged driveable surface. Each output shape is
+/// `Vec<Vec<Vec2>>` with `[0]` = outer contour and `[1..]` = hole
+/// contours (for corridor loops enclosing a face).
+///
+/// `aisle_width` is the half-width of an undirected aisle (the same
+/// `edge.width` carried on each `AisleEdge`); the stroker doubles it
+/// internally — `StrokeStyle::new(_)` takes full stroke width, and a
+/// two-way aisle is two lanes wide.
+pub(crate) fn merge_corridor_surface(
+    graph: &DriveAisleGraph,
+    aisle_width: f64,
 ) -> Vec<Vec<Vec<Vec2>>> {
-    if corridors.is_empty() {
-        return vec![];
+    let stroke_width = aisle_width * 2.0;
+    let make_style = || {
+        StrokeStyle::new(stroke_width).line_join(LineJoin::Miter(MITER_MIN_SHARP_ANGLE))
+    };
+
+    let mut union_paths: Vec<Vec<Vec2>> = Vec::new();
+
+    // Perimeter and hole sub-graph — walk maximal paths through it.
+    // A simple cycle (no deletions) yields one closed polyline per
+    // loop; an annotation that deletes a perimeter vertex breaks
+    // that cycle into one or more open polylines that we stroke
+    // with butt caps so the "doorway" stays open downstream.
+    let perim_paths = extract_perim_paths(graph);
+    let (closed, open): (Vec<_>, Vec<_>) = perim_paths.into_iter().partition(|p| p.closed);
+    if !closed.is_empty() {
+        let coords: Vec<Vec<[f64; 2]>> = closed
+            .iter()
+            .map(|p| p.verts.iter().map(|v| [v.x, v.y]).collect())
+            .collect();
+        push_stroke(&mut union_paths, &coords, make_style(), true);
+    }
+    if !open.is_empty() {
+        let coords: Vec<Vec<[f64; 2]>> = open
+            .iter()
+            .map(|p| p.verts.iter().map(|v| [v.x, v.y]).collect())
+            .collect();
+        push_stroke(&mut union_paths, &coords, make_style(), false);
     }
 
-    let subj: Vec<Vec<Vec2>> = corridors
+    // Interior aisles — each edge as its own 2-point polyline. Butt
+    // caps at every endpoint; perpendicular butts at interior 4-way
+    // crossings overlap, so the junction is fully covered without
+    // explicit wedge geometry.
+    let interior_segments: Vec<Vec<[f64; 2]>> = graph
+        .edges
         .iter()
-        .chain(miter_fills.iter())
-        .map(|c| {
-            let mut pts = c.clone();
-            if signed_area(&pts) < 0.0 {
-                pts.reverse();
-            }
-            pts
+        .enumerate()
+        .filter(|(_, e)| e.interior && e.start != e.end)
+        .map(|(_, e)| {
+            let s = graph.vertices[e.start];
+            let t = graph.vertices[e.end];
+            vec![[s.x, s.y], [t.x, t.y]]
         })
         .collect();
+    if !interior_segments.is_empty() {
+        push_stroke(&mut union_paths, &interior_segments, make_style(), false);
+    }
 
-    if subj.is_empty() {
+    if union_paths.is_empty() {
         return vec![];
     }
 
-    let result = boolean::union(&subj, &[], FillRule::NonZero);
-
-    result
-        .into_iter()
-        .filter(|shape| !shape.is_empty())
-        .map(|shape| {
-            shape
-                .into_iter()
-                .map(|pts| {
-                    if debug.spike_removal {
-                        remove_contour_spikes(pts, 2.0)
-                    } else {
-                        pts
-                    }
-                })
-                .collect()
-        })
-        .collect()
+    // Stroke produces multiple disjoint shapes when the graph is in
+    // multiple components (e.g., outer + holes); their unions are
+    // already de-duped, but boolean-unioning here merges adjacent
+    // shapes that happen to touch (interior aisle running into a
+    // perimeter loop) into a single contour with consistent winding.
+    boolean::union(&union_paths, &[], FillRule::NonZero)
 }
 
-/// Remove anti-parallel "spike" vertices left by boolean-union of
-/// thin wedges with corridor rects.
-fn remove_contour_spikes(mut contour: Vec<Vec2>, tolerance: f64) -> Vec<Vec2> {
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let n = contour.len();
-        if n < 4 {
-            break;
+struct PerimPath {
+    verts: Vec<Vec2>,
+    closed: bool,
+}
+
+/// Decompose the perimeter sub-graph (`!edge.interior`) into maximal
+/// paths. A simple loop yields one closed polyline. A loop broken by
+/// a deleted perimeter vertex (the surrounding edges go away with it)
+/// yields one or more open polylines whose endpoints sit at the
+/// would-be deletion points; the caller butt-caps those so the
+/// driveway "doorway" is preserved.
+fn extract_perim_paths(graph: &DriveAisleGraph) -> Vec<PerimPath> {
+    let n = graph.vertices.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (ei, e) in graph.edges.iter().enumerate() {
+        if e.interior || e.start == e.end {
+            continue;
         }
-        for i in 0..n {
-            let prev = if i == 0 { n - 1 } else { i - 1 };
-            let next = (i + 1) % n;
-            let a = contour[prev];
-            let b = contour[i];
-            let c = contour[next];
-            let ab = b - a;
-            let bc = c - b;
-            let ab_len = ab.length();
-            let bc_len = bc.length();
-            if ab_len < f64::EPSILON || bc_len < f64::EPSILON {
-                contour.remove(i);
-                changed = true;
+        adj[e.start].push(ei);
+        adj[e.end].push(ei);
+    }
+
+    let mut visited = vec![false; graph.edges.len()];
+    let mut out = Vec::new();
+    for start_ei in 0..graph.edges.len() {
+        let e0 = &graph.edges[start_ei];
+        if e0.interior || e0.start == e0.end || visited[start_ei] {
+            continue;
+        }
+        visited[start_ei] = true;
+
+        // Forward: walk from e0.end onward.
+        let mut forward_verts: Vec<Vec2> = Vec::new();
+        let (mut cur_v, mut cur_e) = (e0.end, start_ei);
+        let mut closed = false;
+        loop {
+            let next_e = adj[cur_v]
+                .iter()
+                .copied()
+                .find(|&ei| ei != cur_e && !visited[ei]);
+            let Some(ne) = next_e else { break };
+            visited[ne] = true;
+            let edge = &graph.edges[ne];
+            let next_v = if edge.start == cur_v { edge.end } else { edge.start };
+            if next_v == e0.start {
+                // Loop closed back through e0's start. Stop without
+                // re-emitting the start vertex (the closed path
+                // wraps).
+                closed = true;
                 break;
             }
-            let ab_n = ab * (1.0 / ab_len);
-            let bc_n = bc * (1.0 / bc_len);
-            if ab_n.dot(bc_n) < -0.95 && (c - a).length() < tolerance {
-                let remove_second = next;
-                if remove_second > i {
-                    contour.remove(remove_second);
-                    contour.remove(i);
-                } else {
-                    contour.remove(i);
-                    contour.remove(remove_second);
-                }
-                changed = true;
-                break;
+            forward_verts.push(graph.vertices[next_v]);
+            cur_v = next_v;
+            cur_e = ne;
+        }
+
+        // Backward: walk from e0.start outward (only relevant when the
+        // loop wasn't closed forward — otherwise we'd retrace).
+        let mut backward_verts: Vec<Vec2> = Vec::new();
+        if !closed {
+            let (mut cur_v, mut cur_e) = (e0.start, start_ei);
+            loop {
+                let next_e = adj[cur_v]
+                    .iter()
+                    .copied()
+                    .find(|&ei| ei != cur_e && !visited[ei]);
+                let Some(ne) = next_e else { break };
+                visited[ne] = true;
+                let edge = &graph.edges[ne];
+                let next_v = if edge.start == cur_v { edge.end } else { edge.start };
+                backward_verts.push(graph.vertices[next_v]);
+                cur_v = next_v;
+                cur_e = ne;
             }
+        }
+
+        // Assemble: backward (reversed) ++ e0.start ++ e0.end ++ forward.
+        let mut verts = Vec::with_capacity(2 + forward_verts.len() + backward_verts.len());
+        for v in backward_verts.iter().rev() {
+            verts.push(*v);
+        }
+        verts.push(graph.vertices[e0.start]);
+        verts.push(graph.vertices[e0.end]);
+        verts.extend(forward_verts);
+
+        if verts.len() >= 2 {
+            out.push(PerimPath { verts, closed });
         }
     }
-    contour
+    out
+}
+
+fn push_stroke(
+    out: &mut Vec<Vec<Vec2>>,
+    paths: &[Vec<[f64; 2]>],
+    style: StrokeStyle<[f64; 2], f64>,
+    is_closed: bool,
+) {
+    let shapes = paths.stroke(style, is_closed);
+    for shape in shapes {
+        for contour in shape {
+            out.push(contour.into_iter().map(|p| Vec2::new(p[0], p[1])).collect());
+        }
+    }
 }

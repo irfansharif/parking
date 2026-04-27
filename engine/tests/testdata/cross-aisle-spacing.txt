@@ -15,7 +15,7 @@ set stalls_per_face=3
 
 generate
 ----
-total_stalls: 116
+total_stalls: 118
 
 snapshot
 ----

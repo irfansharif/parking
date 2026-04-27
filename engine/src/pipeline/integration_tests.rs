@@ -15,9 +15,7 @@ use crate::geom::poly::signed_area;
 use crate::geom::poly::{point_in_face, point_to_segment_dist};
 use crate::graph::auto_generate;
 use crate::pipeline::bays::extract_faces;
-use crate::pipeline::corridors::{
-    corridor_polygon, corridor_polygons, generate_miter_fills, merge_corridor_shapes,
-};
+use crate::pipeline::corridors::{corridor_polygon, corridor_polygons, merge_corridor_surface};
 use crate::pipeline::filter::clip_stalls_to_faces;
 use crate::pipeline::generate::generate_from_spines;
 use crate::pipeline::islands::{compute_islands, mark_island_stalls, stall_center, stall_key};
@@ -91,17 +89,6 @@ mod tests {
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
         let per_edge_corridors = corridor_polygons(&graph);
-
-        eprintln!("\nMiter fills:");
-        let miter_fills = generate_miter_fills(&graph, &DebugToggles::default());
-        for (i, fill) in miter_fills.iter().enumerate() {
-            let area = signed_area(fill).abs();
-            eprintln!("  fill {}: area={:.1}, {} verts", i, area, fill.len());
-            for (vi, v) in fill.iter().enumerate() {
-                eprintln!("    v{}: ({:.1}, {:.1})", vi, v.x, v.y);
-            }
-        }
-
         let corridor_polys: Vec<Vec<Vec2>> = per_edge_corridors.iter().map(|(p, _, _)| p.clone()).collect();
 
         eprintln!("\nCorridor rects:");
@@ -112,7 +99,7 @@ mod tests {
             }
         }
 
-        let merged_corridors = merge_corridor_shapes(&corridor_polys, &miter_fills, &DebugToggles::default());
+        let merged_corridors = merge_corridor_surface(&graph, params.aisle_width);
 
         eprintln!("\nMerged corridors: {}", merged_corridors.len());
         for (ci, shape) in merged_corridors.iter().enumerate() {
@@ -223,9 +210,7 @@ mod tests {
         let stall_angle_rad = params.stall_angle_deg.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
         let per_edge_corridors = corridor_polygons(&graph);
-        let corridor_polys: Vec<Vec<Vec2>> = per_edge_corridors.iter().map(|(p, _, _)| p.clone()).collect();
-        let miter_fills = generate_miter_fills(&graph, &debug);
-        let merged_corridors = merge_corridor_shapes(&corridor_polys, &miter_fills, &debug);
+        let merged_corridors = merge_corridor_surface(&graph, params.aisle_width);
         let faces = extract_faces(&boundary.outer, &merged_corridors, &[]);
 
         // Run through the full spine+stall pipeline.
@@ -314,8 +299,8 @@ mod tests {
             edges: vec![edge_a.clone(), edge_b.clone()],
             perim_vertex_count: 3,
         };
-        let miter_fills = generate_miter_fills(&graph, &DebugToggles::default());
-        let merged = merge_corridor_shapes(&[rect_a.clone(), rect_b.clone()], &miter_fills, &DebugToggles::default());
+        let _ = (&rect_a, &rect_b); // surface compile checks above; merge reads from graph
+        let merged = merge_corridor_surface(&graph, w);
 
         eprintln!("\nUnmerged: 2 rects × 4 verts = 8 verts");
         eprintln!("Merged: {} shape(s)", merged.len());
@@ -702,9 +687,7 @@ mod tests {
         // Recompute corridor shapes for debug classification.
         let graph = auto_generate(&input.boundary, &input.params, &[], &[]);
         let per_edge_corridors = corridor_polygons(&graph);
-        let corridor_polys: Vec<Vec<Vec2>> = per_edge_corridors.iter().map(|(p, _, _)| p.clone()).collect();
-        let miter_fills = generate_miter_fills(&graph, &DebugToggles::default());
-        let merged_corridors = merge_corridor_shapes(&corridor_polys, &miter_fills, &DebugToggles::default());
+        let merged_corridors = merge_corridor_surface(&graph, input.params.aisle_width);
 
         let effective_depth = input.params.stall_depth
             * input.params.stall_angle_deg.to_radians().sin();
@@ -796,9 +779,7 @@ mod tests {
         // Recompute corridor shapes for debug classification.
         let graph = auto_generate(&input.boundary, &input.params, &[], &[]);
         let per_edge_corridors = corridor_polygons(&graph);
-        let corridor_polys: Vec<Vec<Vec2>> = per_edge_corridors.iter().map(|(p, _, _)| p.clone()).collect();
-        let miter_fills = generate_miter_fills(&graph, &DebugToggles::default());
-        let merged_corridors = merge_corridor_shapes(&corridor_polys, &miter_fills, &DebugToggles::default());
+        let merged_corridors = merge_corridor_surface(&graph, input.params.aisle_width);
 
         let effective_depth = input.params.stall_depth
             * input.params.stall_angle_deg.to_radians().sin();
@@ -894,10 +875,11 @@ mod tests {
         eprintln!("resolved graph: {} vertices, {} edges",
             layout.resolved_graph.vertices.len(), layout.resolved_graph.edges.len());
 
-        // The drive line should produce interior segments that avoid the hole.
-        // There should be corridors and miter fills at the junction points.
+        // The drive line should produce interior segments that avoid the
+        // hole. The pipeline emits no separate `miter_fills` anymore —
+        // junction joins are now baked into the merged corridor surface
+        // by `i_overlay` stroke — so we assert on stalls and faces only.
         assert!(layout.stalls.len() > 0, "should produce stalls");
-        assert!(layout.miter_fills.len() > 0, "should produce miter fills");
         assert!(layout.faces.len() > 0, "should produce faces");
     }
 
