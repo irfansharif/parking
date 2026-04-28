@@ -361,6 +361,13 @@ struct PerimeterLookupEntry {
     /// holes). Used as the projection target when converting a
     /// sketch-edge anchor to an arc on this loop.
     poly: Vec<Vec2>,
+    /// Maximum perpendicular distance allowed when projecting an
+    /// evaluated sketch position onto `poly`. For the outer loop the
+    /// graph perim sits on the inset (~`inset_d` from the deed line),
+    /// so this is `inset_d` plus arc/discretization slack. For hole
+    /// loops the sketch *is* the aisle-edge ring (graph perim lives
+    /// on it directly), so just arc slack.
+    sketch_to_loop_tol: f64,
 }
 
 /// World-space tolerance for considering a graph vertex "on" a perimeter
@@ -379,23 +386,33 @@ fn build_perimeter_lookup(
     // Falls back to the raw sketch only when the inset would collapse.
     // Holes are used directly (the hole sketch IS the aisle-edge ring).
     let outer = aisle_edge_perim(boundary, params);
-    let outer_loop = if outer.is_empty() {
+    let outer_collapsed = outer.is_empty();
+    let outer_loop = if outer_collapsed {
         ensure_ccw(boundary.outer.clone())
     } else {
         ensure_ccw(outer)
     };
 
-    let mut loops: Vec<(PerimeterLoop, Vec<Vec2>)> = Vec::new();
+    // Tolerance for projecting an evaluated sketch position onto each
+    // loop. The arc slack accommodates chord deflection on
+    // discretized arc edges; the inset distance covers the
+    // perpendicular gap between the sketch deed line and the
+    // aisle-edge ring on the outer loop.
+    let inset_d = crate::graph::compute_inset_d(params) + params.site_offset;
+    let arc_slack = params.arc_discretize_tolerance + 1.0;
+    let outer_tol = if outer_collapsed { arc_slack } else { inset_d + arc_slack };
+
+    let mut loops: Vec<(PerimeterLoop, Vec<Vec2>, f64)> = Vec::new();
     if outer_loop.len() >= 3 {
-        loops.push((PerimeterLoop::Outer, outer_loop));
+        loops.push((PerimeterLoop::Outer, outer_loop, outer_tol));
     }
     for (i, h) in boundary.holes.iter().enumerate() {
         if h.len() >= 3 {
-            loops.push((PerimeterLoop::Hole { index: i }, h.clone()));
+            loops.push((PerimeterLoop::Hole { index: i }, h.clone(), arc_slack));
         }
     }
 
-    for (loop_id, poly) in &loops {
+    for (loop_id, poly, sketch_to_loop_tol) in &loops {
         let n = poly.len();
         let mut cum: Vec<f64> = Vec::with_capacity(n + 1);
         cum.push(0.0);
@@ -447,6 +464,7 @@ fn build_perimeter_lookup(
                 entries,
                 total_length: total,
                 poly: poly.clone(),
+                sketch_to_loop_tol: *sketch_to_loop_tol,
             },
         );
     }
@@ -497,9 +515,9 @@ fn perim_target_to_arc(
                 "perimeter edge {start:?}→{end:?} not addressable (vertex deleted or edge split)"
             )
         })?;
-    crate::resolve::project_onto_loop(world, &entry.poly, 1.0).ok_or_else(|| {
-        format!("perimeter projection failed for edge {start:?}→{end:?} at t={t:.4}")
-    })
+    crate::resolve::project_onto_loop(world, &entry.poly, entry.sketch_to_loop_tol).ok_or_else(
+        || format!("perimeter projection failed for edge {start:?}→{end:?} at t={t:.4}"),
+    )
 }
 
 /// Find the graph vertex nearest the addressed sketch edge anchor

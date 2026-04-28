@@ -21,6 +21,7 @@ import {
   worldToPerimeterPos,
   worldToAbstractVertex,
   worldToSpliceVertex,
+  effectiveDepth,
   ensurePolygonIds,
   nextVertexId,
 } from "./types";
@@ -922,14 +923,15 @@ export class App {
         `outerIds=[${lot.boundary.outer_ids?.join(",")}] ` +
         `arcs=[${arcsSummary}]`,
     );
-    // Tolerance must accommodate chord deflection on discretized
-    // arcs: a split vertex (e.g. grid × perimeter on an arc edge)
-    // sits on a chord, while `compute_boundary_pin` projects to the
-    // underlying circular arc — those differ by up to
-    // `arc_discretize_tolerance` (~5 ft default). Without slack,
-    // clicks on arc-perimeter splits silently fall through to
-    // grid/drive-line.
-    const perimTol = (this.state.params.arc_discretize_tolerance ?? 0.5) + 1.0;
+    // The user clicked on a graph vertex; for perim vertices that
+    // lives on the aisle-edge inset (`inset_d = effective_depth +
+    // aisle_width` ≈ 28 ft inside the sketch deed line), so the
+    // projection onto the sketch needs that distance plus slack for
+    // chord deflection on discretized arcs (~`arc_discretize_tolerance`).
+    // Without it, perim-vertex deletes silently fall through to
+    // grid/drive-line and error out.
+    const insetD = effectiveDepth(this.state.params) + this.state.params.aisle_width;
+    const perimTol = insetD + (this.state.params.arc_discretize_tolerance ?? 0.5) + 1.0;
     const perim = worldToPerimeterPos(v, lot.boundary, perimTol);
     console.log("[delete-vertex] worldToPerimeterPos result:", perim);
     if (perim) {
