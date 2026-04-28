@@ -135,9 +135,21 @@ pub(crate) fn compute_islands(
 
         let face_stalls = &stalls_by_face[face_idx];
         if face_stalls.is_empty() {
+            // No stalls placed → the whole face is residual. Carry the
+            // face's holes into the island so net = outer − holes
+            // matches the actual face area (annular faces from the
+            // outer-strip-between-sketch-and-perim-band would otherwise
+            // count as their full bounding rect).
             let contour = ensure_ccw(shape[0].clone());
-            if signed_area(&contour).abs() >= min_area {
-                islands.push(Island { contour, holes: vec![], face_idx });
+            let holes: Vec<Vec<Vec2>> = shape
+                .iter()
+                .skip(1)
+                .map(|h| ensure_cw(h.clone()))
+                .collect();
+            let net = signed_area(&contour).abs()
+                - holes.iter().map(|h| signed_area(h).abs()).sum::<f64>();
+            if net >= min_area {
+                islands.push(Island { contour, holes, face_idx });
             }
             continue;
         }

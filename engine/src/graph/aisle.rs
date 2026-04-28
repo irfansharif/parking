@@ -1,11 +1,13 @@
 use crate::geom::boolean::{self, FillRule};
-use crate::geom::inset::{inset_polygon, inset_polygon_with_ids, raw_inset_polygon};
+use crate::geom::inset::{inset_polygon_with_ids, raw_inset_polygon};
 use crate::geom::poly::{ensure_ccw_with_ids, signed_area};
 use crate::types::*;
 
-/// Compute the inset distance for a given set of parking parameters.
-/// This is the offset from the aisle-edge ring to the raw building boundary,
-/// or equivalently, the offset from the outer boundary to the perimeter loop.
+/// Distance from `boundary.outer` (the sketch / lot deed line) to the
+/// aisle-edge ring, in world units. Equals one parking-row depth plus
+/// one driving-aisle width — the thickness of the perimeter parking
+/// band. `site_offset` is added on top by `aisle_edge_perim` for any
+/// additional user-specified setback.
 pub fn compute_inset_d(params: &ParkingParams) -> f64 {
     let stall_angle_rad = params.stall_angle_deg.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin()
@@ -13,23 +15,31 @@ pub fn compute_inset_d(params: &ParkingParams) -> f64 {
     effective_depth + params.aisle_width
 }
 
-/// Expand the aisle-edge perimeter outward by `inset_d` (+ `site_offset`)
-/// to recover the raw lot boundary for clipping and face extraction.
-pub fn derive_raw_outer(outer: &[Vec2], inset_d: f64, site_offset: f64) -> Vec<Vec2> {
-    // Expand outward by inset_d (negative inset = expand).
-    let expanded = inset_polygon(outer, -inset_d);
-    if expanded.is_empty() {
-        return outer.to_vec();
-    }
-    // Then expand further by site_offset if any.
-    if site_offset > 0.0 {
-        let with_offset = inset_polygon(&expanded, -site_offset);
-        if with_offset.is_empty() {
-            return expanded;
-        }
-        return with_offset;
-    }
-    expanded
+/// Inset the lot's sketch outer boundary inward to recover the
+/// aisle-edge perimeter loop — the centerline ring the perim aisle
+/// rectangles sit on. Total inset = `inset_d` (mandatory parking band
+/// thickness) plus `site_offset` (extra setback margin).
+///
+/// Returns the inset polygon plus a parallel `VertexId` array;
+/// surviving vertices keep their sketch ids so region IDs derived
+/// from `EdgeKind::Outer(VertexId)` stay stable across edits to
+/// unrelated parts of the boundary. Returns empty vecs if the lot is
+/// too narrow for the parking band to fit.
+pub fn aisle_edge_perim(
+    boundary: &Polygon,
+    params: &ParkingParams,
+) -> (Vec<Vec2>, Vec<VertexId>) {
+    let total_inset = compute_inset_d(params) + params.site_offset;
+    inset_polygon_with_ids(&boundary.outer, &boundary.outer_ids, total_inset)
+}
+
+/// The lot's outer boundary in world coordinates. In the current
+/// convention `boundary.outer` is the lot deed line, so this is a
+/// pass-through; kept as a function for the `ParkingLayout.derived_outer`
+/// shape and to leave the door open for a future "expand by setback"
+/// derivation.
+pub fn derive_raw_outer(outer: &[Vec2], _inset_d: f64, _site_offset: f64) -> Vec<Vec2> {
+    outer.to_vec()
 }
 
 /// Shrink each aisle-edge ring inward by `inset_d` to recover the raw
@@ -438,28 +448,17 @@ pub fn auto_generate(
     let effective_depth = inset_d - hw;
     let row_spacing = 2.0 * effective_depth + 2.0 * params.aisle_width;
 
-    // boundary.outer is the aisle-edge perimeter. Apply site_offset if any.
-    // Track parallel `VertexId`s alongside so region IDs (derived from
-    // start-vertex ids of boundary segments) stay stable under edits
+    // boundary.outer is the lot deed line; the aisle-edge perimeter
+    // (the centerline ring the perim aisle rectangles sit on) is inset
+    // inside it by inset_d + site_offset. `aisle_edge_perim` preserves
+    // sketch `VertexId`s on each surviving inset vertex so region IDs
+    // derived from `EdgeKind::Outer(VertexId)` stay stable under edits
     // elsewhere on the loop.
-    let (outer_loop, outer_loop_ids) = if params.site_offset > 0.0 {
-        let (p, p_ids) = inset_polygon_with_ids(
-            &boundary.outer,
-            &boundary.outer_ids,
-            params.site_offset,
-        );
-        if p.is_empty() {
-            return empty_graph();
-        }
-        ensure_ccw_with_ids(p, p_ids)
-    } else {
-        let raw_ids = if boundary.outer_ids.len() == boundary.outer.len() {
-            boundary.outer_ids.clone()
-        } else {
-            Vec::new()
-        };
-        ensure_ccw_with_ids(boundary.outer.clone(), raw_ids)
-    };
+    let (p, p_ids) = aisle_edge_perim(boundary, params);
+    if p.is_empty() {
+        return empty_graph();
+    }
+    let (outer_loop, outer_loop_ids) = ensure_ccw_with_ids(p, p_ids);
 
     let mut vertices: Vec<Vec2> = Vec::new();
     let mut edges: Vec<AisleEdge> = Vec::new();

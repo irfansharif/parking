@@ -18,7 +18,7 @@ drive-line: 0,100 -> 150,100 partitions
 
 generate
 ----
-total_stalls: 120
+total_stalls: 86
 
 snapshot
 ----

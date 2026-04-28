@@ -1,8 +1,7 @@
 use crate::annotations::{apply_annotations, resolve_regions_for_frames, ResolvedRegion};
 use crate::geom::clip::remove_conflicting_stalls;
-use crate::geom::inset::{inset_polygon, inset_polygon_with_ids};
 use crate::geom::poly::{ensure_ccw, ensure_ccw_with_ids, signed_area};
-use crate::graph::{auto_generate, compute_inset_d, decompose_regions, derive_raw_holes, derive_raw_outer, intersect_line_polygon, subtract_intervals, Region};
+use crate::graph::{aisle_edge_perim, auto_generate, compute_inset_d, decompose_regions, derive_raw_holes, derive_raw_outer, intersect_line_polygon, subtract_intervals, Region};
 use crate::pipeline::bays::extract_faces;
 use crate::pipeline::corridors::{corridor_polygons, merge_corridor_surface};
 use crate::pipeline::filter::{clip_stalls_to_faces, filter_stalls_by_entrance_coverage};
@@ -113,24 +112,10 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     // Always compute region debug info. When no separators exist, the
     // entire lot is a single region with the global aisle angle/offset.
     let region_debug = {
-        let (outer_loop, outer_loop_ids) = if input.params.site_offset > 0.0 {
-            let (p, p_ids) = inset_polygon_with_ids(
-                &input.boundary.outer,
-                &input.boundary.outer_ids,
-                input.params.site_offset,
-            );
-            if p.is_empty() {
-                let raw_ids =
-                    if input.boundary.outer_ids.len() == input.boundary.outer.len() {
-                        input.boundary.outer_ids.clone()
-                    } else {
-                        Vec::new()
-                    };
-                ensure_ccw_with_ids(input.boundary.outer.clone(), raw_ids)
-            } else {
-                ensure_ccw_with_ids(p, p_ids)
-            }
-        } else {
+        let (p, p_ids) = aisle_edge_perim(&input.boundary, &input.params);
+        let (outer_loop, outer_loop_ids) = if p.is_empty() {
+            // Lot too narrow for the parking band — fall back to the
+            // sketch loop so the region debug payload still has shape.
             let raw_ids =
                 if input.boundary.outer_ids.len() == input.boundary.outer.len() {
                     input.boundary.outer_ids.clone()
@@ -138,6 +123,8 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
                     Vec::new()
                 };
             ensure_ccw_with_ids(input.boundary.outer.clone(), raw_ids)
+        } else {
+            ensure_ccw_with_ids(p, p_ids)
         };
 
         let mut hole_loops: Vec<Vec<Vec2>> = Vec::new();
@@ -245,14 +232,15 @@ fn clip_drive_lines(
 
     let hw = params.aisle_width;
 
-    // boundary.outer is the aisle-edge perimeter — use directly (with site_offset).
-    let outer_loop = if params.site_offset > 0.0 {
-        let p = inset_polygon(&boundary.outer, params.site_offset);
-        if p.is_empty() { return (DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 }, vec![]); }
-        ensure_ccw(p)
-    } else {
-        ensure_ccw(boundary.outer.clone())
-    };
+    // Drive lines clip to the aisle-edge perimeter (the same ring
+    // `auto_generate` placed graph perim vertices on), so a drive line
+    // dropped at the lot edge naturally extends in to meet the perim
+    // aisle and not the deed line.
+    let (p, _) = aisle_edge_perim(boundary, params);
+    if p.is_empty() {
+        return (DriveAisleGraph { vertices: vec![], edges: vec![], perim_vertex_count: 0 }, vec![]);
+    }
+    let outer_loop = ensure_ccw(p);
 
     // boundary.holes are aisle-edge rings — use directly.
     let hole_loops: Vec<&[Vec2]> = boundary.holes.iter()

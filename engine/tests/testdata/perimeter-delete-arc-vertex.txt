@@ -36,7 +36,7 @@ annotation delete-vertex on=perimeter loop=outer edge=2→3 t=0.50
 
 generate
 ----
-total_stalls: 104
+total_stalls: 56
 
 # The annotation must NOT be dormant — that's the whole point.
 dormant

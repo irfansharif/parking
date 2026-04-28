@@ -19,9 +19,8 @@
 //!   apply_annotations           — resolve and mutate in one pass
 
 use crate::geom::clip::point_in_polygon;
-use crate::geom::inset::{inset_polygon, inset_polygon_with_ids};
 use crate::geom::poly::ensure_ccw_with_ids;
-use crate::graph::{decompose_regions, Region};
+use crate::graph::{aisle_edge_perim, decompose_regions, Region};
 use crate::types::*;
 
 /// One region's abstract frame plus its clip polygon — what
@@ -39,29 +38,19 @@ pub(crate) fn resolve_regions_for_frames(
     input: &GenerateInput,
     partitioning_lines: &[(u32, Vec2, Vec2)],
 ) -> Vec<ResolvedRegion> {
-    let (outer_loop, outer_loop_ids) = if input.params.site_offset > 0.0 {
-        let (p, p_ids) = inset_polygon_with_ids(
-            &input.boundary.outer,
-            &input.boundary.outer_ids,
-            input.params.site_offset,
-        );
-        if p.is_empty() {
-            let raw_ids = if input.boundary.outer_ids.len() == input.boundary.outer.len() {
-                input.boundary.outer_ids.clone()
-            } else {
-                Vec::new()
-            };
-            ensure_ccw_with_ids(input.boundary.outer.clone(), raw_ids)
-        } else {
-            ensure_ccw_with_ids(p, p_ids)
-        }
-    } else {
+    let (p, p_ids) = aisle_edge_perim(&input.boundary, &input.params);
+    let (outer_loop, outer_loop_ids) = if p.is_empty() {
+        // Lot too narrow for the parking band — fall back to the
+        // sketch loop so region resolution can still attempt a
+        // single-region match.
         let raw_ids = if input.boundary.outer_ids.len() == input.boundary.outer.len() {
             input.boundary.outer_ids.clone()
         } else {
             Vec::new()
         };
         ensure_ccw_with_ids(input.boundary.outer.clone(), raw_ids)
+    } else {
+        ensure_ccw_with_ids(p, p_ids)
     };
     let mut hole_loops: Vec<Vec<Vec2>> = Vec::new();
     let mut hole_loop_ids: Vec<Vec<VertexId>> = Vec::new();
@@ -394,26 +383,22 @@ fn build_perimeter_lookup(
     let mut out: std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry> =
         std::collections::HashMap::new();
 
-    // Effective outer loop: inset by site_offset to match auto_generate's
-    // perimeter. Holes are used directly (they're already the aisle-edge
-    // rings stored on the Polygon). For each loop we also carry parallel
-    // `VertexId`s — `inset_polygon` preserves vertex count and order, so
-    // ids stay aligned; `ensure_ccw` may reverse, in which case we
-    // reverse the ids alongside.
+    // Effective outer loop: aisle-edge perim (sketch inset by
+    // inset_d + site_offset) — same ring `auto_generate` placed
+    // graph perim vertices on. Holes are used directly. The ids
+    // returned by `aisle_edge_perim` are the surviving sketch
+    // `VertexId`s parallel to the inset polygon's vertices; an
+    // `ensure_ccw` reverse takes them along.
+    let (p, p_ids) = aisle_edge_perim(boundary, params);
     let outer_ids_aligned: Vec<VertexId> = if boundary.outer_ids.len() == boundary.outer.len() {
         boundary.outer_ids.clone()
     } else {
         Vec::new()
     };
-    let (outer_loop, outer_loop_ids) = if params.site_offset > 0.0 {
-        let p = inset_polygon(&boundary.outer, params.site_offset);
-        if p.is_empty() {
-            (boundary.outer.clone(), outer_ids_aligned.clone())
-        } else {
-            ensure_ccw_with_ids(p, outer_ids_aligned.clone())
-        }
+    let (outer_loop, outer_loop_ids) = if p.is_empty() {
+        (boundary.outer.clone(), outer_ids_aligned)
     } else {
-        ensure_ccw_with_ids(boundary.outer.clone(), outer_ids_aligned.clone())
+        ensure_ccw_with_ids(p, p_ids)
     };
 
     // Collect (PerimeterLoop, polygon, ids) triples.

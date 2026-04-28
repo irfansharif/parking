@@ -14,7 +14,7 @@ polygon outer: 4 vertices
 
 generate
 ----
-total_stalls: 246
+total_stalls: 168
 
 snapshot
 ----

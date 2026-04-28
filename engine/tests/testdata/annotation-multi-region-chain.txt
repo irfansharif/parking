@@ -27,14 +27,14 @@ drive-line: 200,0 -> 200,300 partitions
 
 generate
 ----
-total_stalls: 129
+total_stalls: 106
 
 # Chain-mode delete inside the left region. The click at (100, 120)
 # lands on a vertical column aisle; chain expansion walks the whole
 # column.
 edge-select near=100,120 mode=chain
 ----
-edge-select seed=60 mode=chain chain_len=6
+edge-select seed=52 mode=chain chain_len=6
 
 edge-delete
 ----
@@ -49,12 +49,12 @@ delete-edge on=grid region=0x00009109e264ab44 axis=x coord=-2 range=lattice:0,la
 # removed, which frees space the generator now fills with stalls.
 generate
 ----
-total_stalls: 147
+total_stalls: 118
 
 # Chain-mode direction on a horizontal row in the right region.
 edge-select near=300,120 mode=chain
 ----
-edge-select seed=68 mode=chain chain_len=8
+edge-select seed=58 mode=chain chain_len=7
 
 edge-cycle
 ----
@@ -63,13 +63,13 @@ edge-cycle
 annotations
 ----
 delete-edge on=grid region=0x00009109e264ab44 axis=x coord=-2 range=lattice:0,lattice:6
-direction on=grid region=0x0000158801212a42 axis=y coord=2 range=lattice:-8,lattice:1 traffic=two-way-reverse
+direction on=grid region=0x0000158801212a42 axis=y coord=2 range=lattice:-7,lattice:0 traffic=two-way-reverse
 
 # Annotation must resolve (non-dormant) — apply_abstract_direction
 # should touch every sub-edge in the chain, not just the adjacent pair.
 generate
 ----
-total_stalls: 147
+total_stalls: 118
 
 dormant
 ----
