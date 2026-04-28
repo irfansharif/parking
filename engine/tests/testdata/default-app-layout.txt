@@ -47,47 +47,58 @@ drive-line id=3 partitions
 ----
 drive-line: 446.56,335.61 -> 454.87,-53.66 id=3 partitions
 
-annotation direction on=grid region=0x00004d49a4f0412e axis=x coord=-5 range=lattice:-3,lattice:-1 traffic=one-way
+annotation direction
+on=grid region=0x00004d49a4f0412e axis=x coord=-5 range=lattice:-3,lattice:-1 traffic=one-way
 ----
 annotation direction on=grid region=0x00004d49a4f0412e axis=x coord=-5 range=lattice:-3,lattice:-1 traffic=one-way
 
-annotation delete-edge on=grid region=0x00004d49a4f0412e axis=y coord=-2 range=lattice:-9,lattice:-4
+annotation delete-edge
+on=grid region=0x00004d49a4f0412e axis=y coord=-2 range=lattice:-9,lattice:-4
 ----
 annotation delete-edge on=grid region=0x00004d49a4f0412e axis=y coord=-2 range=lattice:-9,lattice:-4
 
-annotation delete-edge on=drive-line id=1 t=0.80
+annotation delete-edge
+on=drive-line id=1 t=0.80
 ----
 annotation delete-edge on=drive-line id=1 t=0.80
 
-annotation delete-edge on=grid region=0x00002663fca3dc50 axis=x coord=-5 range=lattice:0,lattice:2
+annotation delete-edge
+on=grid region=0x00002663fca3dc50 axis=x coord=-5 range=lattice:0,lattice:2
 ----
 annotation delete-edge on=grid region=0x00002663fca3dc50 axis=x coord=-5 range=lattice:0,lattice:2
 
-annotation delete-vertex on=perimeter loop=outer edge=2→3 t=0.63
+annotation delete-vertex
+on=perimeter loop=outer edge=2→3 t=0.63
 ----
 annotation delete-vertex on=perimeter loop=outer edge=2→3 t=0.63
 
-annotation delete-edge on=grid region=0x00002663fca3dc50 axis=x coord=-16 range=lattice:0,lattice:2
+annotation delete-edge
+on=grid region=0x00002663fca3dc50 axis=x coord=-16 range=lattice:0,lattice:2
 ----
 annotation delete-edge on=grid region=0x00002663fca3dc50 axis=x coord=-16 range=lattice:0,lattice:2
 
-annotation delete-edge on=grid region=0x00002663fca3dc50 axis=y coord=1 range=lattice:-16,lattice:-15
+annotation delete-edge
+on=grid region=0x00002663fca3dc50 axis=y coord=1 range=lattice:-16,lattice:-15
 ----
 annotation delete-edge on=grid region=0x00002663fca3dc50 axis=y coord=1 range=lattice:-16,lattice:-15
 
-annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-4 range=lattice:0,lattice:2 traffic=one-way-reverse
+annotation direction
+on=grid region=0x00002663fca3dc50 axis=x coord=-4 range=lattice:0,lattice:2 traffic=one-way-reverse
 ----
 annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-4 range=lattice:0,lattice:2 traffic=one-way-reverse
 
-annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-3 range=lattice:0,lattice:2 traffic=two-way-reverse
+annotation direction
+on=grid region=0x00002663fca3dc50 axis=x coord=-3 range=lattice:0,lattice:2 traffic=two-way-reverse
 ----
 annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-3 range=lattice:0,lattice:2 traffic=two-way-reverse
 
-annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-1 range=lattice:0,lattice:2 traffic=one-way-reverse
+annotation direction
+on=grid region=0x00002663fca3dc50 axis=x coord=-1 range=lattice:0,lattice:2 traffic=one-way-reverse
 ----
 annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-1 range=lattice:0,lattice:2 traffic=one-way-reverse
 
-annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-12 range=lattice:0,lattice:2 traffic=two-way-reverse
+annotation direction
+on=grid region=0x00002663fca3dc50 axis=x coord=-12 range=lattice:0,lattice:2 traffic=two-way-reverse
 ----
 annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-12 range=lattice:0,lattice:2 traffic=two-way-reverse
 

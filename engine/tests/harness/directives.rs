@@ -13,7 +13,57 @@ use parking_lot_engine::types::{
     EdgeArc, GenerateInput, GridStop, HolePin, ParkingLayout, ParkingParams, PerimeterLoop,
     Polygon, RegionId, RegionOverride, Target, Vec2, VertexId,
 };
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// Args parsed off the directive line by `datadriven`. Keys are arg
+/// names; an empty `Vec` means the arg appeared as a bare flag
+/// (e.g. `polygon outer`), a single-element `Vec` is a `k=v` pair,
+/// multiple elements is `k=(v1,v2)`.
+pub type DirectiveArgs = HashMap<String, Vec<String>>;
+
+/// Return the (sorted-first) bare flag — an arg with no value. Used for
+/// directives that carry a single positional kind on the directive line
+/// (`polygon outer`, `graph summary`, `snapshot foo`).
+fn pop_positional(args: &DirectiveArgs) -> Option<&str> {
+    let mut keys: Vec<&String> = args
+        .iter()
+        .filter(|(_, v)| v.is_empty())
+        .map(|(k, _)| k)
+        .collect();
+    keys.sort();
+    keys.first().map(|s| s.as_str())
+}
+
+/// Return the single value bound to `key`, or `None` if missing or
+/// multi-valued.
+fn single<'a>(args: &'a DirectiveArgs, key: &str) -> Option<&'a str> {
+    let v = args.get(key)?;
+    if v.len() == 1 {
+        Some(v[0].as_str())
+    } else {
+        None
+    }
+}
+
+/// Merge KV args from the directive line and the body into one map.
+/// `annotation` and `edge-select` accept their args in either place —
+/// datadriven-friendly fixtures put them on the directive line, while
+/// fixtures whose values carry `,`/`:`/`→` push them to a body line.
+fn collect_kv<'a>(args: &'a DirectiveArgs, body: &'a str) -> HashMap<&'a str, &'a str> {
+    let mut kv: HashMap<&str, &str> = HashMap::new();
+    for (k, v) in args {
+        if v.len() == 1 {
+            kv.insert(k.as_str(), v[0].as_str());
+        }
+    }
+    for tok in body.split_whitespace() {
+        if let Some(eq) = tok.find('=') {
+            kv.insert(&tok[..eq], &tok[eq + 1..]);
+        }
+    }
+    kv
+}
 
 use crate::harness::svg;
 
@@ -85,32 +135,37 @@ pub struct Outcome {
     pub snapshot_error: Option<String>,
 }
 
-pub fn execute(ctx: &mut FixtureCtx, command: &str, body: &str) -> Result<Outcome, String> {
-    let mut parts = command.splitn(2, char::is_whitespace);
-    let verb = parts.next().unwrap_or("");
-    let rest = parts.next().unwrap_or("").trim();
-
-    match verb {
-        "polygon" => polygon(ctx, rest, body),
+pub fn execute(
+    ctx: &mut FixtureCtx,
+    directive: &str,
+    args: &DirectiveArgs,
+    body: &str,
+) -> Result<Outcome, String> {
+    match directive {
+        "polygon" => polygon(ctx, args, body),
         "polygon-info" => polygon_info(ctx),
-        "set" => set_param(ctx, rest),
-        "debug" => set_debug(ctx, rest),
+        "set" => set_param(ctx, args),
+        "debug" => set_debug(ctx, args),
         "generate" => generate_cmd(ctx),
-        "graph" => graph_cmd(ctx, rest),
-        "faces" => faces_cmd(ctx, rest),
+        "graph" => graph_cmd(ctx, args),
+        "faces" => faces_cmd(ctx, args),
         "annotation-json" => annotation_json(ctx, body),
-        "annotation" => annotation_cmd(ctx, rest),
+        // `annotation` and `edge-select` carry args (`,`, `:`, `→`)
+        // that datadriven's directive parser rejects, so fixtures
+        // place those args on a body line; the dispatchers parse the
+        // body directly.
+        "annotation" => annotation_cmd(ctx, args, body),
         "annotations" => annotations_cmd(ctx),
-        "region-override" => region_override_cmd(ctx, rest),
+        "region-override" => region_override_cmd(ctx, args),
         "stall-modifier-json" => stall_modifier_json(ctx, body),
-        "drive-line" => drive_line_cmd(ctx, rest, body),
-        "edge-select" => edge_select_cmd(ctx, rest),
+        "drive-line" => drive_line_cmd(ctx, args, body),
+        "edge-select" => edge_select_cmd(ctx, args, body),
         "edge-delete" => edge_delete_cmd(ctx),
         "edge-cycle" => edge_cycle_cmd(ctx),
         "dormant" => dormant_cmd(ctx),
         "show-annotations" => show_annotations_cmd(ctx),
-        "snapshot" => snapshot(ctx, rest),
-        _ => Err(format!("unknown directive: {}", verb)),
+        "snapshot" => snapshot(ctx, args),
+        _ => Err(format!("unknown directive: {}", directive)),
     }
 }
 
@@ -168,7 +223,9 @@ fn num(v: f64) -> String {
     }
 }
 
-fn polygon(ctx: &mut FixtureCtx, kind: &str, body: &str) -> Result<Outcome, String> {
+fn polygon(ctx: &mut FixtureCtx, args: &DirectiveArgs, body: &str) -> Result<Outcome, String> {
+    let kind = pop_positional(args)
+        .ok_or_else(|| "polygon needs <outer|hole>".to_string())?;
     let (verts, arcs) = parse_vertex_block(body)?;
     match kind {
         "outer" => {
@@ -248,10 +305,8 @@ fn parse_arc(rest: &str) -> Result<EdgeArc, String> {
     Ok(EdgeArc { bulge })
 }
 
-fn set_param(ctx: &mut FixtureCtx, rest: &str) -> Result<Outcome, String> {
-    let (raw_key, raw_val) = rest
-        .split_once('=')
-        .ok_or_else(|| "set requires key=value".to_string())?;
+fn set_param(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Outcome, String> {
+    let (raw_key, raw_val) = sole_kv(args, "set")?;
     let key = normalize_param_key(raw_key);
     apply_param(&mut ctx.input.params, &key, raw_val)?;
     Ok(Outcome {
@@ -260,12 +315,10 @@ fn set_param(ctx: &mut FixtureCtx, rest: &str) -> Result<Outcome, String> {
     })
 }
 
-fn set_debug(ctx: &mut FixtureCtx, rest: &str) -> Result<Outcome, String> {
-    let (raw_key, raw_val) = rest
-        .split_once('=')
-        .ok_or_else(|| "debug requires key=value".to_string())?;
-    let key = raw_key.trim().replace('-', "_");
-    let val = parse_bool(raw_val.trim())?;
+fn set_debug(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Outcome, String> {
+    let (raw_key, raw_val) = sole_kv(args, "debug")?;
+    let key = raw_key.replace('-', "_");
+    let val = parse_bool(raw_val)?;
     apply_debug(&mut ctx.input.debug, &key, val)?;
     Ok(Outcome {
         output: format!("debug {}={}", key, val),
@@ -273,11 +326,21 @@ fn set_debug(ctx: &mut FixtureCtx, rest: &str) -> Result<Outcome, String> {
     })
 }
 
+/// Extract the (only) `key=value` pair from `args`. Used by directives
+/// that take exactly one such pair (`set`, `debug`).
+fn sole_kv<'a>(args: &'a DirectiveArgs, verb: &str) -> Result<(&'a str, &'a str), String> {
+    if args.len() != 1 {
+        return Err(format!("{} requires exactly one key=value", verb));
+    }
+    let (k, v) = args.iter().next().unwrap();
+    if v.len() != 1 {
+        return Err(format!("{} requires key=value", verb));
+    }
+    Ok((k.as_str(), v[0].as_str()))
+}
+
 fn apply_debug(d: &mut DebugToggles, key: &str, v: bool) -> Result<(), String> {
     match key {
-        "miter_fills" => d.miter_fills = v,
-        "boundary_only_miters" => d.boundary_only_miters = v,
-        "spike_removal" => d.spike_removal = v,
         "spine_merging" => d.spine_merging = v,
         "spine_extensions" => d.spine_extensions = v,
         "stall_face_clipping" => d.stall_face_clipping = v,
@@ -336,13 +399,13 @@ fn parse_bool(s: &str) -> Result<bool, String> {
     }
 }
 
-fn faces_cmd(ctx: &mut FixtureCtx, mode: &str) -> Result<Outcome, String> {
+fn faces_cmd(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Outcome, String> {
     let layout = ctx
         .last_layout
         .as_ref()
         .ok_or_else(|| "faces requires a prior `generate`".to_string())?;
     let faces = &layout.faces;
-    let mode = if mode.is_empty() { "summary" } else { mode };
+    let mode = pop_positional(args).unwrap_or("summary");
     let mut out = String::new();
     match mode {
         "summary" => {
@@ -469,14 +532,14 @@ fn dormant_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
     })
 }
 
-fn graph_cmd(ctx: &mut FixtureCtx, mode: &str) -> Result<Outcome, String> {
+fn graph_cmd(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Outcome, String> {
     let layout = ctx
         .last_layout
         .as_ref()
         .ok_or_else(|| "graph requires a prior `generate`".to_string())?;
     let g = &layout.resolved_graph;
     let mut out = String::new();
-    let mode = if mode.is_empty() { "summary" } else { mode };
+    let mode = pop_positional(args).unwrap_or("summary");
     match mode {
         "summary" => {
             out.push_str(&format!(
@@ -556,17 +619,15 @@ fn show_annotations_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
     })
 }
 
-fn snapshot(ctx: &mut FixtureCtx, rest: &str) -> Result<Outcome, String> {
+fn snapshot(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Outcome, String> {
     let layout = ctx
         .last_layout
         .as_ref()
         .ok_or_else(|| "snapshot requires a prior `generate`".to_string())?;
 
-    let name = if rest.is_empty() {
-        ctx.default_snapshot_name.clone()
-    } else {
-        rest.trim().to_string()
-    };
+    let name = pop_positional(args)
+        .map(String::from)
+        .unwrap_or_else(|| ctx.default_snapshot_name.clone());
     let file_name = if name.ends_with(".svg") {
         name.clone()
     } else {
@@ -640,9 +701,15 @@ fn snapshot_diff(label: &str, expected: &str, actual: &str) -> String {
 // drive-line / vertex / edge / annotation — mirror the UI's one-line DSL.
 // ---------------------------------------------------------------------------
 
-/// Accept optional `id=N`, `partitions`, and `hole-pin=h,v` tokens in
+/// Accept optional `id=N`, `partitions`, and `hole-pin=(h,v)` args in
 /// any order. Body is exactly two `x,y` lines (start and end).
-fn drive_line_cmd(ctx: &mut FixtureCtx, args: &str, body: &str) -> Result<Outcome, String> {
+/// Note `hole-pin` takes a paren-wrapped 2-tuple — datadriven's
+/// directive parser doesn't allow bare commas in arg values.
+fn drive_line_cmd(
+    ctx: &mut FixtureCtx,
+    args: &DirectiveArgs,
+    body: &str,
+) -> Result<Outcome, String> {
     let (points, _) = parse_vertex_block(body)?;
     if points.len() != 2 {
         return Err(format!(
@@ -656,21 +723,19 @@ fn drive_line_cmd(ctx: &mut FixtureCtx, args: &str, body: &str) -> Result<Outcom
     let mut explicit_id: Option<u32> = None;
     let mut partitions_flag = false;
     let mut hole_pin: Option<(usize, usize)> = None;
-    for tok in args.split_whitespace() {
-        if let Some(v) = tok.strip_prefix("id=") {
-            explicit_id = Some(v.parse::<u32>().map_err(|e| format!("id: {}", e))?);
-        } else if tok == "partitions" {
-            partitions_flag = true;
-        } else if let Some(v) = tok.strip_prefix("hole-pin=") {
-            let (h, i) = v
-                .split_once(',')
-                .ok_or_else(|| "hole-pin requires h,i".to_string())?;
-            hole_pin = Some((
-                h.parse::<usize>().map_err(|e| format!("hole-pin h: {}", e))?,
-                i.parse::<usize>().map_err(|e| format!("hole-pin i: {}", e))?,
-            ));
-        } else if !tok.is_empty() {
-            return Err(format!("drive-line: unknown token {:?}", tok));
+    for (k, vals) in args {
+        match (k.as_str(), vals.as_slice()) {
+            ("id", [v]) => {
+                explicit_id = Some(v.parse::<u32>().map_err(|e| format!("id: {}", e))?);
+            }
+            ("partitions", []) => partitions_flag = true,
+            ("hole-pin", [h, i]) => {
+                hole_pin = Some((
+                    h.parse::<usize>().map_err(|e| format!("hole-pin h: {}", e))?,
+                    i.parse::<usize>().map_err(|e| format!("hole-pin i: {}", e))?,
+                ));
+            }
+            _ => return Err(format!("drive-line: unknown arg {:?}", k)),
         }
     }
 
@@ -734,23 +799,27 @@ fn fmt_xy(v: f64) -> String {
     }
 }
 
-/// Parse the UI's one-line annotation DSL:
-///   annotation <kind> on=<substrate> [axis=...] [coord=...]
-///              [range=whole | at=<stop> | range=<s1>,<s2>] [traffic=...]
-/// where <kind> ∈ {delete-vertex, delete-edge, direction}.
-/// Echoes the parsed annotation back through the canonical
-/// `debug::format_annotation_line` so fixtures round-trip verbatim.
-fn annotation_cmd(ctx: &mut FixtureCtx, args: &str) -> Result<Outcome, String> {
-    let mut parts = args.split_whitespace();
-    let kind = parts
-        .next()
+/// Parse the UI's one-line annotation DSL. Fixtures put `<kind>` on the
+/// directive line as a positional flag and the rest of the args on a
+/// single body line — those args carry `:` / `,` / `→` characters that
+/// datadriven's directive parser rejects.
+///
+///   annotation <kind>
+///   on=<substrate> [axis=...] [coord=...]
+///   [range=whole | at=<stop> | range=<s1>,<s2>] [traffic=...]
+///   ----
+///
+/// where <kind> ∈ {delete-vertex, delete-edge, direction}. Echoes the
+/// parsed annotation back through `debug::format_annotation_line` so
+/// fixtures round-trip verbatim.
+fn annotation_cmd(
+    ctx: &mut FixtureCtx,
+    args: &DirectiveArgs,
+    body: &str,
+) -> Result<Outcome, String> {
+    let kind = pop_positional(args)
         .ok_or_else(|| "annotation requires a kind".to_string())?;
-    let mut kv: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
-    for p in parts {
-        if let Some(eq) = p.find('=') {
-            kv.insert(&p[..eq], &p[eq + 1..]);
-        }
-    }
+    let kv = collect_kv(args, body);
     let target = parse_annotation_target(&kv)?;
     let ann = match kind {
         "delete-vertex" => Annotation::DeleteVertex { target },
@@ -774,23 +843,14 @@ fn annotation_cmd(ctx: &mut FixtureCtx, args: &str) -> Result<Outcome, String> {
     })
 }
 
-fn region_override_cmd(ctx: &mut FixtureCtx, args: &str) -> Result<Outcome, String> {
-    let mut kv: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
-    for p in args.split_whitespace() {
-        if let Some(eq) = p.find('=') {
-            kv.insert(&p[..eq], &p[eq + 1..]);
-        }
-    }
-    let region_str = kv
-        .get("region")
+fn region_override_cmd(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Outcome, String> {
+    let region_str = single(args, "region")
         .ok_or_else(|| "region-override: missing region=<id>".to_string())?;
     let region_id = parse_region_id(region_str)?;
-    let aisle_angle_deg = kv
-        .get("angle")
+    let aisle_angle_deg = single(args, "angle")
         .map(|s| s.parse::<f64>().map_err(|e| format!("region-override angle: {}", e)))
         .transpose()?;
-    let aisle_offset = kv
-        .get("offset")
+    let aisle_offset = single(args, "offset")
         .map(|s| s.parse::<f64>().map_err(|e| format!("region-override offset: {}", e)))
         .transpose()?;
     if aisle_angle_deg.is_none() && aisle_offset.is_none() {
@@ -968,28 +1028,38 @@ fn parse_traffic(s: &str) -> Result<AisleDirection, String> {
 // corresponding annotation.
 // ---------------------------------------------------------------------------
 
-fn edge_select_cmd(ctx: &mut FixtureCtx, args: &str) -> Result<Outcome, String> {
+/// `edge-select [seed=N | near=X,Y] [mode=chain|segment]`.
+/// `near=X,Y`'s comma is rejected by datadriven's directive-line
+/// parser, so fixtures using `near` push the args to a body line; the
+/// `seed=N` form fits on the directive line. Both shapes work via
+/// `collect_kv`.
+fn edge_select_cmd(
+    ctx: &mut FixtureCtx,
+    args: &DirectiveArgs,
+    body: &str,
+) -> Result<Outcome, String> {
     let layout = ctx
         .last_layout
         .as_ref()
         .ok_or_else(|| "edge-select requires a prior `generate`".to_string())?;
     let graph = &layout.resolved_graph;
 
-    let mut seed: Option<usize> = None;
-    let mut near: Option<Vec2> = None;
-    let mut mode = "chain";
-    for tok in args.split_whitespace() {
-        if let Some(v) = tok.strip_prefix("seed=") {
-            seed = Some(v.parse::<usize>().map_err(|e| format!("seed: {}", e))?);
-        } else if let Some(v) = tok.strip_prefix("near=") {
-            near = Some(parse_xy(v)?);
-        } else if let Some(v) = tok.strip_prefix("mode=") {
-            if v != "chain" && v != "segment" {
-                return Err(format!("edge-select: mode must be chain|segment, got {:?}", v));
-            }
-            mode = if v == "chain" { "chain" } else { "segment" };
+    let kv = collect_kv(args, body);
+    let seed = kv
+        .get("seed")
+        .map(|v| v.parse::<usize>().map_err(|e| format!("seed: {}", e)))
+        .transpose()?;
+    let near = kv.get("near").map(|v| parse_xy(v)).transpose()?;
+    let mode = match kv.get("mode").copied().unwrap_or("chain") {
+        "chain" => "chain",
+        "segment" => "segment",
+        other => {
+            return Err(format!(
+                "edge-select: mode must be chain|segment, got {:?}",
+                other
+            ));
         }
-    }
+    };
     let seed_index = match (seed, near) {
         (Some(s), _) => s,
         (None, Some(p)) => {

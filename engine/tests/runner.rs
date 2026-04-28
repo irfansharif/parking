@@ -1,16 +1,18 @@
 //! Integration test entry for the data-driven fixtures.
 //!
 //! One `#[test]` per fixture file under `engine/tests/testdata/`. Each
-//! fixture runs through the harness dispatcher in sequence, sharing a
-//! single `FixtureCtx` so later directives see earlier state.
+//! fixture is driven through the `datadriven` crate, which owns parsing
+//! the `cmd / body / ---- / expected` DSL and rewriting expected blocks
+//! when `UPDATE_SNAPSHOTS=1` (mapped to datadriven's `REWRITE`).
+//!
+//! Per-directive dispatch lives in `harness::directives`; this file is
+//! just the orchestration shell.
 
 mod harness;
 
-use harness::directives::{execute, FixtureCtx, Outcome};
-use harness::parser::{parse, CaseSpan, TestCase};
-use harness::rewriter::rewrite;
-
+use harness::directives::{execute, FixtureCtx};
 use std::path::{Path, PathBuf};
+use std::sync::Once;
 
 fn testdata_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -25,105 +27,51 @@ fn update_snapshots() -> bool {
     )
 }
 
-fn run_fixture(path: &Path) {
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("reading {}: {}", path.display(), e));
-    let (cases, spans) = parse(&source);
-    let update = update_snapshots();
+/// Bridge our `UPDATE_SNAPSHOTS` knob to datadriven's `REWRITE`. Run
+/// exactly once across all parallel test threads — `set_var` racing
+/// concurrent reads is UB, so guard with `Once`.
+static REWRITE_INIT: Once = Once::new();
+fn init_rewrite_env() {
+    REWRITE_INIT.call_once(|| {
+        if update_snapshots() {
+            std::env::set_var("REWRITE", "1");
+        }
+    });
+}
 
+fn run_fixture(path: &Path) {
+    init_rewrite_env();
+    let update = update_snapshots();
     let default_name = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("snapshot")
         .to_string();
-
     let mut ctx = FixtureCtx::new(testdata_dir(), default_name, update);
-    let mut actuals: Vec<String> = Vec::with_capacity(cases.len());
-    let mut failures: Vec<String> = Vec::new();
 
-    for (case, span) in cases.iter().zip(spans.iter()) {
-        match execute(&mut ctx, &case.command, &case.body) {
-            Ok(outcome) => {
-                if let Some(err) = &outcome.snapshot_error {
-                    failures.push(format!("{}:{}: {}", display(path), case.line, err));
-                }
-                actuals.push(outcome.output.clone());
-                check_or_record(&outcome, case, span, path, update, &mut failures);
+    datadriven::walk(path.to_str().expect("utf-8 path"), |tf| {
+        tf.run(|case| -> Result<String, String> {
+            let body = case.input.trim_end_matches('\n');
+            let outcome = execute(&mut ctx, &case.directive, &case.args, body)?;
+            if let Some(err) = outcome.snapshot_error {
+                return Err(err);
             }
-            Err(err) => {
-                failures.push(format!("{}:{}: {}", display(path), case.line, err));
-                actuals.push(String::new());
-            }
-        }
-    }
-
-    if update {
-        let rewritten = rewrite(&source, &spans, &actuals);
-        if rewritten != source {
-            std::fs::write(path, rewritten)
-                .unwrap_or_else(|e| panic!("rewriting {}: {}", path.display(), e));
-        }
-    } else if !failures.is_empty() {
-        panic!("\n\n{}\n\n", failures.join("\n\n"));
-    }
-}
-
-fn check_or_record(
-    outcome: &Outcome,
-    case: &TestCase,
-    span: &CaseSpan,
-    path: &Path,
-    update: bool,
-    failures: &mut Vec<String>,
-) {
-    // Under UPDATE_SNAPSHOTS we accept any text output as-is; the
-    // rewriter will splice it back.
-    if update {
-        return;
-    }
-    // Cases without a separator have no expected block to compare.
-    if span.separator.is_none() {
-        return;
-    }
-    let expected = case.expected.trim();
-    let actual = outcome.output.trim();
-    if expected == actual {
-        return;
-    }
-    failures.push(format!(
-        "{}:{}: {}\n  expected:\n{}\n  actual:\n{}",
-        display(path),
-        case.line,
-        case.command,
-        indent(expected, "    "),
-        indent(actual, "    "),
-    ));
-}
-
-fn indent(s: &str, prefix: &str) -> String {
-    if s.is_empty() {
-        return format!("{}(empty)", prefix);
-    }
-    s.lines()
-        .map(|l| format!("{}{}", prefix, l))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn display(p: &Path) -> String {
-    p.file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| p.display().to_string())
+            // datadriven compares raw strings; parsed expected blocks
+            // always end in `\n`, so mirror that for non-empty actuals.
+            Ok(if outcome.output.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", outcome.output)
+            })
+        });
+    });
 }
 
 // -- individual tests ------------------------------------------------
 //
 // One #[test] per fixture. Adding a fixture = adding a stanza here.
 // The pair is intentional: `cargo test smoke` names one test, and a
-// failure message points at one fixture file. If the fixture set grows
-// large we can switch to a `test_cases!` macro, but explicit stanzas
-// keep rust-analyzer's "run test" gutter intact.
+// failure message points at one fixture file.
 
 #[test]
 fn smoke_rectangle() {

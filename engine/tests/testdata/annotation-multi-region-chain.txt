@@ -32,7 +32,8 @@ total_stalls: 106
 # Chain-mode delete inside the left region. The click at (100, 120)
 # lands on a vertical column aisle; chain expansion walks the whole
 # column.
-edge-select near=100,120 mode=chain
+edge-select
+near=100,120 mode=chain
 ----
 edge-select seed=52 mode=chain chain_len=6
 
@@ -52,7 +53,8 @@ generate
 total_stalls: 118
 
 # Chain-mode direction on a horizontal row in the right region.
-edge-select near=300,120 mode=chain
+edge-select
+near=300,120 mode=chain
 ----
 edge-select seed=58 mode=chain chain_len=7
 

@@ -42,6 +42,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "datadriven"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a86fc0fc08c22f405d3de096e463a910a9462a7cb22339ac0b04c847186b9360"
+dependencies = [
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "earcutr"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -248,6 +257,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 name = "parking-lot-engine"
 version = "0.1.0"
 dependencies = [
+ "datadriven",
  "geo-types",
  "i_overlay",
  "polylabel",

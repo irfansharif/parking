@@ -29,7 +29,8 @@ total_stalls: 106
 # Chain-mode direction on a horizontal row. Chain expansion walks
 # the whole row, so the emitted annotation extents span every cell
 # in it.
-edge-select near=200,120 mode=chain
+edge-select
+near=200,120 mode=chain
 ----
 edge-select seed=72 mode=chain chain_len=7
 
@@ -44,7 +45,8 @@ direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-7,latt
 # Segment-mode direction on the same row. Extents collapse to just
 # the seed sub-edge; 'f' on the distinct scope creates a second
 # annotation rather than cycling the row-wide one.
-edge-select near=200,120 mode=segment
+edge-select
+near=200,120 mode=segment
 ----
 edge-select seed=72 mode=segment chain_len=1
 
@@ -59,7 +61,8 @@ direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-4,latt
 
 # Chain-mode delete on a vertical column. Chain expansion picks up
 # the whole column.
-edge-select near=200,180 mode=chain
+edge-select
+near=200,180 mode=chain
 ----
 edge-select seed=41 mode=chain chain_len=6
 
@@ -75,7 +78,8 @@ delete-edge on=grid region=0x0001000000000000 axis=x coord=-4 range=lattice:0,la
 
 # Segment-mode delete on a horizontal sub-edge. After the chain
 # delete above the graph regenerates; extents match the seed.
-edge-select near=200,180 mode=segment
+edge-select
+near=200,180 mode=segment
 ----
 edge-select seed=41 mode=segment chain_len=1
 
