@@ -24,6 +24,7 @@ annotation-json: +1
 generate
 ----
 total_stalls: 62
+dormant_annotations: [0: perimeter projection failed for edge VertexId(2)→VertexId(3) at t=0.5000]
 
 annotations
 ----

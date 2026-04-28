@@ -1,6 +1,6 @@
 use crate::geom::boolean::{self, FillRule};
-use crate::geom::inset::{inset_polygon_with_ids, raw_inset_polygon};
-use crate::geom::poly::{ensure_ccw_with_ids, signed_area};
+use crate::geom::inset::{inset_polygon, raw_inset_polygon};
+use crate::geom::poly::{ensure_ccw, signed_area};
 use crate::types::*;
 
 /// Distance from `boundary.outer` (the sketch / lot deed line) to the
@@ -20,17 +20,14 @@ pub fn compute_inset_d(params: &ParkingParams) -> f64 {
 /// rectangles sit on. Total inset = `inset_d` (mandatory parking band
 /// thickness) plus `site_offset` (extra setback margin).
 ///
-/// Returns the inset polygon plus a parallel `VertexId` array;
-/// surviving vertices keep their sketch ids so region IDs derived
-/// from `EdgeKind::Outer(VertexId)` stay stable across edits to
-/// unrelated parts of the boundary. Returns empty vecs if the lot is
-/// too narrow for the parking band to fit.
-pub fn aisle_edge_perim(
-    boundary: &Polygon,
-    params: &ParkingParams,
-) -> (Vec<Vec2>, Vec<VertexId>) {
+/// Region identity no longer flows through this inset (regions are
+/// decomposed against the raw sketch and intersected with this loop
+/// downstream), so we don't need to preserve a parallel `VertexId`
+/// array. Returns an empty vec when the lot is too narrow for the
+/// parking band to fit.
+pub fn aisle_edge_perim(boundary: &Polygon, params: &ParkingParams) -> Vec<Vec2> {
     let total_inset = compute_inset_d(params) + params.site_offset;
-    inset_polygon_with_ids(&boundary.outer, &boundary.outer_ids, total_inset)
+    inset_polygon(&boundary.outer, total_inset)
 }
 
 /// The lot's outer boundary in world coordinates. In the current
@@ -449,16 +446,14 @@ pub fn auto_generate(
     let row_spacing = 2.0 * effective_depth + 2.0 * params.aisle_width;
 
     // boundary.outer is the lot deed line; the aisle-edge perimeter
-    // (the centerline ring the perim aisle rectangles sit on) is inset
-    // inside it by inset_d + site_offset. `aisle_edge_perim` preserves
-    // sketch `VertexId`s on each surviving inset vertex so region IDs
-    // derived from `EdgeKind::Outer(VertexId)` stay stable under edits
-    // elsewhere on the loop.
-    let (p, p_ids) = aisle_edge_perim(boundary, params);
+    // (the centerline ring the perim aisle rectangles sit on) is
+    // inset inside it by inset_d + site_offset. The graph's perim
+    // ring is built on this inset.
+    let p = aisle_edge_perim(boundary, params);
     if p.is_empty() {
         return empty_graph();
     }
-    let (outer_loop, outer_loop_ids) = ensure_ccw_with_ids(p, p_ids);
+    let outer_loop = ensure_ccw(p);
 
     let mut vertices: Vec<Vec2> = Vec::new();
     let mut edges: Vec<AisleEdge> = Vec::new();
@@ -551,7 +546,7 @@ pub fn auto_generate(
     // sub-regions; otherwise a single fallback run covers the whole
     // outer loop with global angle/offset (and the single-region
     // override, if any).
-    let fallback_run = || {
+    let fallback_run = || -> (Option<Vec<Vec2>>, f64, f64) {
         let mut angle = params.aisle_angle_deg;
         let mut offset = params.aisle_offset;
         for ov in region_overrides {
@@ -563,10 +558,21 @@ pub fn auto_generate(
         (None, angle, offset)
     };
 
+    // Decompose into regions on the **raw sketch** boundary. The
+    // sketch's `VertexId`s flow straight into `EdgeKind::Outer(_)` so
+    // region IDs are derived from sketch corners directly — they're
+    // invariant to params (stall_depth, aisle_width, site_offset)
+    // that change the inset distance.
+    let raw_outer_ids: &[VertexId] =
+        if boundary.outer_ids.len() == boundary.outer.len() {
+            &boundary.outer_ids
+        } else {
+            &[]
+        };
     let regions = if params.use_regions && !partitioning_lines.is_empty() {
         let mut regions = decompose_regions(
-            &outer_loop,
-            &outer_loop_ids,
+            &boundary.outer,
+            raw_outer_ids,
             &hole_loops,
             &hole_loop_ids,
             partitioning_lines,
@@ -584,12 +590,21 @@ pub fn auto_generate(
         Vec::new()
     };
 
-    let runs: Vec<(Option<&[Vec2]>, f64, f64)> = if regions.is_empty() {
+    // For each region, intersect its raw clip polygon with the
+    // aisle-edge perim to get the actual aisle-usable area —
+    // `generate_region_aisles` expects clip polygons in inset
+    // coordinates. The single-region fallback (no partitions) just
+    // uses the inset directly via `clip = None`.
+    let runs: Vec<(Option<Vec<Vec2>>, f64, f64)> = if regions.is_empty() {
         vec![fallback_run()]
     } else {
         regions
             .iter()
-            .map(|r| (Some(r.clip_poly.as_slice()), r.aisle_angle_deg, r.aisle_offset))
+            .map(|r| {
+                (Some(intersect_with_inset(&r.clip_poly, &outer_loop)),
+                 r.aisle_angle_deg,
+                 r.aisle_offset)
+            })
             .collect()
     };
 
@@ -597,7 +612,7 @@ pub fn auto_generate(
     let mut all_cross: Vec<(usize, usize)> = Vec::new();
     for (clip, angle, offset) in &runs {
         let result = generate_region_aisles(
-            *clip,
+            clip.as_deref(),
             &outer_loop,
             &hole_loops,
             &hole_bases,
@@ -674,6 +689,30 @@ pub fn auto_generate(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Intersect a raw-sketch region clip polygon with the aisle-edge
+/// inset perim. The result is the region's aisle-usable area in inset
+/// coordinates. Falls back to the raw clip on degenerate intersection
+/// (e.g. region entirely outside the inset, which shouldn't happen
+/// when the inset survived).
+fn intersect_with_inset(raw_clip: &[Vec2], inset_perim: &[Vec2]) -> Vec<Vec2> {
+    if raw_clip.len() < 3 || inset_perim.len() < 3 {
+        return raw_clip.to_vec();
+    }
+    let result = boolean::intersect(
+        &[raw_clip.to_vec()],
+        &[inset_perim.to_vec()],
+        FillRule::NonZero,
+    );
+    // Take the largest contour by area. Multi-component intersections
+    // are rare for typical region+inset shapes.
+    result
+        .into_iter()
+        .filter_map(|shape| shape.into_iter().next())
+        .max_by(|a, b| signed_area(a).abs().partial_cmp(&signed_area(b).abs()).unwrap())
+        .filter(|c| c.len() >= 3)
+        .unwrap_or_else(|| raw_clip.to_vec())
+}
 
 fn empty_graph() -> DriveAisleGraph {
     DriveAisleGraph {

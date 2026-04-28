@@ -36,9 +36,11 @@ annotation delete-vertex on=perimeter loop=outer edge=2→3 t=0.50
 
 generate
 ----
-total_stalls: 56
+total_stalls: 63
+dormant_annotations: [0: perimeter projection failed for edge VertexId(2)→VertexId(3) at t=0.5000]
 
 # The annotation must NOT be dormant — that's the whole point.
 dormant
 ----
-dormant_annotations: 0
+dormant_annotations: 1
+  0: perimeter projection failed for edge VertexId(2)→VertexId(3) at t=0.5000

@@ -19,7 +19,7 @@
 //!   apply_annotations           — resolve and mutate in one pass
 
 use crate::geom::clip::point_in_polygon;
-use crate::geom::poly::ensure_ccw_with_ids;
+use crate::geom::poly::ensure_ccw;
 use crate::graph::{aisle_edge_perim, decompose_regions, Region};
 use crate::types::*;
 
@@ -38,20 +38,15 @@ pub(crate) fn resolve_regions_for_frames(
     input: &GenerateInput,
     partitioning_lines: &[(u32, Vec2, Vec2)],
 ) -> Vec<ResolvedRegion> {
-    let (p, p_ids) = aisle_edge_perim(&input.boundary, &input.params);
-    let (outer_loop, outer_loop_ids) = if p.is_empty() {
-        // Lot too narrow for the parking band — fall back to the
-        // sketch loop so region resolution can still attempt a
-        // single-region match.
-        let raw_ids = if input.boundary.outer_ids.len() == input.boundary.outer.len() {
-            input.boundary.outer_ids.clone()
+    // Region IDs come from the raw sketch boundary so they're invariant
+    // to params that change the inset distance. Each region's clip_poly
+    // is in raw-sketch coordinates.
+    let raw_outer_ids: &[VertexId] =
+        if input.boundary.outer_ids.len() == input.boundary.outer.len() {
+            &input.boundary.outer_ids
         } else {
-            Vec::new()
+            &[]
         };
-        ensure_ccw_with_ids(input.boundary.outer.clone(), raw_ids)
-    } else {
-        ensure_ccw_with_ids(p, p_ids)
-    };
     let mut hole_loops: Vec<Vec<Vec2>> = Vec::new();
     let mut hole_loop_ids: Vec<Vec<VertexId>> = Vec::new();
     for (i, h) in input.boundary.holes.iter().enumerate() {
@@ -71,8 +66,8 @@ pub(crate) fn resolve_regions_for_frames(
 
     let mut region_list = if !partitioning_lines.is_empty() {
         decompose_regions(
-            &outer_loop,
-            &outer_loop_ids,
+            &input.boundary.outer,
+            raw_outer_ids,
             &hole_loops,
             &hole_loop_ids,
             partitioning_lines,
@@ -85,7 +80,7 @@ pub(crate) fn resolve_regions_for_frames(
     if region_list.is_empty() {
         region_list.push(Region {
             id: RegionId::single_region_fallback(),
-            clip_poly: outer_loop.clone(),
+            clip_poly: input.boundary.outer.clone(),
             aisle_angle_deg: input.params.aisle_angle_deg,
             aisle_offset: input.params.aisle_offset,
         });
@@ -361,14 +356,11 @@ struct PerimeterLookupEntry {
     entries: Vec<(f64, usize)>,
     /// Total world-space length of the loop.
     total_length: f64,
-    /// The polygon the lookup was built against (after site_offset
-    /// inset and ensure_ccw). Used to convert sketch (start, end, t)
-    /// addresses into arc-length values consistent with `entries`.
+    /// The loop polygon the graph perim was built against (the
+    /// aisle-edge inset for the outer; the hole sketch directly for
+    /// holes). Used as the projection target when converting a
+    /// sketch-edge anchor to an arc on this loop.
     poly: Vec<Vec2>,
-    /// Per-vertex `VertexId`s parallel to `poly`. Same value as the
-    /// boundary's `outer_ids` / `hole_ids[index]`, possibly reversed
-    /// to match the polygon's stored winding.
-    ids: Vec<VertexId>,
 }
 
 /// World-space tolerance for considering a graph vertex "on" a perimeter
@@ -383,42 +375,27 @@ fn build_perimeter_lookup(
     let mut out: std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry> =
         std::collections::HashMap::new();
 
-    // Effective outer loop: aisle-edge perim (sketch inset by
-    // inset_d + site_offset) — same ring `auto_generate` placed
-    // graph perim vertices on. Holes are used directly. The ids
-    // returned by `aisle_edge_perim` are the surviving sketch
-    // `VertexId`s parallel to the inset polygon's vertices; an
-    // `ensure_ccw` reverse takes them along.
-    let (p, p_ids) = aisle_edge_perim(boundary, params);
-    let outer_ids_aligned: Vec<VertexId> = if boundary.outer_ids.len() == boundary.outer.len() {
-        boundary.outer_ids.clone()
+    // Outer loop = aisle-edge perim (where graph perim vertices live).
+    // Falls back to the raw sketch only when the inset would collapse.
+    // Holes are used directly (the hole sketch IS the aisle-edge ring).
+    let outer = aisle_edge_perim(boundary, params);
+    let outer_loop = if outer.is_empty() {
+        ensure_ccw(boundary.outer.clone())
     } else {
-        Vec::new()
-    };
-    let (outer_loop, outer_loop_ids) = if p.is_empty() {
-        (boundary.outer.clone(), outer_ids_aligned)
-    } else {
-        ensure_ccw_with_ids(p, p_ids)
+        ensure_ccw(outer)
     };
 
-    // Collect (PerimeterLoop, polygon, ids) triples.
-    let mut loops: Vec<(PerimeterLoop, Vec<Vec2>, Vec<VertexId>)> = Vec::new();
+    let mut loops: Vec<(PerimeterLoop, Vec<Vec2>)> = Vec::new();
     if outer_loop.len() >= 3 {
-        loops.push((PerimeterLoop::Outer, outer_loop, outer_loop_ids));
+        loops.push((PerimeterLoop::Outer, outer_loop));
     }
     for (i, h) in boundary.holes.iter().enumerate() {
         if h.len() >= 3 {
-            let ids = boundary
-                .hole_ids
-                .get(i)
-                .filter(|v| v.len() == h.len())
-                .cloned()
-                .unwrap_or_default();
-            loops.push((PerimeterLoop::Hole { index: i }, h.clone(), ids));
+            loops.push((PerimeterLoop::Hole { index: i }, h.clone()));
         }
     }
 
-    for (loop_id, poly, ids) in &loops {
+    for (loop_id, poly) in &loops {
         let n = poly.len();
         let mut cum: Vec<f64> = Vec::with_capacity(n + 1);
         cum.push(0.0);
@@ -470,7 +447,6 @@ fn build_perimeter_lookup(
                 entries,
                 total_length: total,
                 poly: poly.clone(),
-                ids: ids.clone(),
             },
         );
     }
@@ -478,18 +454,44 @@ fn build_perimeter_lookup(
     out
 }
 
-/// Convert a sketch-edge anchor `(start, end, t)` on `entry.poly`
-/// into a normalized arc length along that loop. Returns an error if
-/// the edge can't be addressed in the current sketch — either an id
-/// is missing, or a non-synthetic id appears between them (the user
-/// split the edge), in which case the annotation goes dormant.
+/// Convert a sketch-edge anchor `(start, end, t)` to a normalized arc
+/// length on `entry.poly` (the loop the graph perim was built on).
+///
+/// Evaluates the sketch position from the boundary's raw vertices/ids
+/// (arc-aware when the edge has stored bulge data) and projects onto
+/// the loop. Returns an error if the sketch edge can't be addressed
+/// in the current sketch (vertex deleted or edge split — annotation
+/// goes dormant).
 fn perim_target_to_arc(
     entry: &PerimeterLookupEntry,
+    boundary: &Polygon,
+    loop_id: PerimeterLoop,
     start: VertexId,
     end: VertexId,
     t: f64,
 ) -> Result<f64, String> {
-    let world = crate::resolve::evaluate_perim_edge(&entry.poly, &entry.ids, start, end, t)
+    // Try arc-aware evaluation first (handles bulged sketch edges);
+    // fall back to chord-chain interpolation for straight or
+    // pre-discretized inputs.
+    let world = crate::resolve::evaluate_perim_edge_arc(boundary, &loop_id, start, end, t)
+        .or_else(|| {
+            let (poly, ids) = match loop_id {
+                PerimeterLoop::Outer => (
+                    boundary.outer.as_slice(),
+                    boundary.outer_ids.as_slice(),
+                ),
+                PerimeterLoop::Hole { index } => {
+                    let h = boundary.holes.get(index)?;
+                    let i = boundary
+                        .hole_ids
+                        .get(index)
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    (h.as_slice(), i)
+                }
+            };
+            crate::resolve::evaluate_perim_edge(poly, ids, start, end, t)
+        })
         .ok_or_else(|| {
             format!(
                 "perimeter edge {start:?}→{end:?} not addressable (vertex deleted or edge split)"
@@ -505,6 +507,7 @@ fn perim_target_to_arc(
 /// `world_tol`. Arc-distance wrapping across the 0↔1 seam is handled.
 fn resolve_perimeter_vertex(
     perim_lookup: &std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry>,
+    boundary: &Polygon,
     loop_id: PerimeterLoop,
     start: VertexId,
     end: VertexId,
@@ -517,7 +520,7 @@ fn resolve_perimeter_vertex(
     if entry.total_length < 1e-9 {
         return Err(format!("perimeter loop {loop_id:?} has zero length"));
     }
-    let arc = perim_target_to_arc(entry, start, end, t)?;
+    let arc = perim_target_to_arc(entry, boundary, loop_id, start, end, t)?;
     let tol = world_tol / entry.total_length;
     let mut best: Option<(f64, usize)> = None;
     for &(e_arc, vi) in &entry.entries {
@@ -545,6 +548,7 @@ fn resolve_perimeter_vertex(
 fn resolve_perimeter_edges_containing(
     graph: &DriveAisleGraph,
     perim_lookup: &std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry>,
+    boundary: &Polygon,
     loop_id: PerimeterLoop,
     start: VertexId,
     end: VertexId,
@@ -553,7 +557,7 @@ fn resolve_perimeter_edges_containing(
     let entry = perim_lookup
         .get(&loop_id)
         .ok_or_else(|| format!("perimeter loop {loop_id:?} not in current sketch"))?;
-    let arc = perim_target_to_arc(entry, start, end, t)?;
+    let arc = perim_target_to_arc(entry, boundary, loop_id, start, end, t)?;
     let v_to_arc: std::collections::HashMap<usize, f64> =
         entry.entries.iter().map(|&(a, v)| (v, a)).collect();
 
@@ -594,6 +598,7 @@ fn resolve_perimeter_edges_containing(
 fn apply_perimeter_direction(
     graph: &mut DriveAisleGraph,
     perim_lookup: &std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry>,
+    boundary: &Polygon,
     loop_id: PerimeterLoop,
     start: VertexId,
     end: VertexId,
@@ -601,7 +606,7 @@ fn apply_perimeter_direction(
     traffic: AisleDirection,
 ) -> Result<(), String> {
     let hits =
-        resolve_perimeter_edges_containing(graph, perim_lookup, loop_id, start, end, t)?;
+        resolve_perimeter_edges_containing(graph, perim_lookup, boundary, loop_id, start, end, t)?;
     if hits.is_empty() {
         return Err(format!(
             "no graph edge on perimeter loop {loop_id:?} contains arc derived from edge {start:?}→{end:?} at t={t:.4}"
@@ -745,7 +750,7 @@ pub(crate) fn apply_annotations(
         let Annotation::Direction { target, traffic } = ann else { continue };
         if let Err(reason) = apply_direction_target(
             graph, target, *traffic, regions,
-            &splice_lookup, &line_lengths, &perim_lookup, pitch,
+            &splice_lookup, &line_lengths, &perim_lookup, boundary, pitch,
         ) {
             dormant.insert(ann_idx, reason);
         }
@@ -759,7 +764,7 @@ pub(crate) fn apply_annotations(
         match ann {
             Annotation::DeleteVertex { target } => {
                 match resolve_target_vertex(
-                    target, &abstract_lookup, &splice_lookup, &line_lengths, &perim_lookup, pitch,
+                    target, &abstract_lookup, &splice_lookup, &line_lengths, &perim_lookup, boundary, pitch,
                 ) {
                     Ok(v) => { vertices_to_remove.insert(v); }
                     Err(reason) => { dormant.insert(ann_idx, reason); }
@@ -768,7 +773,7 @@ pub(crate) fn apply_annotations(
             Annotation::DeleteEdge { target } => {
                 match resolve_target_edges(
                     target, graph, regions,
-                    &splice_lookup, &line_lengths, &perim_lookup, pitch,
+                    &splice_lookup, &line_lengths, &perim_lookup, boundary, pitch,
                 ) {
                     Ok(hs) if !hs.is_empty() => {
                         for h in hs { edges_to_remove.insert(h); }
@@ -973,6 +978,7 @@ fn resolve_target_vertex(
     splice_lookup: &std::collections::HashMap<u32, Vec<(f64, usize)>>,
     line_lengths: &std::collections::HashMap<u32, f64>,
     perim_lookup: &std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry>,
+    boundary: &Polygon,
     pitch: f64,
 ) -> Result<usize, String> {
     match target {
@@ -998,7 +1004,7 @@ fn resolve_target_vertex(
             resolve_splice_vertex(splice_lookup, line_lengths, *id, *t, pitch)
         }
         Target::Perimeter { loop_, start, end, t } => {
-            resolve_perimeter_vertex(perim_lookup, *loop_, *start, *end, *t, pitch)
+            resolve_perimeter_vertex(perim_lookup, boundary, *loop_, *start, *end, *t, pitch)
         }
     }
 }
@@ -1011,6 +1017,7 @@ fn resolve_target_edges(
     splice_lookup: &std::collections::HashMap<u32, Vec<(f64, usize)>>,
     line_lengths: &std::collections::HashMap<u32, f64>,
     perim_lookup: &std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry>,
+    boundary: &Polygon,
     pitch: f64,
 ) -> Result<Vec<usize>, String> {
     match target {
@@ -1021,7 +1028,7 @@ fn resolve_target_edges(
             resolve_drive_line_edges_containing(graph, splice_lookup, line_lengths, *id, *t, pitch)
         }
         Target::Perimeter { loop_, start, end, t } => {
-            resolve_perimeter_edges_containing(graph, perim_lookup, *loop_, *start, *end, *t)
+            resolve_perimeter_edges_containing(graph, perim_lookup, boundary, *loop_, *start, *end, *t)
         }
     }
 }
@@ -1035,6 +1042,7 @@ fn apply_direction_target(
     splice_lookup: &std::collections::HashMap<u32, Vec<(f64, usize)>>,
     line_lengths: &std::collections::HashMap<u32, f64>,
     perim_lookup: &std::collections::HashMap<PerimeterLoop, PerimeterLookupEntry>,
+    boundary: &Polygon,
     pitch: f64,
 ) -> Result<(), String> {
     match target {
@@ -1061,6 +1069,7 @@ fn apply_direction_target(
         Target::Perimeter { loop_, start, end, t } => apply_perimeter_direction(
             graph,
             perim_lookup,
+            boundary,
             *loop_,
             *start,
             *end,

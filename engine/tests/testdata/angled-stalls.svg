@@ -193,6 +193,8 @@
 <path d="M192 117 L192 99.500 L228 99.500 L228 117 L227.971 117.588 L227.885 118.171 L227.742 118.742 L227.543 119.296 L227.292 119.828 L226.989 120.333 L226.638 120.806 L226.243 121.243 L225.806 121.638 L225.333 121.989 L224.828 122.292 L224.296 122.543 L223.742 122.742 L223.171 122.885 L222.588 122.971 L222 123 L198 123 L197.412 122.971 L196.829 122.885 L196.258 122.742 L195.704 122.543 L195.172 122.292 L194.667 121.989 L194.194 121.638 L193.757 121.243 L193.362 120.806 L193.011 120.333 L192.708 119.828 L192.457 119.296 L192.258 118.742 L192.115 118.171 L192.029 117.588 Z"/>
 </g>
 <g id="graph">
+<line x1="30" y1="170" x2="30" y2="135" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
+<line x1="30" y1="135" x2="30" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="30" y1="30" x2="60" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="60" y1="30" x2="120" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="120" y1="30" x2="180" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
@@ -205,8 +207,6 @@
 <line x1="180" y1="170" x2="120" y2="170" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="120" y1="170" x2="60" y2="170" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="60" y1="170" x2="30" y2="170" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
-<line x1="30" y1="170" x2="30" y2="135" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
-<line x1="30" y1="135" x2="30" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="240" y1="30" x2="240" y2="135" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="240" y1="135" x2="240" y2="170" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="180" y1="30" x2="180" y2="135" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
@@ -220,10 +220,10 @@
 <line x1="180" y1="135" x2="120" y2="135" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="120" y1="135" x2="60" y2="135" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="60" y1="135" x2="30" y2="135" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
+<circle cx="30" cy="170" r="0.8" fill="#a84a1e"/>
 <circle cx="30" cy="30" r="0.8" fill="#a84a1e"/>
 <circle cx="270" cy="30" r="0.8" fill="#a84a1e"/>
 <circle cx="270" cy="170" r="0.8" fill="#a84a1e"/>
-<circle cx="30" cy="170" r="0.8" fill="#a84a1e"/>
 <circle cx="240" cy="30" r="0.8" fill="#3e68a8"/>
 <circle cx="240" cy="170" r="0.8" fill="#3e68a8"/>
 <circle cx="180" cy="30" r="0.8" fill="#3e68a8"/>

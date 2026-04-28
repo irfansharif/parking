@@ -123,6 +123,7 @@
 <path d="M102 82 L102 78 L102.029 77.412 L102.115 76.829 L102.258 76.258 L102.457 75.704 L102.708 75.172 L103.011 74.667 L103.362 74.194 L103.757 73.757 L104.194 73.362 L104.667 73.011 L105.172 72.708 L105.704 72.457 L106.258 72.258 L106.829 72.115 L107.412 72.029 L108 72 L132 72 L132.588 72.029 L133.171 72.115 L133.742 72.258 L134.296 72.457 L134.828 72.708 L135.333 73.011 L135.806 73.362 L136.243 73.757 L136.638 74.194 L136.989 74.667 L137.292 75.172 L137.543 75.704 L137.742 76.258 L137.885 76.829 L137.971 77.412 L138 78 L138 82 L137.971 82.588 L137.885 83.171 L137.742 83.742 L137.543 84.296 L137.292 84.828 L136.989 85.333 L136.638 85.806 L136.243 86.243 L135.806 86.638 L135.333 86.989 L134.828 87.292 L134.296 87.543 L133.742 87.742 L133.171 87.885 L132.588 87.971 L132 88 L108 88 L107.412 87.971 L106.829 87.885 L106.258 87.742 L105.704 87.543 L105.172 87.292 L104.667 86.989 L104.194 86.638 L103.757 86.243 L103.362 85.806 L103.011 85.333 L102.708 84.828 L102.457 84.296 L102.258 83.742 L102.115 83.171 L102.029 82.588 Z"/>
 </g>
 <g id="graph">
+<line x1="30" y1="130" x2="30" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="30" y1="30" x2="60" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="60" y1="30" x2="120" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="120" y1="30" x2="180" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
@@ -132,7 +133,6 @@
 <line x1="180" y1="130" x2="120" y2="130" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="120" y1="130" x2="60" y2="130" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="60" y1="130" x2="30" y2="130" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
-<line x1="30" y1="130" x2="30" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="90" y1="60" x2="120" y2="60" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="120" y1="60" x2="150" y2="60" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="150" y1="60" x2="150" y2="100" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
@@ -143,10 +143,10 @@
 <line x1="120" y1="30" x2="120" y2="60" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="120" y1="100" x2="120" y2="130" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="60" y1="30" x2="60" y2="130" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
+<circle cx="30" cy="130" r="0.8" fill="#a84a1e"/>
 <circle cx="30" cy="30" r="0.8" fill="#a84a1e"/>
 <circle cx="210" cy="30" r="0.8" fill="#a84a1e"/>
 <circle cx="210" cy="130" r="0.8" fill="#a84a1e"/>
-<circle cx="30" cy="130" r="0.8" fill="#a84a1e"/>
 <circle cx="90" cy="60" r="0.8" fill="#a84a1e"/>
 <circle cx="150" cy="60" r="0.8" fill="#a84a1e"/>
 <circle cx="150" cy="100" r="0.8" fill="#a84a1e"/>

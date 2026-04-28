@@ -137,6 +137,7 @@
 <path d="M132 112 L132 99.500 L168 99.500 L168 112 L167.971 112.588 L167.885 113.171 L167.742 113.742 L167.543 114.296 L167.292 114.828 L166.989 115.333 L166.638 115.806 L166.243 116.243 L165.806 116.638 L165.333 116.989 L164.828 117.292 L164.296 117.543 L163.742 117.742 L163.171 117.885 L162.588 117.971 L162 118 L138 118 L137.412 117.971 L136.829 117.885 L136.258 117.742 L135.704 117.543 L135.172 117.292 L134.667 116.989 L134.194 116.638 L133.757 116.243 L133.362 115.806 L133.011 115.333 L132.708 114.828 L132.457 114.296 L132.258 113.742 L132.115 113.171 L132.029 112.588 Z"/>
 </g>
 <g id="graph">
+<line x1="30" y1="130" x2="30" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="30" y1="30" x2="60" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="60" y1="30" x2="120" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="120" y1="30" x2="180" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
@@ -146,14 +147,13 @@
 <line x1="180" y1="130" x2="120" y2="130" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="120" y1="130" x2="60" y2="130" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="60" y1="130" x2="30" y2="130" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
-<line x1="30" y1="130" x2="30" y2="30" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="180" y1="30" x2="180" y2="130" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="120" y1="30" x2="120" y2="130" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="60" y1="30" x2="60" y2="130" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
+<circle cx="30" cy="130" r="0.8" fill="#a84a1e"/>
 <circle cx="30" cy="30" r="0.8" fill="#a84a1e"/>
 <circle cx="210" cy="30" r="0.8" fill="#a84a1e"/>
 <circle cx="210" cy="130" r="0.8" fill="#a84a1e"/>
-<circle cx="30" cy="130" r="0.8" fill="#a84a1e"/>
 <circle cx="180" cy="30" r="0.8" fill="#3e68a8"/>
 <circle cx="180" cy="130" r="0.8" fill="#3e68a8"/>
 <circle cx="120" cy="30" r="0.8" fill="#3e68a8"/>
