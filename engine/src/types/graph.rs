@@ -18,8 +18,9 @@ use super::geom::Vec2;
 pub enum AisleDirection {
     /// Two-way with stall strips angled the opposite way from the
     /// default — a mirrored slash pattern. Treated as default two-way
-    /// for spine geometry; the downstream effect is a face-wide
-    /// `flip_angle` in stall placement.
+    /// for spine geometry; the downstream effect is a per-edge
+    /// `flip_angle` on the spines bordering this aisle in stall
+    /// placement.
     TwoWayReverse,
     /// One-way; traffic flows along the edge's stored start → end.
     OneWay,

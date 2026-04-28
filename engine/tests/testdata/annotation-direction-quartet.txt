@@ -111,7 +111,7 @@ annotation direction on=drive-line id=8 t=0.50 traffic=two-way-reverse
 
 generate
 ----
-total_stalls: 446
+total_stalls: 447
 
 annotations
 ----

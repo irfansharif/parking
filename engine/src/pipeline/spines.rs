@@ -313,33 +313,44 @@ fn offset_aisle_edges_to_spines(
             let e = trimmed_b + inward * ed;
 
             let is_interior = interior_flat.get(flat_idx).copied().unwrap_or(true);
-            let face_reverse =
+            let edge_reverse =
                 two_way_oriented_flat.get(flat_idx).copied().unwrap_or(false);
             let travel_dir = travel_dir_flat.get(flat_idx).copied().flatten();
 
             if (e - s).length() > 1.0 {
-                // Three independent states determine flip + stagger:
-                //   1. face_reverse (any TwoWayReverse aisle in the face) →
-                //      every spine flips lean, no stagger. Mirror-symmetric
-                //      slash pattern, opposite of default.
-                //   2. OneWay/OneWayReverse without face_reverse → per-side
-                //      asymmetric flip from oriented_dir·travel_dir, plus
-                //      half-pitch stagger when outward is right-of-travel.
-                //      Produces herringbone across the aisle.
-                //   3. Default (TwoWay, no annotation) → no flip, no stagger.
-                let (flip_angle, staggered) = if face_reverse {
-                    (true, false)
+                // `flip_angle` is set per-edge by the carrier aisle's
+                // annotation:
+                //   - default TwoWay → false
+                //   - TwoWayReverse → true (mirrors the lean across the
+                //     aisle axis on this strip only)
+                //   - OneWay/OneWayReverse → oriented_dir·travel_dir > 0
+                //     (per-side asymmetric flip producing herringbone in
+                //     travel direction across the aisle)
+                //
+                // `staggered = flip_angle` is the single invariant that
+                // back-edge geometry needs: two opposing back-to-back
+                // spines have antiparallel oriented_dir, so when their
+                // flips disagree the relative half-pitch shift makes
+                // their back edges interlock; when their flips agree
+                // (both default or both flipped) the shifts cancel and
+                // the back edges meet on the same line. This subsumes
+                // OneWay's old `td.cross(outward) >= 0` rule —
+                // td.cross(outward) ≡ td·oriented_dir for outward =
+                // left-perp(oriented_dir).
+                let flip_angle = if edge_reverse {
+                    true
                 } else if let Some(td) = travel_dir {
                     let oriented_dir = {
                         let d = (e - s).normalize();
                         let left = Vec2::new(-d.y, d.x);
                         if left.dot(outward) > 0.0 { d } else { d * -1.0 }
                     };
-                    (oriented_dir.dot(td) > 0.0, td.cross(outward) >= 0.0)
+                    oriented_dir.dot(td) > 0.0
                 } else {
-                    (false, false)
+                    false
                 };
-                let is_annotated = travel_dir.is_some() || face_reverse;
+                let staggered = flip_angle;
+                let is_annotated = travel_dir.is_some() || edge_reverse;
                 spines.push(SpineSegment {
                     start: s,
                     end: e,
@@ -446,17 +457,11 @@ pub(crate) fn compute_face_spines(
         }
     }
 
-    // `reverse_lean` is a face-wide property: if any aisle edge of the
-    // bay borders a `TwoWayReverse` aisle, mirror every stall strip in
-    // the bay (so back-to-back rows on each side of the aisle both
-    // flip together — what the user means by "two-way reverse angles
-    // each stall strip on each side the other way").
-    let any_reverse = two_way_oriented_flat.iter().any(|&v| v);
-    if any_reverse {
-        for v in two_way_oriented_flat.iter_mut() {
-            *v = true;
-        }
-    }
+    // `is_two_way_oriented` is per-edge: each aisle-facing FaceEdge
+    // carries its own carrier aisle's annotation. Annotating one aisle
+    // flips only the spines bordering that aisle; opposing strips in
+    // the same bay are independent and need their own annotation to
+    // flip in lockstep.
     offset_aisle_edges_to_spines(
         &contours,
         &aisle_facing_flat,

@@ -11,7 +11,7 @@ use parking_lot_engine::pipeline::generate::generate;
 use parking_lot_engine::types::{
     AisleDirection, Annotation, Axis, DebugToggles, DriveLine,
     EdgeArc, GenerateInput, GridStop, HolePin, ParkingLayout, ParkingParams, PerimeterLoop,
-    Polygon, RegionId, Target, Vec2, VertexId,
+    Polygon, RegionId, RegionOverride, Target, Vec2, VertexId,
 };
 use std::path::{Path, PathBuf};
 
@@ -101,6 +101,7 @@ pub fn execute(ctx: &mut FixtureCtx, command: &str, body: &str) -> Result<Outcom
         "annotation-json" => annotation_json(ctx, body),
         "annotation" => annotation_cmd(ctx, rest),
         "annotations" => annotations_cmd(ctx),
+        "region-override" => region_override_cmd(ctx, rest),
         "stall-modifier-json" => stall_modifier_json(ctx, body),
         "drive-line" => drive_line_cmd(ctx, rest, body),
         "edge-select" => edge_select_cmd(ctx, rest),
@@ -773,6 +774,43 @@ fn annotation_cmd(ctx: &mut FixtureCtx, args: &str) -> Result<Outcome, String> {
     })
 }
 
+fn region_override_cmd(ctx: &mut FixtureCtx, args: &str) -> Result<Outcome, String> {
+    let mut kv: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for p in args.split_whitespace() {
+        if let Some(eq) = p.find('=') {
+            kv.insert(&p[..eq], &p[eq + 1..]);
+        }
+    }
+    let region_str = kv
+        .get("region")
+        .ok_or_else(|| "region-override: missing region=<id>".to_string())?;
+    let region_id = parse_region_id(region_str)?;
+    let aisle_angle_deg = kv
+        .get("angle")
+        .map(|s| s.parse::<f64>().map_err(|e| format!("region-override angle: {}", e)))
+        .transpose()?;
+    let aisle_offset = kv
+        .get("offset")
+        .map(|s| s.parse::<f64>().map_err(|e| format!("region-override offset: {}", e)))
+        .transpose()?;
+    if aisle_angle_deg.is_none() && aisle_offset.is_none() {
+        return Err("region-override: needs at least one of angle=<n> or offset=<n>".to_string());
+    }
+    ctx.input.region_overrides.push(RegionOverride {
+        region_id,
+        aisle_angle_deg,
+        aisle_offset,
+    });
+    let mut out = format!("region=0x{:016x}", region_id.0);
+    if let Some(a) = aisle_angle_deg {
+        out.push_str(&format!(" angle={}", a));
+    }
+    if let Some(o) = aisle_offset {
+        out.push_str(&format!(" offset={}", o));
+    }
+    Ok(Outcome { output: out, ..Default::default() })
+}
+
 fn parse_annotation_target(
     kv: &std::collections::HashMap<&str, &str>,
 ) -> Result<Target, String> {
@@ -833,16 +871,25 @@ fn parse_annotation_target(
                 kv.get("loop")
                     .ok_or_else(|| "perimeter: missing loop".to_string())?,
             )?;
+            // Accept either `start=A end=B` or `edge=A→B` (the engine's
+            // debug formatter emits the latter, so fixtures often
+            // round-trip that form).
+            let (start_str, end_str) = if let Some(edge) = kv.get("edge") {
+                edge.split_once('→')
+                    .ok_or_else(|| "perimeter edge=<A>→<B> needs an arrow".to_string())?
+            } else {
+                let s = kv.get("start").copied()
+                    .ok_or_else(|| "perimeter: missing start".to_string())?;
+                let e = kv.get("end").copied()
+                    .ok_or_else(|| "perimeter: missing end".to_string())?;
+                (s, e)
+            };
             let start = VertexId(
-                kv.get("start")
-                    .ok_or_else(|| "perimeter: missing start".to_string())?
-                    .parse::<u32>()
+                start_str.parse::<u32>()
                     .map_err(|e| format!("perimeter start: {}", e))?,
             );
             let end = VertexId(
-                kv.get("end")
-                    .ok_or_else(|| "perimeter: missing end".to_string())?
-                    .parse::<u32>()
+                end_str.parse::<u32>()
                     .map_err(|e| format!("perimeter end: {}", e))?,
             );
             let t = kv

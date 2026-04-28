@@ -1,63 +1,111 @@
-# Reproduces the default layout the app ships with: an irregular
-# quadrilateral boundary with a rectangular hole and three drive lines.
-# Prior to the entrance-on-face filter, corners where the face edge
-# bends away from the spine produced stalls whose entrances dangled
-# past the face boundary into an adjacent bay (see the first-quadrant
-# corner of the outer boundary).
-
 polygon outer
-76.30,0
+-11.97,49.12
 692.14,0
+arc -0.524
 782.80,654.85
-168.78,654.85
+-166.61,638.35
 ----
 polygon outer: 4 vertices
 
 polygon hole
 394.53,251.80
+arc -0.796
 611.14,251.80
 613.91,512.33
+arc 0.400
 394.53,512.33
 ----
 hole: 4 vertices
 
-drive-line
-930.76,381.06
--42.60,512.33
+set stalls_per_face=29
 ----
-drive-line: 930.76,381.06 -> -42.60,512.33
+set stalls_per_face=29
 
-drive-line partitions
-198.60,-53.66
+set use_regions=true
+----
+set use_regions=true
+
+set island_stall_interval=12
+----
+set island_stall_interval=12
+
+drive-line id=1
+312.28,518.60
+144.72,515.73
+----
+drive-line: 312.28,518.60 -> 144.72,515.73 id=1
+
+drive-line id=2 partitions
+1186.57,153.66
 475.79,349.25
 ----
-drive-line: 198.60,-53.66 -> 475.79,349.25 partitions
+drive-line: 1186.57,153.66 -> 475.79,349.25 id=2 partitions
 
-drive-line partitions
+drive-line id=3 partitions
 446.56,335.61
-930.76,135.52
+454.87,-53.66
 ----
-drive-line: 446.56,335.61 -> 930.76,135.52 partitions
+drive-line: 446.56,335.61 -> 454.87,-53.66 id=3 partitions
 
-set stall_angle_deg=45
+annotation direction on=grid region=0x00004d49a4f0412e axis=x coord=-5 range=lattice:-3,lattice:-1 traffic=one-way
 ----
-set stall_angle_deg=45
+annotation direction on=grid region=0x00004d49a4f0412e axis=x coord=-5 range=lattice:-3,lattice:-1 traffic=one-way
 
-set stalls_per_face=29
+annotation delete-edge on=grid region=0x00004d49a4f0412e axis=y coord=-2 range=lattice:-9,lattice:-4
 ----
-set stalls_per_face=29
+annotation delete-edge on=grid region=0x00004d49a4f0412e axis=y coord=-2 range=lattice:-9,lattice:-4
 
-set use_regions=true
+annotation delete-edge on=drive-line id=1 t=0.80
 ----
-set use_regions=true
+annotation delete-edge on=drive-line id=1 t=0.80
 
-set min_stalls_per_spine=3
+annotation delete-edge on=grid region=0x00002663fca3dc50 axis=x coord=-5 range=lattice:0,lattice:2
 ----
-set min_stalls_per_spine=3
+annotation delete-edge on=grid region=0x00002663fca3dc50 axis=x coord=-5 range=lattice:0,lattice:2
+
+annotation delete-vertex on=perimeter loop=outer edge=2→3 t=0.63
+----
+annotation delete-vertex on=perimeter loop=outer edge=2→3 t=0.63
+
+annotation delete-edge on=grid region=0x00002663fca3dc50 axis=x coord=-16 range=lattice:0,lattice:2
+----
+annotation delete-edge on=grid region=0x00002663fca3dc50 axis=x coord=-16 range=lattice:0,lattice:2
+
+annotation delete-edge on=grid region=0x00002663fca3dc50 axis=y coord=1 range=lattice:-16,lattice:-15
+----
+annotation delete-edge on=grid region=0x00002663fca3dc50 axis=y coord=1 range=lattice:-16,lattice:-15
+
+annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-4 range=lattice:0,lattice:2 traffic=one-way-reverse
+----
+annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-4 range=lattice:0,lattice:2 traffic=one-way-reverse
+
+annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-3 range=lattice:0,lattice:2 traffic=two-way-reverse
+----
+annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-3 range=lattice:0,lattice:2 traffic=two-way-reverse
+
+annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-1 range=lattice:0,lattice:2 traffic=one-way-reverse
+----
+annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-1 range=lattice:0,lattice:2 traffic=one-way-reverse
+
+annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-12 range=lattice:0,lattice:2 traffic=two-way-reverse
+----
+annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-12 range=lattice:0,lattice:2 traffic=two-way-reverse
+
+region-override region=0x0000c918bce22136 offset=154.58
+----
+region=0x0000c918bce22136 offset=154.58
+
+region-override region=0x000004ac5a8577bd angle=2 offset=-79.50
+----
+region=0x000004ac5a8577bd angle=2 offset=-79.5
+
+region-override region=0x00002663fca3dc50 angle=92
+----
+region=0x00002663fca3dc50 angle=92
 
 generate
 ----
-total_stalls: 667
+total_stalls: 1004
 
 snapshot
 ----

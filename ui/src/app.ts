@@ -129,10 +129,10 @@ export class App {
     const defaultLot: ParkingLot = {
       boundary: {
         outer: [
-          { x: 54.71, y: 49.12 },
+          { x: -11.97, y: 49.12 },
           { x: 692.14, y: 0 },
           { x: 782.80, y: 654.85 },
-          { x: 31.41, y: 653.82 },
+          { x: -166.61, y: 638.35 },
         ],
         holes: [
           [
@@ -212,6 +212,50 @@ export class App {
             coord: 1,
             range: [{ at: "Lattice", other: -16 }, { at: "Lattice", other: -15 }],
           },
+        },
+        {
+          kind: "Direction",
+          target: {
+            on: "Grid",
+            region: 42210882214992,
+            axis: "X",
+            coord: -4,
+            range: [{ at: "Lattice", other: 0 }, { at: "Lattice", other: 2 }],
+          },
+          traffic: "OneWayReverse",
+        },
+        {
+          kind: "Direction",
+          target: {
+            on: "Grid",
+            region: 42210882214992,
+            axis: "X",
+            coord: -3,
+            range: [{ at: "Lattice", other: 0 }, { at: "Lattice", other: 2 }],
+          },
+          traffic: "TwoWayReverse",
+        },
+        {
+          kind: "Direction",
+          target: {
+            on: "Grid",
+            region: 42210882214992,
+            axis: "X",
+            coord: -1,
+            range: [{ at: "Lattice", other: 0 }, { at: "Lattice", other: 2 }],
+          },
+          traffic: "OneWayReverse",
+        },
+        {
+          kind: "Direction",
+          target: {
+            on: "Grid",
+            region: 42210882214992,
+            axis: "X",
+            coord: -12,
+            range: [{ at: "Lattice", other: 0 }, { at: "Lattice", other: 2 }],
+          },
+          traffic: "TwoWayReverse",
         },
       ],
       aisleVector: aisleVectorFromAngle(90, 0, { x: -80, y: 250 }),

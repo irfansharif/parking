@@ -107,12 +107,15 @@ pub struct SpineSegment {
     pub face_idx: usize,
     pub is_interior: bool,
     /// Stall-lean flip for this spine — the final XOR of OneWay's
-    /// per-side asymmetry and TwoWayReverse's face-wide policy.
-    /// Computed once at spine construction; placement just reads it.
+    /// per-side asymmetry and the carrier aisle's per-edge
+    /// TwoWayReverse flag. Computed once at spine construction;
+    /// placement just reads it.
     pub flip_angle: bool,
-    /// Half-pitch stagger flag for OneWay sides whose outward_normal
-    /// is right-of-travel. Lets opposing OneWay rows interlock instead
-    /// of lining up.
+    /// Half-pitch grid stagger. Held equal to `flip_angle` so that two
+    /// opposing back-to-back spines (with antiparallel oriented_dir)
+    /// produce a relative half-pitch offset whenever their leans
+    /// disagree, interlocking their back edges; when leans agree the
+    /// shifts cancel and back edges meet on the same line.
     pub staggered: bool,
     /// True if this spine borders a direction-annotated aisle (OneWay,
     /// OneWayReverse, or TwoWayReverse). Used to tie-break in stall

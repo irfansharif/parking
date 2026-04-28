@@ -61,11 +61,27 @@ Prototype for parking-v2, showing some of the additional features above.
 ### 1.1 Polygon with Holes
 
 The boundary input is a **polygon with holes**: a CCW outer boundary
-representing the parking site, with zero or more CW inner polygons representing
-building footprints or other obstacles. Edges of both the outer boundary and the
-holes can optionally carry a circular arc, allowing curved site boundaries.
-Curved edges are discretized into dense polylines at the top of the pipeline, so
-all downstream geometry operates on straight segments only.
+representing the parking site (the lot **deed line** — the outermost
+sketch the user draws), with zero or more CW inner polygons representing
+building footprints or other obstacles. Holes are stored as **aisle-edge
+rings** — they sit directly where the perimeter aisle around each
+building hugs the wall. The outer is inset inward by one parking-row
+depth + one aisle width (+ optional `site-offset`) at the top of the
+pipeline to recover the aisle-edge perim ring; holes need no inset.
+
+Edges of both the outer boundary and the holes can optionally carry a
+circular arc (AutoCAD-style bulge parameterization), allowing curved
+site boundaries. Curved edges are discretized into dense polylines at
+the top of the pipeline, so all downstream geometry operates on
+straight segments only.
+
+Each sketch vertex carries a stable `VertexId` (a 32-bit integer
+allocated at parse time and threaded through the pipeline). Annotations
+that target perimeter sub-edges address them as `(start_vid, end_vid)`
+pairs rather than by array index or arc length, so the address survives
+vertex insertion, deletion, and reordering elsewhere on the loop. Synthetic
+ids (above `1<<30`) are auto-allocated for chord vertices created during
+arc discretization; they're not addressable from annotations.
 
 ### 1.2 Drive-Aisle Graph
 
@@ -73,18 +89,23 @@ The structural primitive is a planar graph of **vertices** and **edges**.
 Vertices are 2D points. Each edge carries some metadata:
 
 - **Interior flag** — distinguishes interior aisles (generated within the site)
-  from perimeter aisles (tracing the boundary/hole loops).
+  from perimeter aisles (tracing the inset of the outer boundary and the hole
+  loops).
 - **Direction** — Edge endpoints (start, end) are stable and never reordered to
-  encode direction. One of `TwoWay(Forward|Reverse)`, or
-  `OneWay(Forward|Reverse)`, where `Forward`/`Reverse` is relative to the edge's
-  start→end. Direction is carried through edge provenance onto adjacent parking
-  bays, where it informs stall placement: which sides of an aisle gets stalls,
-  and which way angled stalls lean.
+  encode direction. `None` is the default unannotated two-way state; `Some` is
+  one of `OneWay`, `OneWayReverse`, or `TwoWayReverse`. `OneWay` means traffic
+  flows along the edge's stored start→end; `OneWayReverse` flips that without
+  mutating the endpoints (the canonical edge geometry stays stable, direction
+  rides entirely in the tag). `TwoWayReverse` keeps both lanes but mirrors the
+  stall-lean across the aisle axis. Direction informs stall placement: which
+  sides of an aisle get stalls, which way angled stalls lean, and whether
+  opposing rows interleave (one-way) vs braid (two-way).
 
-Each vertex is tagged **perimeter** (pinned to the inset boundary and hole
-loops, brown dots below) or **interior** (blue dots in the figure below). Only
-perimeter vertices can be moved around manually in the prototype, effectively
-reshaping the site/holes.
+Each vertex is tagged **perimeter** (the first `perim_vertex_count` indices,
+pinned to the aisle-edge inset of the outer boundary and to hole loops, brown
+dots below) or **interior** (blue dots in the figure below). Interior aisle
+endpoints spliced onto the perimeter are *not* counted as perimeter — the user
+needs to drag the perimeter vertices themselves to reshape the site.
 
 ![Underlying edges and vertices, with the red edges indicating the perimeter aisles. We also see the edge provenance in play, showing each side of the individual parking bays coloured depending on the corresponding aisle (blue for interior edges therefore containing angled stalls, yellow otherwise, and pink of representing some wall where there’s no aisle entry).](attachment:77214313-a5a1-4f70-a6b1-7d8ecf494600:image.png)
 
@@ -97,65 +118,125 @@ representing some wall where there’s no aisle entry).
 ### 1.3 Drive Lines and Regions
 
 **Drive lines** are user-drawn line segments that cut through the site, creating
-additional driving aisles (think cross-cuts). They're clipped to the inset
-boundary and spliced into the aisle graph using interior edges and vertices.
-Each drive line carries a `partitions` flag — when set, the line participates
-in region decomposition; when unset, it's a corridor that lives in the aisle
-graph but doesn't divide space.
+additional driving aisles (think cross-cuts). They're clipped to the aisle-edge
+perimeter (the same ring the perim aisles live on, not the raw deed line) minus
+expanded hole interiors, and clamped to the nearest auto-graph edge crossings
+at each end so a short segment between two interior aisles only extends to
+those aisles. Surviving sub-intervals are spliced into the aisle graph as
+interior edges and vertices, snapping endpoints to nearby vertices or splitting
+existing edges to create junctions. Each drive line carries a stable `id` and a
+`partitions` flag — when set, the line participates in region decomposition;
+when unset, it's a corridor that lives in the aisle graph but doesn't divide
+space. Splice vertices remember the originating `(drive_line_id, t)` so
+annotations can address them parametrically.
 
 **Regions** are the bounded faces of the planar arrangement of `{outer
 boundary ∪ hole boundaries ∪ partitioning drive lines}`. Holes aren't special:
 they're arrangement edges like anything else. A dangling partition (one that
-doesn't close a cycle) is inert by construction — no new face. Each region
-gets its own aisle angle and offset, overridable through a "control vector".
-Region centers are computed via polylabel (pole of inaccessibility) so the
-control vector sits inside the region even for concave or ring-shaped ones.
+doesn't close a cycle) is inert by construction — no new face. Decomposition
+runs against the **raw sketch** (not the inset) — region IDs are tied to
+sketch corners, so they don't shift when params like `stall-depth`,
+`aisle-width`, or `site-offset` change the inset distance. Each region's
+clip polygon is then intersected with the aisle-edge perim before driving
+the auto-generated aisles.
+
+Region IDs are derived from the **canonicalized cyclic sequence of edge kinds**
+bounding each face — `Outer(VertexId)`, `Hole(hole_index, VertexId)`, or
+`Partition(drive_line_id)` — deduped for consecutive identical kinds and
+rotated to lex-smallest first. This survives vertex renumbering, partition
+re-ordering, and edits elsewhere on the loop, so per-region overrides keep
+resolving across regenerations. The single-region case (no partitions, or
+partitions that don't close any sub-region) gets a reserved fallback ID.
+
+Each region gets its own aisle angle and offset, overridable per-region through
+a "control vector" anchored at the region's pole of inaccessibility (computed
+via the `polylabel` crate) so the vector sits inside even for concave or
+ring-shaped regions.
 
 ### 1.4 Stall Modifiers
 
-Stall modifiers are user-drawn geometry, applied as a post-pass against placed
-stalls and faces. We'll support two kinds:
+Stall modifiers are user-drawn geometry — a polyline plus a target
+`StallKind` — applied as a post-placement pass against placed stalls.
+Suppression is not a separate concept from retype: it folds into
+`StallKind` as a distinguished `Suppressed` variant, and the renderer
+skips stalls of that kind. So:
 
-- **Suppress** — removes any stall whose geometry overlaps the modifier
-  (useful for clearing entrances, fire lanes, or any corridor that should
-  remain unobstructed).
-- **StallType** — retypes overlapping stalls (ADA, EV, compact, etc.).
+- `kind = Suppressed` — removes any stall within `radius` of the modifier
+  (useful for clearing entrances, fire lanes, or any corridor that
+  should remain unobstructed). Suppression applies regardless of the
+  stall's prior kind.
+- Any other kind (`Compact`, `Ev`, etc.) — retypes overlapping stalls.
+  `Standard`, `Compact`, and `Ev` are retypeable; `Island` is preserved
+  (it's coupled to already-carved landscape geometry, so retyping would
+  create a conflict).
 
-The modifier geometry is a polyline; a single point is the zero-length case
-(e.g., place one ADA stall here). Modifiers stay in world-space and don't
-follow grid transforms — suppressing a fire lane shouldn't move when the user
-nudges aisle-angle.
+The modifier geometry is a polyline; a single point is the zero-length
+case (e.g., place one ADA stall here). The match radius scales with stall
+footprint (`stall_depth * 0.5`) so users don't have to draw pixel-perfect
+lines to catch a row of stalls. Modifiers stay in world-space and don't
+follow grid transforms — suppressing a fire lane shouldn't move when
+the user nudges aisle-angle.
 
 ![Drive lines, with partitioning ones dividing the space into independent regions (colored). Each region has a “control vector” to adjust angle and offset.](attachment:79be9336-9a37-4bc3-977c-f52c3d218995:image.png)
 
 ### 1.5 Annotations
 
-Annotations are spatial intents that survive graph regeneration. Each targets
-a vertex or sub-edge(s) by addressing a point (or, on grid lines, a span) in
-one substrate's own coordinate system. The three substrates — **abstract grid**
-(per region; integer lattice, plus crossings with drive-lines or perimeter as
-substrate-keyed stops), **drive lines** (parametric `t ∈ [0, 1]` from start to
-end), and the **perimeter** (normalized arc ∈ [0, 1] per loop) — each carry a
-canonical direction: grid lines run low→high along their free axis, drive
-lines run +t, the outer perimeter is CCW, holes are CW.
+Annotations are spatial intents that survive graph regeneration. Each
+targets a vertex or sub-edge(s) by addressing a point (or, on grid lines,
+a span) in one substrate's own coordinate system. The three substrates
+each carry a canonical direction:
 
-Three annotation kinds: **delete-vertex** (cascades to incident sub-edges),
-**delete-edge**, and **direction** (`oneWay` / `oneWayReverse` /
-`twoWayOriented` / `twoWayOrientedReverse`, relative to the carrier's
-canonical direction). User-drawn polygon corners are edited via the sketch,
-not via annotation.
+- **Abstract grid** (per region) — integer lattice with both axes, plus
+  optional `Lattice`/`CrossesDriveLine`/`CrossesPerimeter` stops along
+  the line's free axis. Grid lines run low→high along their free axis.
+  The lattice is materialized as an `AbstractFrame`: an orthonormal
+  transform with `dx = 2 · effective_depth + 2 · aisle_width` and
+  `dy = stalls_per_face · stall_pitch`, derived per-region from the
+  region's effective `aisle_angle_deg` / `aisle_offset`. Annotations
+  keyed by integer `(xi, yi)` translate to world coords via
+  `frame.forward(p)` — so dragging the aisle vector
+  (changing `aisle_offset`) slides every grid annotation in lockstep
+  with the lattice it sits on.
+- **Drive lines** — parametric `t ∈ [0, 1]` from start to end. Splice
+  vertices placed by the drive-line splicer remember their `t`, so
+  annotations resolve by t-proximity rather than world distance.
+- **Perimeter** — addressed by the **sketch edge** carrying the point:
+  `(loop, start_vid, end_vid, t)` where `loop` is `Outer` or
+  `Hole(index)`, the vertex pair names a sketch edge in the loop's
+  canonical winding (CCW outer, CW holes), and `t ∈ [0, 1]` is the
+  position along that edge's chord (or arc, when the sketch edge has
+  bulge data). The pipeline evaluates `t` to a world point, projects
+  onto the graph perim ring (the inset for `Outer`, the hole sketch
+  itself for `Hole`), and matches against graph vertices and sub-edges
+  by arc length. Outer projection allows `inset_d + arc_slack` of
+  perpendicular offset; hole projection just `arc_slack`.
 
-The grid lines seen below are a transformation of a unit grid in an infinite
-space, rotated/stretched/translated onto the 2D canvas; annotations stored in
-that unit grid's coordinates follow transformations for free.
+Three annotation kinds: **delete-vertex** (cascades to incident
+sub-edges; degree-2 collinear interior vertices left over from a
+deletion are merged into single edges so columns don't carry vestigial
+crossings), **delete-edge**, and **direction** (`OneWay` /
+`OneWayReverse` / `TwoWayReverse`, relative to the carrier's canonical
+direction — the resolver flips the stored target into the corresponding
+edge-frame variant when start/end disagrees with canonical). User-drawn
+polygon corners are edited via the sketch, not via annotation.
+
+The grid lines seen below are a transformation of a unit grid in an
+infinite space, rotated/stretched/translated onto the 2D canvas;
+annotations stored in that unit grid's coordinates follow
+transformations for free.
 
 **Constraint.** No collinear stretches between any two substrates. Every
 substrate pair crosses the other at most once per traversal, so
-`crossesDriveLine` / `crossesPerimeter` stops resolve unambiguously to the
-first crossing along the carrier's canonical direction.
+`CrossesDriveLine` / `CrossesPerimeter` stops resolve unambiguously to
+the first crossing along the carrier's canonical direction.
 
-**Dormancy (single rule).** Any referenced substrate or stop not present in
-the current graph → the annotation is dormant this regen. Types in §6.1.
+**Dormancy (single rule).** Any referenced substrate or stop not
+present in the current graph → the annotation is dormant this regen.
+Each dormant annotation is reported back to the UI as a
+`{ index, reason }` pair (e.g., "region {…} not in current
+decomposition", "no graph vertex on perimeter loop within tol of
+arc 0.42"), so the UI can surface them without losing the user's intent.
+Types in §6.1.
 
 ![Some annotations shown, like driving directions, deletion of a vertex, and also on specific edges (in this example just individual segments, not collinear stretches).](attachment:b27c618f-bbc9-4f25-b78e-68b744c61d46:image.png)
 
@@ -183,42 +264,64 @@ Input (boundary, holes, curves, drive lines, annotations, params)
   │       edges with direction and interior/perimeter
   │       metadata.
   │
-  ├─ 3. Aisle polygon construction (edges → merged polygons)
-  │     - Extrude each edge into a rectangle, fill miter
-  │       wedges at junctions, boolean union into merged
-  │       driveable surfaces.
+  ├─ 3. Aisle polygon construction (centerline graph → merged
+  │     driveable surface)
+  │     - Stroke the centerline graph by `aisle-width` via
+  │       i_overlay's polyline stroker: closed perim/hole
+  │       loops with mitered joins, interior segments
+  │       butt-capped (their perpendicular butts overlap at
+  │       4-way crossings, filling junctions implicitly).
+  │       Boolean-union the strokes into merged shapes.
   │
   ├─ 4. Parking bay extraction (boundary − aisles − holes)
   │     - Produces the "negative space" polygons where
   │       stalls will be placed.
   │
-  ├─ 5. Edge provenance tagging
-  │     - Classify each face edge as wall or aisle. Carries
-  │       direction, interior/perimeter flag, and suppression
-  │       state through to downstream decisions (boundary
-  │       classification, stall suppression, spine weighting).
+  ├─ 5. Edge provenance tagging (TaggedFace per bay)
+  │     - Classify each face edge as Wall or
+  │       Aisle{corridor_idx, interior, travel_dir,
+  │       is_two_way_oriented}. Edges that straddle an
+  │       aisle/wall transition are split via binary search.
+  │       Drives boundary-face classification, stall-angle
+  │       policy, one-way braiding, and spine direction.
   │
-  ├─ 6. Spine generation (aisle edges → placement
-  │     centerlines)
-  │     - Offset each aisle-facing edge inward by
-  │       stall-reach, clip to the face polygon. Post-process:
-  │       dedup, merge collinear, extend to face boundary,
-  │       filter short spines.
+  ├─ 6. Spine generation (aisle-facing edge → offset
+  │     centerline)
+  │     - For each aisle-facing edge of each bay, offset
+  │       inward by `stall-reach` and trim each end inward
+  │       by a corner-angle-dependent amount (so the spine
+  │       sits on the integer abstract-grid line). Post-
+  │       process: clip to the face, dedup overlaps, merge
+  │       collinear chains across face seams, extend
+  │       interior spines colinearly to the face boundary
+  │       (folded back into the primary's extent), drop
+  │       spines that won't fit `min-stalls-per-spine`.
   │
   ├─ 7. Stall placement (grid-locked fill along spines)
-  │     - Fill each spine with stalls at stall-pitch
-  │       intervals, with angle braiding and grid alignment.
-  │       Opposing spines grid-lock to each other.
+  │     - Fill each spine with stalls at `stall-pitch`
+  │       intervals. `flip_angle` (lean) and `staggered`
+  │       (half-pitch shift) bits are precomputed at spine
+  │       construction from per-aisle direction; placement
+  │       just reads them. Opposing spines grid-lock through
+  │       a shared absolute-grid origin.
   │
   ├─ 8. Stall filtering
-  │     - Face clipping (boolean containment), conflict
-  │       removal within each face, suppression line
-  │       filtering, short segment removal.
+  │     - Conflict removal within each face (annotated
+  │       spines get a small length bonus to outrank
+  │       identically-long unannotated neighbors), face
+  │       clipping (boolean containment with overhang
+  │       tolerance), entrance-on-face filter, stall-modifier
+  │       retype/suppress, short-segment removal.
   │
   └─ 9. Island computation (face − stalls → landscape gaps)
         - Mark every Nth stall as an island gap.
           Boolean-subtract non-island stalls from face
-          polygons to produce landscape contours.
+          polygons to produce landscape contours. When
+          `island-corner-rounding` is on, morphologically
+          open each face by `island-corner-radius` first
+          (round joins) so islands at convex corners
+          inherit a turn-radius-shaped arc instead of a
+          90° wedge.
   │
 Output (ParkingLayout)
 
@@ -233,27 +336,39 @@ aisles in two phases.
 
 **Phase A — auto-generate.**
 
-1. Apply site offset (inset the outer boundary).
-2. Snap hole vertices onto nearby perimeter edges (within `aisle-width`). When
-   a building sits close to the boundary, this collapses near-duplicate
-   parallel edges that would otherwise produce unusable sliver faces.
-3. Decompose the site into regions (bounded faces of the planar arrangement of
-   outer boundary, hole boundaries, and partitioning drive lines). For each
-   region:
-    - Determine the dominant aisle angle (e.g. from the longest hole edge, or
-      a global fallback). User-overridable per region.
-    - Compute how wide the region is in the direction perpendicular to the
-      aisles, to determine how many rows fit.
-    - Space grid lines at intervals of `2 * stall-reach + aisle-width`, where
-      `stall-reach = stall-depth * sin(stall-angle) + cos(stall-angle) *
-      stall-width / 2` is the perpendicular depth a stall occupies from the
-      aisle edge.
-    - For each grid line, intersect with the region face to get enter/exit
-      intervals.
-    - Record where grid lines cross perimeter/hole edges (split points).
-4. Generate perpendicular cross-aisles at user-configured stall intervals. If
-   both main and cross aisles exist, split edges at their intersections.
-5. Build perimeter edges from boundary/hole loops, splitting at grid
+1. Inset the outer deed line inward by `inset_d + site-offset` to
+   recover the **aisle-edge perim** ring (the centerline that the perim
+   aisle rectangles sit on), where `inset_d = effective_depth +
+   aisle-width` is the mandatory perimeter parking-band thickness, and
+   `effective_depth = stall-depth * sin(stall-angle) +
+   cos(stall-angle) * stall-width / 2`. Holes need no inset — the
+   sketched hole IS the aisle-edge ring around the building.
+2. Snap hole vertices onto nearby aisle-edge perim edges (within
+   `aisle-width`). When a building sits close to the boundary, this
+   collapses near-duplicate parallel edges that would otherwise produce
+   unusable sliver faces.
+3. Decompose the lot into regions (bounded faces of the planar
+   arrangement of `{outer ∪ holes ∪ partitioning drive lines}` on the
+   raw sketch). For each region, intersect its raw clip polygon with
+   the aisle-edge perim to get the aisle-usable area, then:
+    - Pick the dominant aisle angle as the longest edge of the region
+      polygon (regardless of whether it came from outer / hole /
+      partition). User-overridable per region via `RegionOverride`.
+    - Walk grid lines along the region's `AbstractFrame` integer
+      lattice — every integer `xi` in abstract space contributes one
+      driving aisle, anchored to `aisle_offset` so dragging the aisle
+      vector slides the entire grid (and any annotations keyed by
+      integer `(xi, yi)` follow the shift).
+    - For each grid line, intersect with the region's clip face minus
+      hole interiors to get enter/exit intervals.
+    - Record where grid lines cross perim/hole edges (split points).
+4. Generate perpendicular cross-aisles at every integer `yi` in the
+   abstract frame — i.e., spaced by `stalls-per-face * stall-pitch`
+   along the aisle direction. `stalls-per-face` is what the user
+   tunes (the number of stalls in each face along the aisle direction);
+   the spacing falls out. Split main-aisle and cross-aisle pairs at
+   their mutual intersections so the graph is fully connected.
+5. Build perim edges from the inset/hole loops, splitting at grid
    intersections.
 6. Build interior edges for each grid and cross-aisle segment.
 
@@ -261,42 +376,53 @@ aisles in two phases.
 
 1. (**Later**) Merge any user-edited manual graph: auto edges that overlap
    manual aisles are filtered out.
-2. Splice in non-partitioning drive lines: clipped to the inset boundary minus
-   holes, clamped to the nearest auto-graph edge crossings at each end, and
-   merged into the graph (snapping endpoints to nearby vertices or splitting
-   existing edges to create junctions).
-3. Apply annotations — direction and deletion — to produce the resolved
-   graph.
+2. Splice in drive lines: clipped to the aisle-edge perim minus
+   expanded holes, clamped to the nearest auto-graph edge crossings at
+   each end, and merged into the graph (snapping endpoints to nearby
+   vertices or splitting existing edges to create junctions). Each
+   splice vertex remembers `(drive_line_id, t)` for annotation lookup.
+3. Apply annotations — direction (first pass) then deletion (second
+   pass). Direction tags the edge without flipping `(start, end)`;
+   deletion drops edges and rebuilds adjacency, then iteratively merges
+   any degree-2 collinear interior vertex (vestige of a deleted
+   crossing) into a single edge.
 
 ### 3.2 Aisle Polygon Construction
 
-Each undirected aisle edge becomes an **aisle rectangle** — the edge offset by
-`aisle-width / 2` on each side. At vertices where two or more edges meet,
-**miter fill wedges** are computed: for each pair of consecutive edges (sorted
-by outgoing angle), intersect their offset lines and create a triangular or
-quadrilateral fill. Acute-angle miters are capped to prevent spikes. (**Later**)
-We can add support for curved drive aisles by discretizing it into a dense
-polylines.
+The merged driveable surface comes from **stroking the centerline graph**
+through `i_overlay::StrokeOffset`:
 
-![Red polygons show the miter fills generated off of perimeter edges.](attachment:108b4a69-fd1e-458e-9182-09c48d74c76d:image.png)
+- **Perim/hole loops** — the perimeter sub-graph is decomposed into
+  maximal paths. A loop with no annotation-driven deletions yields one
+  closed polyline per ring; an annotation that deletes a perimeter
+  vertex breaks that cycle into one or more open polylines whose
+  endpoints sit at the deletion point. Closed polylines are stroked
+  with **mitered joins** so corners turn cleanly; open polylines are
+  stroked with **butt caps** so the "doorway" stays open downstream.
+- **Interior aisles** — each interior edge is stroked as its own
+  2-point open polyline with butt caps. The perpendicular butts of two
+  edges meeting at an interior 4-way crossing overlap at the centre,
+  so the junction is fully covered without explicit wedge geometry.
 
-Red polygons show the miter fills generated off of perimeter edges.
+Miter joins below 15° fall back to bevels — without that, two aisles
+meeting at a sharp angle would shoot a miter spike many aisle-widths
+long. The result is boolean-unioned (`FillRule::NonZero`) into one or
+more merged shapes; each shape is `[outer, hole₁, hole₂, …]`.
 
-![Red polygons show the miter fills generated off of perimeter edges. They particularly help around points where two edges meet at near perpendicular angles, so we get proper cornering.](attachment:bc8f5b5d-8a6c-4f42-9992-b1aedf56a520:image.png)
+This replaces the previous hand-rolled "rectangle + junction wedge +
+spike-removal + RDP-simplify + small-hole filter" passes — the stroker
+absorbs all of them in one shot, and the matching `boundary_only_miters`
+debug toggle is gone (it falls out of the strategy: closed loops miter,
+open polylines butt-cap).
 
-Red polygons show the miter fills generated off of perimeter edges. They
-particularly help around points where two edges meet at near perpendicular
-angles, so we get proper cornering.
+(**Later**) Curved drive aisles can be supported by discretizing into a
+dense polyline before stroking.
 
-All aisle rectangles and miter fills are boolean-unioned into merged aisle
-polygons. Post-union cleanup:
-
-- **Spike removal** — clean up vertices where the path doubles back on itself
-  (anti-parallel edges, dot product less than −0.95).
-- **Contour simplification** — Ramer-Douglas-Peucker to remove vertices
-  contributing less than a tolerance of perpendicular distance.
-- **Hole filtering** — removes small holes (area less than max-aisle-width²)
-  that are junction artifacts.
+`corridor_polygons` (per-edge rectangle, paired with each edge's
+`interior` flag and OneWay travel direction) is still emitted as a
+side-channel feed for face-edge tagging in §3.4 — it lets the tagger
+attribute each face edge to a specific source aisle even after the
+merged surface erases per-edge identity.
 
 ### 3.3 Parking Bay Extraction
 
@@ -307,25 +433,43 @@ polygons-with-holes, each representing a parking bay.
 
 ### 3.4 Edge Provenance
 
-After extracting parking payes, each edge of each bay is tagged with its source:
+After extracting parking bays, each edge of each bay is tagged with its
+source into a `TaggedFace` (one per bay) carrying `{edges, hole_edges,
+is_boundary, wall_edge_indices}`. Every `FaceEdge` carries `{start, end,
+source}`:
 
-- **Wall** — the face edge lies on the site boundary or a building footprint.
-- **Aisle** — the face edge lies on a drive aisle. Tagged with the specific
-  aisle index, whether it's interior or perimeter, the travel direction (for
-  one-way/oriented aisles), and whether it's two-way-oriented.
+- `EdgeSource::Wall` — the face edge lies on the site deed line or a
+  building footprint.
+- `EdgeSource::Aisle { corridor_idx, interior, travel_dir,
+  is_two_way_oriented }` — the face edge lies on a drive aisle.
+  `corridor_idx` points back to the per-edge corridor rectangle (so
+  downstream code can recover the carrier edge),
+  `interior`/`perimeter` distinguishes inner aisles from the perim
+  band, `travel_dir` is `Some(unit_vec)` for OneWay aisles and `None`
+  otherwise, and `is_two_way_oriented` flags TwoWayReverse aisles.
 
-Edges that straddle the boundary between aisle and wall are split via binary
-search at the transition point. The resulting tagged edge carries per-edge
-provenance that informs all downstream decisions:
+The tagger samples each face edge's endpoints against the merged aisle
+shapes; if both are off, it's a wall; if both are on, it's an aisle (and
+the per-edge corridor with the best segment-overlap score wins
+`corridor_idx`); if one is on and the other off, the transition point
+is found via binary search and the edge splits into a wall sub-edge
+plus an aisle sub-edge in the correct winding order.
 
-- **Boundary classification** — a face with any wall edge (or only perimeter
-  aisle edges) is flagged as a **boundary face**. This flag drives a stall-angle
-  policy applied during stall placement (see §3.6).
-- **Stall direction handling** — on one-way aisles, stalls on each side are
-  angled with the travel direction in mind. On two-way-oriented aisles the
-  orientation determines which side gets which angle lean.
-- **Spine weighting** — wall edges get skeleton weight 0 (fixed), aisle edges
-  get weight 1 (shrink normally).
+Per-edge provenance drives every downstream decision:
+
+- **Boundary classification** — a face with any wall edge (or with only
+  perimeter aisle edges, no interior aisles) is flagged as a
+  **boundary face**. Boundary faces get 90° stalls regardless of the
+  global `stall-angle` (see §3.6).
+- **Stall direction handling** — for OneWay aisles, `travel_dir`
+  drives per-side asymmetric flip + half-pitch stagger so opposing
+  rows herringbone in travel direction. For TwoWayReverse,
+  `is_two_way_oriented` flips the lean on the spines bordering that
+  carrier aisle only; opposing strips in the same bay stay on the
+  default lean unless their own carrier aisle is also annotated.
+- **Spine emission** — only aisle-facing edges produce spines. Wall
+  edges contribute only to corner-trim math at the spine endpoints
+  (see §3.5).
 
 ![Actual parking bays extracted after having subtracted the merged aisles. It also shows edge provenance by the side colors, representing walls (pink), interior (blue) or perimeter (yellow) sides. Also, there’s a hatched pattern around the”boundary” faces — those that have no interior sides.](attachment:5ee668ab-293a-4f81-9a38-c938b65551a4:image.png)
 
@@ -336,48 +480,65 @@ the”boundary” faces — those that have no interior sides.
 
 ### 3.5 Spine Generation
 
-Spines are the centerlines along which stalls are placed. They're extracted from
-the **weighted straight skeleton** of each face — aisle-facing edges have weight
-1.0 (shrink normally) while wall edges have weight 0.0 (stay fixed).
+Spines are the centerlines along which stalls are placed. They're emitted
+**per aisle-facing face edge** by parallel offset — there's no event
+queue, no wavefront, no straight skeleton. For each `FaceEdge` tagged
+as aisle-facing, the spine runs parallel to the edge at `effective_depth`
+inward (left-perp, given normalized winding) so its outward normal points
+toward the aisle it serves.
 
-The straight skeleton is an event-driven medial axis. Each polygon edge shrinks
-inward at a rate determined by its weight. Two kinds of events: **edge events**
-(two adjacent wavefront vertices converge, collapsing an edge) and **split
-events** (a reflex vertex hits a non-adjacent edge, dividing the polygon). The
-skeleton records these events as a timeline.
+Each spine endpoint is **trimmed inward** by an amount that depends on
+the corner angle with its neighbor in the same contour, so the spine
+ends sit on the integer abstract-grid line that the back-to-back row
+on the next bay over will share:
 
-The wavefront is extracted at `stall-reach` — one stall depth in from the aisle.
-Each segment of the wavefront that corresponds to an aisle-facing edge becomes a
-**spine**. The spine's outward normal points toward the aisle it serves.
+- **aisle ↔ aisle corner** — `trim = ed / tan(θ/2)`, no floor. At a
+  90° cross-aisle corner that's exactly `ed`, matching a grid bay's
+  natural back-to-back row extent. Tangent-continuous neighbors
+  (chord chains on a discretized arc, interior angle → 180°) trim
+  toward zero so the chain stays within endpoint-merge tolerance.
+- **aisle ↔ wall corner** — `trim = ed / tan(θ)`, clamped to zero at
+  obtuse interior angles, with a floor of `ed/2` so perpendicular
+  corners still leave room for an end island.
 
-![Underlying weighted straight skeletons with edge collapse events (yellow dots), split events (pink squares), spines, spine extensions (described below), and also for asymmetric parking bays like those on the right, we generate one-sided spines (described below).](attachment:81194aec-d337-47ec-ba25-2ee73abfb180:image.png)
+Per-side trims are capped at `edge_len / 2` so the spine can't invert at
+very acute corners. The `spine-end-trim` debug toggle disables this
+entirely (spines run the full edge length). Each spine is tagged with
+its `face_idx`, `is_interior`, and three precomputed bits used by
+placement (§3.6):
 
-Underlying weighted straight skeletons with edge collapse events (yellow dots),
-split events (pink squares), spines, spine extensions (described below), and
-also for asymmetric parking bays like those on the right, we generate one-sided
-spines (described below).
+- `flip_angle` — XOR of OneWay's per-side asymmetry and the carrier
+  aisle's per-edge TwoWayReverse flag; controls stall-lean direction.
+- `staggered` — held equal to `flip_angle`. Half-pitch grid offset
+  applied whenever the lean is flipped from default. Two opposing
+  back-to-back spines have antiparallel oriented_dir, so when their
+  flips disagree (e.g., one side TwoWayReverse, the other default;
+  or OneWay's per-side asymmetry) the relative half-pitch shift
+  interlocks their back edges; when their flips agree the shifts
+  cancel and back edges meet on the same line.
+- `is_annotated` — true if the spine borders any direction-annotated
+  aisle. Used as a tie-break in conflict removal so annotated rows
+  aren't dropped in favor of identically-long unannotated neighbors.
 
-We do some additional spine post-processing, in two groups.
+Spine post-processing:
 
-- **Validity passes** — drop or repair spines that won't yield usable stalls:
-    - **Clipping** — spines are clipped to the face interior, with a dual-clip that
-      also validates the stall-reach offset has depth clearance.
-    - **Deduplication** — overlapping collinear spines are trimmed to their
-      non-overlapping tails.
-    - **Merging** — collinear touching spines with matching normals are joined.
-    - **Short spine filter** — spines that won't fit at least 3 stalls (length
-      shorter than `stall-reach` or insufficient for `3 × pitch`) are removed.
-
-- **Shaping passes** — handle awkward face geometry and reach into corners:
-    - **Narrow face handling** — if the face is too narrow for a wavefront at the
-      target depth (e.g., a face between two close aisles), the system suppresses
-      one aisle-facing edge at a time, re-runs the skeleton, and collects one-sided
-      spines.
-    - **Spine extensions** — Interior spines are extended colinearly to the face
-      boundary in both directions. Extensions use dual-clipping (both spine and
-      stall-reach positions must be inside the face) and a margin of 1.5x stall
-      pitch to prevent sliver islands. Extensions are placed greedily in
-      longest-first order, skipping any that conflict with already-placed stalls.
+- **Spine merging** — collinear spines with the same `flip_angle`,
+  `staggered`, `is_annotated`, and matching outward normals are
+  fused if their endpoints share within `spine-merge-endpoint-tol`
+  and their direction vectors are within `spine-merge-angle-deg`.
+  The merged spine projects all four endpoints onto the shared line
+  and takes the full extent. This straightens chord-derived spine
+  chains on discretized arcs into single straight segments.
+- **Spine extensions** — interior spines are extended colinearly to
+  the face boundary in both directions via dual-clipping (both the
+  spine and the stall-reach offset must stay inside the face). The
+  outer end is pulled inward by 1.5 × pitch to prevent sliver
+  islands; the inner end overlaps the primary by one pitch so
+  stalls flow continuously across the seam. Extensions then fold
+  back into their source primary's extent (`extend_primary_with_extensions`)
+  so the rest of the pipeline sees one longer `SpineSegment` per row.
+- **Short-spine filter** — runs after stall placement (see §3.7);
+  any spine with fewer than `min-stalls-per-spine` stalls drops.
 
 (**Future**) For curved face edges, we could instead consider a manual inset
 at `stall-reach`.
@@ -392,22 +553,51 @@ Stalls are placed on spines:
    packs better at 90°. This is a design choice, not a geometric constraint.
 2. **Stall pitch** = `stall-width / sin(angle)` — the spacing between stall
    centers along the spine.
-3. **Depth direction** (angle braiding): `depth_dir = normal * sin(stall_angle)
-   ± edge_dir * cos(stall_angle)`. At 90° this is purely perpendicular to the
-   spine. At 45° the stall leans along the spine direction. The sign of the
-   cosine term is determined by travel direction: it flips so that stalls on
-   opposite sides of a two-way aisle lean in opposite directions (herringbone),
-   while stalls on both sides of a one-way aisle lean the same way (matching
-   traffic flow).
-4. **Stall quad corners**:
-    - Back corners (at the spine): `mid ± width-dir * (stall-width / 2)`
-    - Aisle corners (at the drive aisle): `depth-dir` projection at `stall-reach
-      / sin(stall-angle)`, spread by `± edge-dir * (pitch / 2)`.
-    - Quads are emitted closed, tagged with which side is the aisle entrance.
-5. **Grid alignment**: Stalls snap to an absolute grid along the spine
-   direction. A centering shift distributes remaining space symmetrically.
-   Opposing spines (back-to-back across a face) grid-lock to each other's
-   shift, or negate it (mod pitch) for opposite orientations.
+3. **Lean and stagger** are read straight off the spine's precomputed
+   bits (`flip_angle`, `staggered`), with the single invariant
+   `staggered = flip_angle`. The three direction regimes set
+   `flip_angle` differently, but the stagger rule is the same:
+    - **Default (TwoWay, no annotation)** — `flip_angle = false`,
+      `staggered = false`. Opposing back-to-back strips share the
+      grid origin and back edges meet on the same line; their
+      antiparallel `width_dir`s give back-to-back herringbone for
+      free.
+    - **TwoWayReverse** — `flip_angle = true` for spines bordering
+      the annotated aisle, `staggered = true`. Mirrors the default
+      lean across the aisle axis on that strip only; the half-pitch
+      shift keeps back edges interlocking with the un-annotated
+      partner. If both bordering aisles are annotated, both strips
+      shift by ½ pitch (relative offset 0) and the flipped-mirror
+      back edges meet on the same line.
+    - **OneWay / OneWayReverse** — per-side asymmetric `flip_angle`
+      (from `oriented_dir · travel_dir`); `staggered` follows.
+      Opposing spines have antiparallel `oriented_dir`, so exactly
+      one side gets staggered. Both sides end up leaning with
+      traffic flow, and the half-pitch shift interlocks them.
+
+   The stagger isn't a separate decision — it's a direct consequence
+   of `flip_angle`. Two opposing spines have antiparallel
+   `oriented_dir`, so the relative grid offset between them is
+   `½ · (flip_A XOR flip_B)`: zero when leans agree (back edges
+   coincide), ½ pitch when they disagree (back edges interlock).
+4. **Stall quad corners** (corner indexing
+   `[back_left, back_right, aisle_right, aisle_left]`):
+    - Back corners (at the spine): `mid ± width-dir * (stall-width / 2)`,
+      preserving the braided/interlocking pattern where opposing back
+      edges zigzag against each other.
+    - Aisle corners (at the drive aisle): `depth-dir` projection at
+      `effective-depth / sin(stall-angle)`, spread by `± edge-dir *
+      (pitch / 2)`. The renderer draws three sides
+      (`[3]→[0]→[1]→[2]`) and leaves `[2]→[3]` open as the entrance.
+5. **Grid alignment** — every stall midpoint snaps to a shared
+   absolute grid along the spine direction. A `grid_offset ∈ [0, 1)`
+   fraction of a pitch shifts the snap origin (used for the
+   half-pitch stagger driven by `staggered = flip_angle`). Spines on
+   opposite sides of a face grid-lock to the same shift through this
+   shared origin.
+6. **Placement order** — spines are processed longest-first, so when
+   §3.7 conflict removal compares overlapping candidates the dominant
+   row wins by length without further bookkeeping.
 
 ![Stall placement within each parking bay with respect to underlying spines, and following driving aisle directions (sometimes stall strips are suppressed accordingly). Stalls are also actually centered on the spine somewhat, and we try to place islands in opposing spines in way such that they’re aligned.](attachment:b5a72bb3-2a4c-4369-a8db-097625acc1a8:image.png)
 
@@ -418,17 +608,39 @@ try to place islands in opposing spines in way such that they’re aligned.
 
 ### 3.7 Stall Filtering
 
-After placement, stalls go through several filters:
+After placement, stalls go through several filters in this order — the
+order matters:
 
-- **Face clipping** — stalls not fully contained within their face are removed
-  (boolean intersection of stall quad with face polygon; remove if intersection
-  area less than stall area). Since faces are already clipped to the site boundary minus
-  holes, this subsumes boundary clipping.
-- **Conflict removal** — within each face, overlapping stalls are detected. On
-  interior faces the stall from the shorter spine is removed. On boundary faces
-  both conflicting stalls are removed (makes for more symmetrical corners).
-- **Suppression filter** — removes stalls whose geometry overlaps any
-  `Suppress` stall modifier (see §1.4).
+- **Entrance-on-face filter** — drops stalls whose aisle-facing
+  (entrance) edge falls strictly inside the face interior. The entrance
+  must sit on the face boundary or past it; an entrance interior to
+  the face means the stall opens into a parking bay rather than a
+  drive aisle, so it's unreachable. Sampled at 11 points along the
+  segment with a 0.9 minimum coverage threshold and a 0.5 ft
+  edge-tolerance.
+- **Conflict removal** — runs **before** face-overhang clipping. When
+  multiple candidate spines exist for the same narrow face (e.g.,
+  opposing offset spines in a sub-`2 · effective-depth` bay), their
+  stalls overlap spatially and need to fight it out on spine length.
+  Running face clipping first would asymmetrically drop the candidate
+  whose stalls hang slightly off a slanted face edge, silently handing
+  the contest to the shorter spine. Tie-break: spines on
+  direction-annotated aisles (`is_annotated`) get a 0.5-unit length
+  bonus so they outrank identically-long unannotated neighbors. On
+  boundary faces, both conflicting stalls are removed (more
+  symmetrical corners); on interior faces, only the shorter wins.
+- **Face clipping** — stalls not fully contained within their face are
+  removed via boolean difference (`stall − face`); leftover area must
+  be ≤ 2% of the stall area (`STALL_OVERHANG_TOL`). Since faces are
+  already clipped to the site boundary minus holes, this subsumes
+  boundary clipping.
+- **Stall modifiers** — `apply_stall_modifiers` retypes overlapping
+  stalls (see §1.4). `Suppressed` stays as a `StallKind::Suppressed`
+  variant so downstream consumers can still see the suppression
+  location; the renderer skips them.
+- **Short-segment filter** — drops every stall belonging to a spine
+  whose surviving stall count is below `min-stalls-per-spine`. Default
+  3; setting to 1 effectively disables the filter.
 
 ### 3.8 Island Computation
 
@@ -437,15 +649,28 @@ produced by:
 
 1. **Mark island stalls** — every Nth stall (by `island-stall-interval`) is
    marked as `StallKind::Island`, using absolute position-based grid marking
-   (`floor(proj / pitch) % interval == interval / 2`). End margins prevent
-   marking stalls at row endpoints.
-2. **Boolean subtraction** — for each face, subtract all non-island stalls from
-   the face polygon. The residual polygons (where island stalls were left as
-   gaps) become island contours. Islands with net area less than 10 are filtered out.
-
-    ![Actual island geometry,. In production we’ll want to add some rounding.](attachment:089bb8f8-0fe7-4829-88ea-73bebe44cfc3:image.png)
-
-    Actual island geometry,. In production we’ll want to add some rounding.
+   along each spine (`floor(proj / pitch) % interval == interval / 2`). End
+   margins prevent marking stalls at row endpoints (1.5 × pitch on interior
+   spines, 0.5 × pitch on boundary spines). Same-row stalls on opposite sides
+   of an aisle agree on which positions become islands because the marking
+   is anchored to absolute spine projection.
+2. **Optional face rounding** — when `island-corner-rounding` is on,
+   each face polygon is morphologically opened by `island-corner-radius`
+   (erode-then-dilate with round joins) before residual extraction.
+   Convex face corners pick up a turn-radius-shaped arc instead of a
+   90° wedge, mimicking drive-aisle cornering geometry. The rounded
+   shape is also threaded through the §3.7 stall-vs-face checks so
+   stalls don't visually overshoot the rounded contour. If opening
+   severs a face into multiple pieces (thin neck < 2r), the largest
+   piece per face is kept so per-face indexing stays 1:1.
+3. **Boolean subtraction** — for each face, subtract all non-island
+   stalls (optionally outset by `STALL_DILATION = 0.5` ft to close
+   sliver gaps from braided back edges) from the face polygon. The
+   residual polygons (where island stalls were left as gaps) become
+   island contours. Islands with net area below 10 ft² are filtered
+   out. When a face has zero stalls placed, the whole face becomes
+   one island (carrying its holes through so the area maths match
+   the actual face area).
 
 
 ## 4. User Interaction Model
@@ -465,17 +690,22 @@ Every edit triggers full regeneration: the input state is serialized, sent to
 the engine, and the output is re-rendered. The pipeline is fast enough for
 interactive use. Some parameters:
 
- | Parameter               | Range   | Effect                             |
- |-------------------------|---------|------------------------------------|
- | `stall-width`           | 7–40 ft | Individual stall width             |
- | `stall-depth`           | 8–30 ft | Stall depth perpendicular to aisle |
- | `aisle-width`           | 8–24 ft | Full driving aisle width           |
- | `stall-angle`           | 45–90°  | Stall angle relative to aisle      |
- | `aisle-angle`           | any°    | Dominant aisle grid direction      |
- | `aisle-offset`          | any     | Perpendicular grid offset          |
- | `site-offset`           | 0–50 ft | Inset from raw boundary            |
- | `cross-aisle-max-run`   | 3–50    | Stalls between cross-aisles        |
- | `island-stall-interval` | 0–20    | Stalls between landscape islands   |
+ | Parameter                   | Range   | Effect                                                          |
+ |-----------------------------|---------|-----------------------------------------------------------------|
+ | `stall-width`               | 7–40 ft | Individual stall width                                          |
+ | `stall-depth`               | 8–30 ft | Stall depth perpendicular to aisle                              |
+ | `aisle-width`               | 8–24 ft | One driving lane width (aisle is two lanes)                     |
+ | `stall-angle`               | 45–90°  | Stall angle relative to aisle                                   |
+ | `aisle-angle`               | any°    | Dominant aisle grid direction (lot-wide, region-overridable)    |
+ | `aisle-offset`              | any     | Perpendicular grid offset (lot-wide, region-overridable)        |
+ | `site-offset`               | 0–50 ft | Extra setback from the deed line, on top of the parking band    |
+ | `stalls-per-face`           | 3–50    | Stalls along the aisle per face (drives cross-aisle spacing)    |
+ | `island-stall-interval`     | 0–20    | Stalls between landscape islands                                |
+ | `island-corner-radius`      | 0–20 ft | Rounding radius for island corners (when rounding on)           |
+ | `min-stalls-per-spine`      | 1–10    | Drop spines with fewer surviving stalls (1 = off)               |
+ | `arc-discretize-tolerance`  | 0.5–10  | Chord-deflection budget for arc → polyline                      |
+ | `spine-merge-angle-deg`     | 1–30    | Max angular drift for collinear spine fusion                    |
+ | `spine-merge-endpoint-tol`  | 0–5 ft  | Endpoint-share tolerance for spine fusion                       |
 
 ## 5. Additional Integration Points
 
@@ -491,7 +721,7 @@ core warrants extra clearance beyond its hole footprint.
 
 ### 5.2 Custom Stall Types and Placement
 
-The prototype's `StallKind` enum (Standard, Compact, Ev, Extension, Island)
+The prototype's `StallKind` enum (Standard, Compact, Ev, Island, Suppressed)
 provides the hook. In production we want something akin to:
 
 - User-specified counts per type (not auto-calculated — letting users do the
@@ -583,8 +813,10 @@ type ParkingV2Inputs = {
 
 type ParkingV2Config = {
   // global parameters (DESIGN §4): stallWidth, stallDepth, aisleWidth,
-  // stallAngle, aisleAngle, aisleOffset, siteOffset, crossAisleMaxRun,
-  // islandStallInterval, pillar / ADA controls, etc.
+  // stallAngle, aisleAngle, aisleOffset, siteOffset, stallsPerFace,
+  // islandStallInterval, islandCornerRadius, minStallsPerSpine,
+  // arcDiscretizeTolerance, spine-merge tolerances, pillar / ADA
+  // controls, etc.
   // ...
 
   // Per-region overrides of the global aisle angle / offset, keyed by
@@ -592,32 +824,46 @@ type ParkingV2Config = {
   regionOverrides: ParkingV2RegionOverride[];
 };
 
-type ParkingV2RegionOverride = { regionId: string; aisleAngle?: number; aisleOffset?: number };
+type ParkingV2RegionOverride = { regionId: RegionId; aisleAngle?: number; aisleOffset?: number };
+type RegionId = number;     // FNV-1a hash of the canonicalized cyclic
+                            // edge-kind sequence; masked to 48 bits so it
+                            // round-trips through JSON safely. A reserved
+                            // sentinel above the mask range tags the
+                            // single-region fallback.
 
 type ParkingV2Annotation =
   | { kind: "deleteVertex"; target: Target }
   | { kind: "deleteEdge";   target: Target }
   | { kind: "direction";    target: Target; traffic: TrafficDirection };
 
-type TrafficDirection =
-  | "oneWay" | "oneWayReverse"
-  | "twoWayOriented" | "twoWayOrientedReverse";
+type TrafficDirection = "oneWay" | "oneWayReverse" | "twoWayReverse";
 
 // A referenceable region in one substrate's own coord system (§1.5).
-// range=null → whole grid line; [s, s] → vertex; [s1, s2] with s1 ≠ s2 → span.
+// Grid:       range=null → whole grid line; [s, s] → vertex; [s1, s2] (s1 ≠ s2) → span.
+// DriveLine:  parametric t ∈ [0, 1] from drive_line.start → drive_line.end.
+// Perimeter:  addresses a sketch edge by its (start, end) vertex-id pair plus
+//             an in-edge parameter t ∈ [0, 1]. The pipeline evaluates t against
+//             the edge (chord or arc, depending on stored bulge data), then
+//             projects onto the graph perim ring for resolution.
 type Target =
   | { on: "grid"; region: RegionId; axis: "x" | "y"; coord: number;
       range: [GridStop, GridStop] | null }
-  | { on: "driveLine"; id: number; t: number }              // t ∈ [0, 1]
-  | { on: "perimeter"; loop: PerimeterLoop; arc: number };  // arc ∈ [0, 1]
+  | { on: "driveLine"; id: number; t: number }
+  | { on: "perimeter"; loop: PerimeterLoop;
+      start: VertexId; end: VertexId; t: number };
 
 type GridStop =
   | { at: "lattice"; other: number }
   | { at: "crossesDriveLine"; id: number }
   | { at: "crossesPerimeter"; loop: PerimeterLoop };
 
-type PerimeterLoop = "outer" | { hole: SketchVertexId };   // hole keyed by any member sketch vertex
+type PerimeterLoop = { kind: "Outer" } | { kind: "Hole"; index: number };
+type VertexId = number;
 ```
+
+Annotations that fail to resolve this regen are returned in
+`baked.dormantAnnotations: { index, reason }[]` so the UI can surface
+them without losing the user's intent.
 
 All the user-drawn lines — boundary, holes, drive lines, **and stall
 modifiers** — live as edges in the sketch's own `PlanarNetwork`, so
@@ -657,6 +903,10 @@ type ParkingV2Baked = {
   // recomputed — it backs user-visible handles, so regenerating it
   // on entry to edit mode would flash.)
   aisleNetwork: PlanarNetwork;
+
+  // Annotations that didn't resolve this regen — surface in the UI
+  // (e.g., dimmed handle) without dropping the user's intent.
+  dormantAnnotations: Array<{ index: number; reason: string }>;
 };
 ```
 
@@ -699,10 +949,15 @@ overlay keyed off `stallKind`. Stalls / islands / spines aren't
 editable topology — they're pipeline outputs, held in `baked` as
 geometry.
 
-Region ids are a canonical signature of the region's bounding
-partition edges (outer-boundary segments + drive-line ids),
-recomputed each regen; falls back to polylabel-center proximity when
-topology shifts materially.
+Region ids are a canonical signature of the region's bounding edge
+sequence — `Outer(VertexId)`, `Hole(hole_index, VertexId)`, or
+`Partition(drive_line_id)`, deduped for consecutive identical kinds and
+rotated to lex-smallest first. Decomposition runs on the **raw sketch**
+(not the inset), so ids stay invariant when params like `stall-depth`,
+`aisle-width`, or `site-offset` change the inset distance. The
+single-region case (no partitions or no enclosed sub-region) gets a
+reserved fallback id so pre-existing `RegionOverride`s on a one-region
+lot keep resolving.
 
 ### 6.3 When controls appear
 

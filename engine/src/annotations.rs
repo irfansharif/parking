@@ -867,8 +867,17 @@ fn simplify_collinear_degree2(graph: &mut crate::types::DriveAisleGraph) {
             adj.entry(e.end).or_default().push(i);
         }
 
+        // Iterate vertex indices in sorted order so the first eligible
+        // merge is deterministic. HashMap iteration is randomized per
+        // process, so without sorting the merge sequence — and the
+        // resulting edge order in `graph.edges` — would vary across
+        // runs even for identical input.
+        let mut vis: Vec<usize> = adj.keys().copied().collect();
+        vis.sort_unstable();
+
         let mut merged_any = false;
-        for (&vi, edges) in &adj {
+        for vi in vis {
+            let edges = &adj[&vi];
             if vi < perim_n { continue; } // keep boundary vertices
             if edges.len() != 2 { continue; }
             let e1 = &graph.edges[edges[0]];
