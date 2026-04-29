@@ -290,7 +290,7 @@ export class Renderer {
     ctx.fillStyle = "rgba(40, 40, 60, 0.8)";
     ctx.fill();
 
-    if (state.layers.vertices) {
+    if (state.layers.annotations) {
       ctx.beginPath();
       this.tracePathWithArcs(boundary.outer, boundary.outer_arcs);
       ctx.strokeStyle = "rgba(233, 69, 96, 0.8)";
@@ -305,7 +305,7 @@ export class Renderer {
       ctx.fillStyle = "rgba(30, 30, 50, 0.95)";
       ctx.fill();
     }
-    if (state.layers.vertices) {
+    if (state.layers.annotations) {
       for (let hi = 0; hi < boundary.holes.length; hi++) {
         const hole = boundary.holes[hi];
         const holeArcs = boundary.hole_arcs?.[hi];
@@ -315,8 +315,10 @@ export class Renderer {
         ctx.lineWidth = 0.8;
         ctx.stroke();
       }
-
-      // Draw edge midpoint / apex handles.
+    }
+    if (state.layers.vertices) {
+      // Draw edge midpoint / apex handles — interactive edit aids,
+      // tied to vertex visibility.
       this.drawEdgeHandles(boundary.outer, boundary.outer_arcs);
       for (let hi = 0; hi < boundary.holes.length; hi++) {
         this.drawEdgeHandles(boundary.holes[hi], boundary.hole_arcs?.[hi]);
@@ -675,7 +677,11 @@ export class Renderer {
         const end = graph.vertices[edge.end];
         const isSelected = state.selectedEdge?.chain.includes(ei) ?? false;
         const isSegmentSelected = isSelected && state.selectedEdge?.mode === "segment" && state.selectedEdge?.index === ei;
-        const direction: AisleDirection | null = edge.direction ?? null;
+        // When the annotations layer is off, suppress the directional
+        // styling so the edge falls back to its undirected (perimeter
+        // red / interior cyan) appearance and no arrow markers draw.
+        const direction: AisleDirection | null =
+          state.layers.annotations ? edge.direction ?? null : null;
         const isOneWay = direction === "OneWay" || direction === "OneWayReverse";
         const isTwoWayReverse = direction === "TwoWayReverse";
         const hasDirection = isOneWay || isTwoWayReverse;
@@ -771,7 +777,7 @@ export class Renderer {
     }
 
     // Draw drive line edges (solid green + faint infinite extent)
-    const allDriveLines = state.layers.driveLines ? state.lot.driveLines : [];
+    const allDriveLines = state.layers.annotations ? state.lot.driveLines : [];
     for (const dl of allDriveLines) {
       const dir = { x: dl.end.x - dl.start.x, y: dl.end.y - dl.start.y };
       const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y);
@@ -808,17 +814,19 @@ export class Renderer {
       Island:     "rgba(159, 191, 138, 0.95)", // matches island fill
       Standard:   "rgba(120, 120, 120, 0.85)",
     };
-    for (const sm of state.lot.stallModifiers) {
-      const pl = sm.polyline;
-      if (pl.length < 2) continue;
-      ctx.beginPath();
-      ctx.moveTo(pl[0].x, pl[0].y);
-      for (let i = 1; i < pl.length; i++) ctx.lineTo(pl[i].x, pl[i].y);
-      ctx.strokeStyle = stallLineColor[sm.kind] ?? stallLineColor.Suppressed;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([6, 3]);
-      ctx.stroke();
-      ctx.setLineDash([]);
+    if (state.layers.annotations) {
+      for (const sm of state.lot.stallModifiers) {
+        const pl = sm.polyline;
+        if (pl.length < 2) continue;
+        ctx.beginPath();
+        ctx.moveTo(pl[0].x, pl[0].y);
+        for (let i = 1; i < pl.length; i++) ctx.lineTo(pl[i].x, pl[i].y);
+        ctx.strokeStyle = stallLineColor[sm.kind] ?? stallLineColor.Suppressed;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
 
     // Hide orphan aisle vertices (no incident edges) — vestiges of edge
@@ -867,7 +875,7 @@ export class Renderer {
     const lot = state.lot;
 
     const driveLineVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
-    if (state.layers.driveLines) {
+    if (state.layers.annotations) {
       lot.driveLines.forEach((dl, i) => {
         driveLineVerts.push({
           pos: dl.start,
@@ -883,7 +891,7 @@ export class Renderer {
     }
 
     const stallLineVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
-    lot.stallModifiers.forEach((sm, i) => {
+    if (state.layers.annotations) lot.stallModifiers.forEach((sm, i) => {
       const pl = sm.polyline;
       if (pl.length === 0) return;
       stallLineVerts.push({
@@ -901,7 +909,7 @@ export class Renderer {
     });
 
     const annotationVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
-    lot.annotations.forEach((ann, i) => {
+    if (state.layers.annotations) lot.annotations.forEach((ann, i) => {
       const pos = annotationWorldPos(ann, lot, state.params);
       if (!pos) return;
       const isDelete =

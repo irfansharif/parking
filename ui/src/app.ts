@@ -72,7 +72,10 @@ export interface LayerVisibility {
   stalls: boolean;
   customStalls: boolean;
   vertices: boolean;
-  driveLines: boolean;
+  /** Drive lines and all annotation markers (Direction / DeleteVertex /
+   *  DeleteEdge). Grouped because they're all user-drawn substrate
+   *  overlays — toggling one without the others rarely makes sense. */
+  annotations: boolean;
   spines: boolean;
   faces: boolean;
   islands: boolean;
@@ -356,7 +359,6 @@ export class App {
         entrance_on_face_filter: true,
         conflict_removal: true,
         island_stall_dilation: true,
-        island_corner_rounding: true,
       },
       selectedVertex: null,
       hoveredVertex: null,
@@ -376,8 +378,8 @@ export class App {
         stalls: false,
         customStalls: true,
         vertices: true,
-        driveLines: true,
-        spines: true,
+        annotations: true,
+        spines: false,
         faces: false,
         islands: false,
         regions: false,

@@ -66,8 +66,8 @@ pub struct ParkingParams {
     /// Turn radius (feet) for island corner rounding. A disk of this
     /// radius is rolled inside each face polygon (morphological
     /// opening) before residual island extraction, so convex face
-    /// corners become arcs rather than 90° wedges. Only takes effect
-    /// when `DebugToggles.island_corner_rounding` is on.
+    /// corners become arcs rather than 90° wedges. Set to 0 to disable
+    /// rounding entirely.
     #[serde(default = "default_island_corner_radius")]
     pub island_corner_radius: f64,
     /// ADA accessible stall width (feet). When a stall-modifier line
@@ -213,15 +213,6 @@ pub struct DebugToggles {
     // Island stall dilation (close sliver gaps in face-minus-stalls subtraction)
     #[serde(default = "default_true")]
     pub island_stall_dilation: bool,
-
-    // Round island corners by morphological opening (erode-then-dilate
-    // with round joins) of the face polygon before residual extraction.
-    // Mimics drive-aisle turn-radius geometry so islands aren't sharp
-    // 90° wedges. The opened polygon is also threaded through the
-    // downstream stall-vs-face checks so stalls never overshoot the
-    // rounded contour.
-    #[serde(default = "default_true")]
-    pub island_corner_rounding: bool,
 }
 
 impl Default for DebugToggles {
@@ -234,7 +225,6 @@ impl Default for DebugToggles {
             entrance_on_face_filter: true,
             conflict_removal: true,
             island_stall_dilation: true,
-            island_corner_rounding: true,
         }
     }
 }

@@ -37,8 +37,8 @@ spine_merge_endpoint_tol: number,
  * Turn radius (feet) for island corner rounding. A disk of this
  * radius is rolled inside each face polygon (morphological
  * opening) before residual island extraction, so convex face
- * corners become arcs rather than 90° wedges. Only takes effect
- * when `DebugToggles.island_corner_rounding` is on.
+ * corners become arcs rather than 90° wedges. Set to 0 to disable
+ * rounding entirely.
  */
 island_corner_radius: number, 
 /**

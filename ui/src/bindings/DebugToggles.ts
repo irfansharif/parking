@@ -7,4 +7,4 @@ export type DebugToggles = {
  * `offset_aisle_edges_to_spines`). Off ⇒ spines run the full face
  * edge length.
  */
-spine_end_trim: boolean, spine_merging: boolean, spine_extensions: boolean, stall_face_clipping: boolean, entrance_on_face_filter: boolean, conflict_removal: boolean, island_stall_dilation: boolean, island_corner_rounding: boolean, };
+spine_end_trim: boolean, spine_merging: boolean, spine_extensions: boolean, stall_face_clipping: boolean, entrance_on_face_filter: boolean, conflict_removal: boolean, island_stall_dilation: boolean, };

@@ -224,7 +224,7 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
     { key: "stalls", label: "Stalls" },
     { key: "customStalls", label: "Custom Stalls (ADA, EV, …)" },
     { key: "vertices", label: "Vertices" },
-    { key: "driveLines", label: "Drive Lines" },
+    { key: "annotations", label: "Annotations" },
     { key: "spines", label: "Spines" },
     { key: "faces", label: "Faces" },
     { key: "islands", label: "Islands" },
@@ -280,7 +280,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
         { key: "stall_face_clipping", label: "Stall-to-Face Clipping" },
         { key: "entrance_on_face_filter", label: "Entrance-on-Face Filter" },
         { key: "island_stall_dilation", label: "Island Stall Dilation" },
-        { key: "island_corner_rounding", label: "Island Corner Rounding" },
       ],
     },
     {

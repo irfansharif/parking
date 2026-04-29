@@ -662,9 +662,7 @@ pub fn generate_from_spines(
     // indexing throughout the pipeline stays 1:1. An emptied face
     // (collapsed entirely) becomes an empty shape; downstream
     // `if shape[0].len() < 3` guards skip it cleanly.
-    let effective_faces: Vec<Vec<Vec<Vec2>>> = if debug.island_corner_rounding
-        && params.island_corner_radius > 0.0
-    {
+    let effective_faces: Vec<Vec<Vec<Vec2>>> = if params.island_corner_radius > 0.0 {
         faces
             .iter()
             .map(|face| {
