@@ -11,32 +11,30 @@
 # direction annotations (not fold into one).
 
 polygon outer
-0,0
-400,0
-400,300
-0,300
+(0,0)
+(400,0)
+(400,300)
+(0,300)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(400,300), area 120000
 
-set stalls_per_face=4
+set stalls-per-face=4
 ----
-set stalls_per_face=4
 
 generate
 ----
 total_stalls: 106
+faces: 29 (boundary: 1, interior: 28)
+graph: 56 vertices, 97 edges (perimeter: 26, interior: 71)
+regions: 1
 
 # Chain-mode direction on a horizontal row. Chain expansion walks
 # the whole row, so the emitted annotation extents span every cell
 # in it.
-edge-select
-near=200,120 mode=chain
+annotation direction
+near=(200,120) mode=chain traffic=two-way-reverse
 ----
-edge-select seed=72 mode=chain chain_len=7
-
-edge-cycle
-----
-edge-cycle
+annotation direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-7,lattice:0 traffic=two-way-reverse
 
 annotations
 ----
@@ -45,14 +43,10 @@ direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-7,latt
 # Segment-mode direction on the same row. Extents collapse to just
 # the seed sub-edge; 'f' on the distinct scope creates a second
 # annotation rather than cycling the row-wide one.
-edge-select
-near=200,120 mode=segment
+annotation direction
+near=(200,120) mode=segment traffic=two-way-reverse
 ----
-edge-select seed=72 mode=segment chain_len=1
-
-edge-cycle
-----
-edge-cycle
+annotation direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-4,lattice:-3 traffic=two-way-reverse
 
 annotations
 ----
@@ -61,14 +55,10 @@ direction on=grid region=0x0001000000000000 axis=y coord=2 range=lattice:-4,latt
 
 # Chain-mode delete on a vertical column. Chain expansion picks up
 # the whole column.
-edge-select
-near=200,180 mode=chain
+annotation delete-edge
+near=(200,180) mode=chain
 ----
-edge-select seed=41 mode=chain chain_len=6
-
-edge-delete
-----
-edge-delete
+annotation delete-edge on=grid region=0x0001000000000000 axis=x coord=-4 range=lattice:0,lattice:6
 
 annotations
 ----
@@ -78,14 +68,10 @@ delete-edge on=grid region=0x0001000000000000 axis=x coord=-4 range=lattice:0,la
 
 # Segment-mode delete on a horizontal sub-edge. After the chain
 # delete above the graph regenerates; extents match the seed.
-edge-select
-near=200,180 mode=segment
+annotation delete-edge
+near=(200,180) mode=segment
 ----
-edge-select seed=41 mode=segment chain_len=1
-
-edge-delete
-----
-edge-delete
+annotation delete-edge on=grid region=0x0001000000000000 axis=x coord=-4 range=lattice:3,lattice:4
 
 annotations
 ----

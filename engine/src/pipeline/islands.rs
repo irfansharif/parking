@@ -29,15 +29,66 @@ pub(crate) fn stall_center(s: &StallQuad) -> Vec2 {
     (s.corners[0] + s.corners[1] + s.corners[2] + s.corners[3]) * 0.25
 }
 
+/// Mirror of `pipeline::filter::modifier_hits_stall` (kept private
+/// there). Strict geometric overlap: a click-point lies inside the
+/// quad (with `click_radius` slop along edges); a multi-point polyline
+/// crosses the quad iff any segment endpoint is inside or any segment
+/// intersects one of the four quad edges.
+fn modifier_hits_stall(polyline: &[Vec2], corners: &[Vec2; 4], click_radius: f64) -> bool {
+    use crate::geom::clip::{point_in_polygon, segments_intersect};
+    use crate::geom::poly::point_to_segment_dist;
+    match polyline.len() {
+        0 => false,
+        1 => {
+            let p = polyline[0];
+            if point_in_polygon(&p, corners) {
+                return true;
+            }
+            for i in 0..4 {
+                let a = corners[i];
+                let b = corners[(i + 1) % 4];
+                if point_to_segment_dist(p, a, b) <= click_radius {
+                    return true;
+                }
+            }
+            false
+        }
+        _ => {
+            for w in polyline.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                if point_in_polygon(&a, corners) || point_in_polygon(&b, corners) {
+                    return true;
+                }
+                for i in 0..4 {
+                    let q0 = corners[i];
+                    let q1 = corners[(i + 1) % 4];
+                    if segments_intersect(a, b, q0, q1) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+    }
+}
+
 /// Mark every Nth stall per spine row as StallKind::Island. Uses
 /// absolute position-based grid marking so paired sides agree on
 /// which positions become islands even when extensions add different
 /// stall counts per side.
+///
+/// Spines whose stalls overlap any `stall_modifier` polyline are
+/// skipped entirely — a user-painted stall-modifier on a row signals
+/// "I'm taking ownership of this row" (e.g. an ADA bank or a
+/// suppressed fire lane), so the engine should not interleave default
+/// landscape islands into it.
 pub(crate) fn mark_island_stalls(
     stalls_3: &mut [(StallQuad, usize, usize)],
     tagged: &mut [(StallQuad, usize)],
     spines: &[SpineSegment],
     params: &ParkingParams,
+    stall_modifiers: &[StallModifier],
+    modifier_radius: f64,
 ) {
     let interval = params.island_stall_interval as usize;
     if interval < 2 { return; }
@@ -54,6 +105,25 @@ pub(crate) fn mark_island_stalls(
 
     for (&spine_idx, indices) in &by_spine {
         if spine_idx >= spines.len() { continue; }
+        // Skip rows touched by an *Island* stall-modifier — the user
+        // has explicitly placed islands on this row, so don't
+        // auto-interleave default ones. Other modifier kinds (ADA,
+        // Suppressed) don't conflict with the default island cadence
+        // and leave it intact.
+        let island_modifiers: Vec<&StallModifier> = stall_modifiers
+            .iter()
+            .filter(|m| m.kind == StallKind::Island)
+            .collect();
+        if !island_modifiers.is_empty()
+            && indices.iter().any(|&idx| {
+                let corners = &stalls_3[idx].0.corners;
+                island_modifiers
+                    .iter()
+                    .any(|m| modifier_hits_stall(&m.polyline, corners, modifier_radius))
+            })
+        {
+            continue;
+        }
         let seg = &spines[spine_idx];
         let proj_dir = seg.oriented_dir();
         let pitch = if seg.is_interior { params.stall_pitch() } else { params.stall_width };

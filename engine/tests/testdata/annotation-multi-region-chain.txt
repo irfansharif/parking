@@ -6,40 +6,38 @@
 # which was the old apply_abstract_direction bug).
 
 polygon outer
-0,0
-400,0
-400,300
-0,300
+(0,0)
+(400,0)
+(400,300)
+(0,300)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(400,300), area 120000
 
-set stalls_per_face=4
+set stalls-per-face=4
 ----
-set stalls_per_face=4
 
 # Vertical partition drive line — splits the lot into left + right
 # regions with independent aisle frames.
 drive-line partitions
-200,0
-200,300
+(200,0)
+(200,300)
 ----
-drive-line: 200,0 -> 200,300 partitions
+drive-line (200,0) -> (200,300) partitions
 
 generate
 ----
 total_stalls: 106
+faces: 29 (boundary: 1, interior: 28)
+graph: 63 vertices, 110 edges (perimeter: 28, interior: 82)
+regions: 2
 
 # Chain-mode delete inside the left region. The click at (100, 120)
 # lands on a vertical column aisle; chain expansion walks the whole
 # column.
-edge-select
-near=100,120 mode=chain
+annotation delete-edge
+near=(100,120) mode=chain
 ----
-edge-select seed=52 mode=chain chain_len=6
-
-edge-delete
-----
-edge-delete
+annotation delete-edge on=grid region=0x00009109e264ab44 axis=x coord=-2 range=lattice:0,lattice:6
 
 annotations
 ----
@@ -51,16 +49,15 @@ delete-edge on=grid region=0x00009109e264ab44 axis=x coord=-2 range=lattice:0,la
 generate
 ----
 total_stalls: 118
+faces: 25 (boundary: 1, interior: 24)
+graph: 63 vertices, 97 edges (perimeter: 26, interior: 71)
+regions: 2
 
 # Chain-mode direction on a horizontal row in the right region.
-edge-select
-near=300,120 mode=chain
+annotation direction
+near=(300,120) mode=chain traffic=two-way-reverse
 ----
-edge-select seed=58 mode=chain chain_len=7
-
-edge-cycle
-----
-edge-cycle
+annotation direction on=grid region=0x0000158801212a42 axis=y coord=2 range=lattice:-7,lattice:0 traffic=two-way-reverse
 
 annotations
 ----
@@ -69,10 +66,10 @@ direction on=grid region=0x0000158801212a42 axis=y coord=2 range=lattice:-7,latt
 
 # Annotation must resolve (non-dormant) — apply_abstract_direction
 # should touch every sub-edge in the chain, not just the adjacent pair.
+# (`generate` echoes dormant_annotations; non-zero would surface here.)
 generate
 ----
 total_stalls: 118
-
-dormant
-----
-dormant_annotations: 0
+faces: 25 (boundary: 1, interior: 24)
+graph: 63 vertices, 97 edges (perimeter: 26, interior: 71)
+regions: 2

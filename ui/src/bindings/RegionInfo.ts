@@ -2,4 +2,4 @@
 import type { RegionId } from "./RegionId";
 import type { Vec2 } from "./Vec2";
 
-export type RegionInfo = { id: RegionId, clip_poly: Array<Vec2>, aisle_angle_deg: number, aisle_offset: number, center: Vec2, };
+export type RegionInfo = { id: RegionId, clip_poly: Array<Vec2>, aisle_angle: number, aisle_offset: number, center: Vec2, };

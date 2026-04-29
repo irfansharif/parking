@@ -2,22 +2,22 @@
 # Each region can have its own aisle orientation.
 
 polygon outer
-0,0
-300,0
-300,200
-0,200
+(0,0)
+(300,0)
+(300,200)
+(0,200)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(300,200), area 60000
 
 drive-line partitions
-150,0
-150,200
+(150,0)
+(150,200)
 ----
-drive-line: 150,0 -> 150,200 partitions
+drive-line (150,0) -> (150,200) partitions
 
 generate
 ----
 total_stalls: 98
-
-snapshot
-----
+faces: 6 (boundary: 1, interior: 5)
+graph: 14 vertices, 19 edges (perimeter: 14, interior: 5)
+regions: 2

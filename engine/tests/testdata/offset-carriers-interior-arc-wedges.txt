@@ -5,33 +5,31 @@
 # offset spine and stalls align with their source aisle.
 
 polygon outer
-0,0
-200,0
-arc -1.0
-200,200
-0,200
+(0,0)
+(200,0) arc=-1.0
+(200,200)
+(0,200)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(200,200), area 40000
 
 drive-line partitions
--50,50
-350,50
+(-50,50)
+(350,50)
 ----
-drive-line: -50,50 -> 350,50 partitions
+drive-line (-50,50) -> (350,50) partitions
 
 drive-line partitions
--50,150
-350,150
+(-50,150)
+(350,150)
 ----
-drive-line: -50,150 -> 350,150 partitions
+drive-line (-50,150) -> (350,150) partitions
 
 set stall-angle=90
 ----
-set stall_angle_deg=90
 
 generate
 ----
 total_stalls: 64
-
-snapshot
-----
+faces: 6 (boundary: 1, interior: 5)
+graph: 34 vertices, 53 edges (perimeter: 22, interior: 31)
+regions: 3

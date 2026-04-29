@@ -5,46 +5,45 @@
 # offset-per-aisle is most visible.
 
 polygon outer
-76.30,0
-692.14,0
-782.80,654.85
-168.78,654.85
+(76.30,0)
+(692.14,0)
+(782.80,654.85)
+(168.78,654.85)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (76.300,0)-(782.800,654.850), area 402686.910
 
 polygon hole
-394.53,251.80
-611.14,251.80
-613.91,512.33
-394.53,512.33
+(394.53,251.80)
+(611.14,251.80)
+(613.91,512.33)
+(394.53,512.33)
 ----
-hole: 4 vertices
+polygon hole 4 vertices, ccw, bbox (394.530,251.800)-(613.910,512.330), area 56794.237
 
 drive-line
-930.76,381.06
--42.60,512.33
+(930.76,381.06)
+(-42.60,512.33)
 ----
-drive-line: 930.76,381.06 -> -42.60,512.33
+drive-line (930.76,381.06) -> (-42.60,512.33)
 
 drive-line partitions
-198.60,-53.66
-475.79,349.25
+(198.60,-53.66)
+(475.79,349.25)
 ----
-drive-line: 198.60,-53.66 -> 475.79,349.25 partitions
+drive-line (198.60,-53.66) -> (475.79,349.25) partitions
 
 drive-line partitions
-446.56,335.61
-930.76,135.52
+(446.56,335.61)
+(930.76,135.52)
 ----
-drive-line: 446.56,335.61 -> 930.76,135.52 partitions
+drive-line (446.56,335.61) -> (930.76,135.52) partitions
 
 set stall-angle=90
 ----
-set stall_angle_deg=90
 
 generate
 ----
 total_stalls: 509
-
-snapshot
-----
+faces: 54 (boundary: 2, interior: 52)
+graph: 95 vertices, 153 edges (perimeter: 54, interior: 99)
+regions: 2

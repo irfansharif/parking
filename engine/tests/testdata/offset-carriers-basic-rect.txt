@@ -2,20 +2,19 @@
 # basic-rectangle.txt, flag on.
 
 polygon outer
-0,0
-200,0
-200,150
-0,150
+(0,0)
+(200,0)
+(200,150)
+(0,150)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(200,150), area 30000
 
 set stall-angle=60
 ----
-set stall_angle_deg=60
 
 generate
 ----
 total_stalls: 39
-
-snapshot
-----
+faces: 4 (boundary: 1, interior: 3)
+graph: 8 vertices, 10 edges (perimeter: 8, interior: 2)
+regions: 1

@@ -11,6 +11,7 @@ import {
   GridStop,
   Target,
   AisleDirection,
+  StallKind,
   arcApex,
   bulgeFromApex,
   computeBoundaryPin,
@@ -47,7 +48,7 @@ export interface Camera {
 }
 
 export interface VertexRef {
-  type: "boundary-outer" | "boundary-hole" | "aisle" | "drive-line" | "annotation" | "aisle-vector" | "region-vector" | "edge-midpoint";
+  type: "boundary-outer" | "boundary-hole" | "aisle" | "drive-line" | "stall-line" | "annotation" | "aisle-vector" | "region-vector" | "edge-midpoint";
   index: number;
   holeIndex?: number;
   endpoint?: "start" | "end" | "body";
@@ -64,15 +65,16 @@ export type EditMode =
   | "select"
   | "add-hole"
   | "add-drive-line"
+  | "add-stall-line"
   | "add-boundary";
 
 export interface LayerVisibility {
   stalls: boolean;
+  customStalls: boolean;
   vertices: boolean;
   driveLines: boolean;
   spines: boolean;
   faces: boolean;
-  miterFills: boolean;
   islands: boolean;
   regions: boolean;
   paintLines: boolean;
@@ -95,6 +97,9 @@ export interface AppState {
   // For add-drive-line mode
   pendingDriveLine: Vec2 | null;
   pendingDriveLinePreview: Vec2 | null;
+  // For add-stall-line mode
+  pendingStallLine: Vec2 | null;
+  pendingStallLinePreview: Vec2 | null;
   layers: LayerVisibility;
   snapGuides: SnapGuide[];
   snapState: SnapState;
@@ -268,6 +273,36 @@ export class App {
         { id: 2, start: { x: 1186.57, y: 153.66 }, end: { x: 475.79, y: 349.25 }, partitions: true },
         { id: 3, start: { x: 446.56, y: 335.61 }, end: { x: 454.87, y: -53.66 }, partitions: true },
       ],
+      stallModifiers: [
+        {
+          polyline: [
+            { x: 205.37, y: 39.08 },
+            { x: 244.63, y: 39.08 },
+          ],
+          kind: "Suppressed",
+        },
+        {
+          polyline: [
+            { x: 414.14, y: 434.72 },
+            { x: 412.17, y: 298.61 },
+          ],
+          kind: "Ada",
+        },
+        {
+          polyline: [
+            { x: 502.84, y: 638.35 },
+            { x: 704.25, y: 646.60 },
+          ],
+          kind: "Compact",
+        },
+        {
+          polyline: [
+            { x: 817.96, y: 446.80 },
+            { x: 712.33, y: 536.65 },
+          ],
+          kind: "Island",
+        },
+      ],
       regionOverrides: {
         "221108085334326": { offset: 154.58 },
         "5138299582397": { angle: 2, offset: -79.50 },
@@ -282,8 +317,8 @@ export class App {
         stall_width: 9,
         stall_depth: 18,
         aisle_width: 12,
-        stall_angle_deg: 45,
-        aisle_angle_deg: 90,
+        stall_angle: 45,
+        aisle_angle: 90,
         aisle_offset: 0,
         site_offset: 0,
         stalls_per_face: 29,
@@ -294,11 +329,12 @@ export class App {
         spine_merge_angle_deg: 8.1,
         spine_merge_endpoint_tol: 1,
         island_corner_radius: 6,
+        ada_stall_width: 8,
+        compact_stall_width: 7.5,
+        ada_buffer_width: 5,
+        ada_buffer_shared: true,
       },
       debug: {
-        miter_fills: true,
-        boundary_only_miters: true,
-        spike_removal: true,
         spine_end_trim: true,
         spine_merging: true,
         spine_extensions: true,
@@ -318,15 +354,17 @@ export class App {
       pendingBoundary: [],
       pendingDriveLine: null,
       pendingDriveLinePreview: null,
+      pendingStallLine: null,
+      pendingStallLinePreview: null,
       snapGuides: [],
       snapState: emptySnapState(),
       layers: {
         stalls: false,
+        customStalls: true,
         vertices: true,
         driveLines: true,
         spines: true,
         faces: false,
-        miterFills: false,
         islands: false,
         regions: false,
         paintLines: true,
@@ -344,6 +382,7 @@ export class App {
     this.state.lot = {
       boundary,
       driveLines: [],
+      stallModifiers: [],
       annotations: [],
       aisleVector: initialVector,
       aisleOffsetBaseline: midpointPerpProj(initialVector, 90),
@@ -365,10 +404,10 @@ export class App {
       debug: this.state.debug,
       regionOverrides: Object.entries(lot.regionOverrides).map(([k, v]) => ({
         region_id: Number(k),
-        aisle_angle_deg: v.angle,
+        aisle_angle: v.angle,
         aisle_offset: v.offset,
       })),
-      stall_modifiers: [],
+      stall_modifiers: lot.stallModifiers,
     };
     const inputJson = JSON.stringify(input);
     (window as any).__parkingInput = inputJson;
@@ -401,7 +440,7 @@ export class App {
 
   setParam(key: keyof ParkingParams, value: number): void {
     (this.state.params as any)[key] = value;
-    if (key === "aisle_angle_deg" || key === "aisle_offset") {
+    if (key === "aisle_angle" || key === "aisle_offset") {
       this.syncAisleVector(this.state.lot);
     }
     this.generate();
@@ -419,7 +458,7 @@ export class App {
       x: (vec.start.x + vec.end.x) / 2,
       y: (vec.start.y + vec.end.y) / 2,
     };
-    const angleDeg = this.state.params.aisle_angle_deg;
+    const angleDeg = this.state.params.aisle_angle;
     const angleRad = angleDeg * (Math.PI / 180);
     const dirX = Math.cos(angleRad);
     const dirY = Math.sin(angleRad);
@@ -449,7 +488,7 @@ export class App {
       const halfLen = 30;
       for (let i = 0; i < rd.regions.length; i++) {
         const region = rd.regions[i];
-        const angleRad = region.aisle_angle_deg * (Math.PI / 180);
+        const angleRad = region.aisle_angle * (Math.PI / 180);
         const dirX = Math.cos(angleRad);
         const dirY = Math.sin(angleRad);
         const cx = region.center.x;
@@ -477,6 +516,16 @@ export class App {
     lot.driveLines.forEach((dl, i) => {
       result.push({ ref: { type: "drive-line", index: i, endpoint: "start" }, pos: dl.start });
       result.push({ ref: { type: "drive-line", index: i, endpoint: "end" }, pos: dl.end });
+    });
+    // Stall-modifier line vertices.
+    lot.stallModifiers.forEach((sm, i) => {
+      const pl = sm.polyline;
+      if (pl.length >= 1) {
+        result.push({ ref: { type: "stall-line", index: i, endpoint: "start" }, pos: pl[0] });
+      }
+      if (pl.length >= 2) {
+        result.push({ ref: { type: "stall-line", index: i, endpoint: "end" }, pos: pl[pl.length - 1] });
+      }
     });
     // Edge midpoint handles — highest priority, shown on every edge.
     // Dragging creates or adjusts the edge's arc (apex follows the
@@ -603,6 +652,11 @@ export class App {
       } else if (ref.endpoint === "start" || ref.endpoint === "end") {
         dl[ref.endpoint] = pos;
       }
+    } else if (ref.type === "stall-line" && ref.endpoint) {
+      const sm = lot.stallModifiers[ref.index];
+      if (!sm) return;
+      const i = ref.endpoint === "start" ? 0 : sm.polyline.length - 1;
+      sm.polyline[i] = pos;
     } else if (ref.type === "region-vector") {
       const rd = lot.layout?.region_debug;
       const region = rd?.regions[ref.index];
@@ -624,7 +678,7 @@ export class App {
           lot.regionOverrides[regionKey].angle = Math.round(angleDeg);
         }
       } else if (ref.endpoint === "body") {
-        const angleRad = region.aisle_angle_deg * (Math.PI / 180);
+        const angleRad = region.aisle_angle * (Math.PI / 180);
         const perpX = -Math.sin(angleRad);
         const perpY = Math.cos(angleRad);
         const offset = pos.x * perpX + pos.y * perpY;
@@ -646,7 +700,7 @@ export class App {
       if (len > 1) {
         let angleDeg = Math.atan2(dy, dx) * (180 / Math.PI);
         angleDeg = ((angleDeg % 180) + 180) % 180;
-        this.state.params.aisle_angle_deg = Math.round(angleDeg);
+        this.state.params.aisle_angle = Math.round(angleDeg);
       }
       // aisle_offset = midpoint perpendicular projection minus the
       // baseline projection captured at lot creation. Using the
@@ -655,7 +709,7 @@ export class App {
       // Subtracting the baseline means the first drag doesn't jump
       // the grid — initial offset stays 0 even though the vector is
       // placed at an arbitrary world position.
-      const curProj = midpointPerpProj(vec, this.state.params.aisle_angle_deg);
+      const curProj = midpointPerpProj(vec, this.state.params.aisle_angle);
       this.state.params.aisle_offset = curProj - lot.aisleOffsetBaseline;
     }
     this.generate();
@@ -819,6 +873,38 @@ export class App {
       end,
       partitions: false,
     });
+    this.generate();
+  }
+
+  /** Append a stall-modifier line (`Suppressed` kind by default). */
+  addStallLine(start: Vec2, end: Vec2): void {
+    this.state.lot.stallModifiers.push({
+      polyline: [start, end],
+      kind: "Suppressed",
+    });
+    this.generate();
+  }
+
+  /** Cycle a stall-modifier line's kind:
+   *  Suppressed → Standard → Ada → Compact → Island → Suppressed. */
+  cycleStallLineKind(index: number): void {
+    const sm = this.state.lot.stallModifiers[index];
+    if (!sm) return;
+    const next: { [k: string]: StallKind } = {
+      Suppressed: "Standard",
+      Standard: "Ada",
+      Ada: "Compact",
+      Compact: "Island",
+      Island: "Suppressed",
+    };
+    sm.kind = next[sm.kind] ?? "Suppressed";
+    this.generate();
+  }
+
+  /** Drop the stall-modifier at `index`. */
+  deleteStallLine(index: number): void {
+    this.state.lot.stallModifiers.splice(index, 1);
+    this.state.selectedVertex = null;
     this.generate();
   }
 

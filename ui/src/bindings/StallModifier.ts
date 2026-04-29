@@ -8,8 +8,8 @@ import type { Vec2 } from "./Vec2";
  *
  * - `kind = Suppressed` + a polyline → remove stalls from rendering
  *   (used for fire lanes, loading zones, entrance corridors).
- * - Any other `kind` → retype overlapping stalls (ADA, EV, Compact,
- *   etc.). A zero-length polyline (single point) places a single
- *   retyped stall at that location.
+ * - Any other `kind` → retype overlapping stalls (ADA, EV, Island).
+ *   A zero-length polyline (single point) places a single retyped
+ *   stall at that location.
  */
 export type StallModifier = { polyline: Array<Vec2>, kind: StallKind, };

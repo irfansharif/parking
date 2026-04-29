@@ -56,21 +56,21 @@ impl AbstractFrame {
     /// Compute the root frame for a lot — used for the lot-wide base
     /// orientation (no region override applied).
     pub fn root(params: &ParkingParams) -> Self {
-        Self::from_params(params, params.aisle_angle_deg, params.aisle_offset)
+        Self::from_params(params, params.aisle_angle, params.aisle_offset)
     }
 
     /// Compute a frame for a region with an effective aisle angle and
     /// offset that may differ from the lot-wide base (e.g., via a
     /// `RegionOverride`).
-    pub fn region(params: &ParkingParams, aisle_angle_deg: f64, aisle_offset: f64) -> Self {
-        Self::from_params(params, aisle_angle_deg, aisle_offset)
+    pub fn region(params: &ParkingParams, aisle_angle: f64, aisle_offset: f64) -> Self {
+        Self::from_params(params, aisle_angle, aisle_offset)
     }
 
-    fn from_params(params: &ParkingParams, aisle_angle_deg: f64, aisle_offset: f64) -> Self {
-        // `aisle_angle_deg` is the world-space direction the parallel
+    fn from_params(params: &ParkingParams, aisle_angle: f64, aisle_offset: f64) -> Self {
+        // `aisle_angle` is the world-space direction the parallel
         // driving aisles run in. `y_dir` is a unit vector along that
         // direction; `x_dir` is perpendicular (rotated +90°).
-        let rad = aisle_angle_deg.to_radians();
+        let rad = aisle_angle.to_radians();
         let y_dir = Vec2::new(rad.cos(), rad.sin());
         let x_dir = Vec2::new(-rad.sin(), rad.cos());
 
@@ -353,7 +353,7 @@ mod frame_tests {
         // Sweep a range of angles.
         for angle in [0.0, 30.0, 45.0, 60.0, 90.0, 135.0, 180.0, -45.0] {
             let mut params = ParkingParams::default();
-            params.aisle_angle_deg = angle;
+            params.aisle_angle = angle;
             let f = AbstractFrame::root(&params);
             assert!((f.x_dir.length() - 1.0).abs() < 1e-9);
             assert!((f.y_dir.length() - 1.0).abs() < 1e-9);
@@ -373,7 +373,7 @@ mod frame_tests {
         ];
         for angle in [0.0, 15.0, 45.0, 90.0, 135.0, 180.0, 270.0, -30.0] {
             let mut params = ParkingParams::default();
-            params.aisle_angle_deg = angle;
+            params.aisle_angle = angle;
             let f = AbstractFrame::root(&params);
             for &pt in &test_points {
                 let world = f.forward(pt);
@@ -409,7 +409,7 @@ mod frame_tests {
     fn roundtrip_under_stall_angle_sweep() {
         for &stall_angle in &[30.0, 45.0, 60.0, 75.0, 90.0] {
             let mut params = ParkingParams::default();
-            params.stall_angle_deg = stall_angle;
+            params.stall_angle = stall_angle;
             let f = AbstractFrame::root(&params);
             // dx should reduce to 2*stall_depth + 2*aisle_width at 90°.
             if (stall_angle - 90.0).abs() < 1e-9 {
@@ -426,7 +426,7 @@ mod frame_tests {
 
     #[test]
     fn region_override_rotates_frame() {
-        let params = ParkingParams::default(); // aisle_angle_deg = 90
+        let params = ParkingParams::default(); // aisle_angle = 90
         let base = AbstractFrame::root(&params);
         let rotated = AbstractFrame::region(&params, 45.0, params.aisle_offset);
         // Same scales, different axes.
@@ -444,7 +444,7 @@ mod frame_tests {
         params.aisle_offset = 25.0;
         let frame = AbstractFrame::root(&params);
         let origin = frame.forward(p(0.0, 0.0));
-        // origin_world = x_dir * aisle_offset. At aisle_angle_deg=90,
+        // origin_world = x_dir * aisle_offset. At aisle_angle=90,
         // x_dir = (-sin(90), cos(90)) = (-1, 0), so origin = (-25, 0).
         assert!((origin.x - (-25.0)).abs() < 1e-9);
         assert!((origin.y - 0.0).abs() < 1e-9);

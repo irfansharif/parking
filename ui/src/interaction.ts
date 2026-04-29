@@ -65,6 +65,19 @@ export function setupInteraction(
       return;
     }
 
+    if (mode === "add-stall-line") {
+      const { pos } = computeSnap(worldPos, app.getAllVertices(), null, app.state.camera.zoom, emptySnapState());
+      if (app.state.pendingStallLine === null) {
+        app.state.pendingStallLine = pos;
+      } else {
+        app.addStallLine(app.state.pendingStallLine, pos);
+        app.state.pendingStallLine = null;
+        app.state.pendingStallLinePreview = null;
+      }
+      renderer.render(app.state);
+      return;
+    }
+
     // Default: select mode — hit test and drag.
     const allVerts = app.getAllVertices();
     const perimCount = app.getEffectiveAisleGraph()?.perim_vertex_count ?? 0;
@@ -186,6 +199,14 @@ export function setupInteraction(
       renderer.render(app.state);
     }
 
+    // Pending stall line preview
+    if (app.state.editMode === "add-stall-line" && app.state.pendingStallLine) {
+      const rawPos = renderer.screenToWorld(sx, sy, app.state.camera);
+      const { pos } = computeSnap(rawPos, app.getAllVertices(), null, app.state.camera.zoom, emptySnapState());
+      app.state.pendingStallLinePreview = pos;
+      renderer.render(app.state);
+    }
+
     // Hover detection (all modes)
     const allVerts = app.getAllVertices();
     let hovered: VertexRef | null = null;
@@ -206,7 +227,7 @@ export function setupInteraction(
     if (hovered !== app.state.hoveredVertex) {
       app.state.hoveredVertex = hovered;
       const mode = app.state.editMode;
-      if (mode === "add-hole" || mode === "add-drive-line") {
+      if (mode === "add-hole" || mode === "add-drive-line" || mode === "add-stall-line") {
         canvas.style.cursor = "crosshair";
       } else {
         canvas.style.cursor = hovered ? "pointer" : "default";
@@ -343,6 +364,8 @@ export function setupInteraction(
       app.state.pendingBoundary = [];
       app.state.pendingDriveLine = null;
       app.state.pendingDriveLinePreview = null;
+      app.state.pendingStallLine = null;
+      app.state.pendingStallLinePreview = null;
       canvas.style.cursor = "default";
       updateModeHint(app);
       renderer.render(app.state);
@@ -355,6 +378,9 @@ export function setupInteraction(
         renderer.render(app.state);
       } else if (sel?.type === "drive-line") {
         app.toggleDriveLinePartitions(sel.index);
+        renderer.render(app.state);
+      } else if (sel?.type === "stall-line") {
+        app.cycleStallLineKind(sel.index);
         renderer.render(app.state);
       } else if (sel?.type === "boundary-hole" && sel.holeIndex !== undefined) {
         app.toggleSeparator(sel.holeIndex, sel.index);
@@ -382,6 +408,8 @@ export function setupInteraction(
         app.deleteAisleVertexByAnnotation(sel.index);
       } else if (sel.type === "drive-line") {
         app.deleteDriveLine(sel.index);
+      } else if (sel.type === "stall-line") {
+        app.deleteStallLine(sel.index);
       }
       renderer.render(app.state);
     }
@@ -429,7 +457,7 @@ function hitTestRegionVectorBody(worldPos: Vec2, app: App, worldRadius: number):
 
   for (let i = 0; i < rd.regions.length; i++) {
     const region = rd.regions[i];
-    const angleRad = region.aisle_angle_deg * (Math.PI / 180);
+    const angleRad = region.aisle_angle * (Math.PI / 180);
     const dirX = Math.cos(angleRad);
     const dirY = Math.sin(angleRad);
     const cx = region.center.x;
@@ -456,6 +484,10 @@ export function updateModeHint(app: App): void {
       hint.textContent = "Edge selected. F to cycle direction (two-way-A → two-way-B → one-way → reverse → two-way). Esc to deselect.";
     } else if (app.state.selectedVertex?.type === "annotation") {
       hint.textContent = "Annotation selected. F to cycle direction. Delete to remove.";
+    } else if (app.state.selectedVertex?.type === "drive-line") {
+      hint.textContent = "Drive-line selected. F to toggle partitions. Drag to move endpoint. Delete to remove.";
+    } else if (app.state.selectedVertex?.type === "stall-line") {
+      hint.textContent = "Stall-line selected. F to cycle kind (Suppressed → Standard → Ada → Compact → Island). Drag to move endpoint. Delete to remove.";
     } else if (app.state.selectedVertex) {
       hint.textContent = "Drag to move. Delete to remove. Right-drag to pan.";
     } else {
@@ -467,6 +499,7 @@ export function updateModeHint(app: App): void {
     "add-boundary": "Click to place boundary vertices for a new lot. Press Esc to finish (needs 3+ vertices).",
     "add-hole": "Click to place hole vertices. Press Esc to finish the hole (needs 3+ vertices).",
     "add-drive-line": "Click to place start point, click again to place end point. Press Esc to cancel.",
+    "add-stall-line": "Click to place start point, click again to place end point. Stall-modifier line (Suppressed by default; F cycles kind). Press Esc to cancel.",
   };
   hint.textContent = hints[app.state.editMode] ?? "";
 }

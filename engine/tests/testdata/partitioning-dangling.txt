@@ -3,22 +3,22 @@
 # so the single-region fallback stays in effect.
 
 polygon outer
-0,0
-300,0
-300,200
-0,200
+(0,0)
+(300,0)
+(300,200)
+(0,200)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(300,200), area 60000
 
 drive-line partitions
-0,100
-150,100
+(0,100)
+(150,100)
 ----
-drive-line: 0,100 -> 150,100 partitions
+drive-line (0,100) -> (150,100) partitions
 
 generate
 ----
 total_stalls: 86
-
-snapshot
-----
+faces: 9 (boundary: 1, interior: 8)
+graph: 16 vertices, 23 edges (perimeter: 13, interior: 10)
+regions: 1

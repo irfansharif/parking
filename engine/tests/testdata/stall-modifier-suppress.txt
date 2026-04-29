@@ -1,32 +1,32 @@
 # Phase 12 — stall modifier post-pass. Exercises:
-#   - stall-modifier-json directive
+#   - drive-line stall=<kind> form (a stall-modifier line)
 #   - Suppressed kind propagating through the pipeline and dropping
 #     stalls from the total_stalls count
 #   - SVG renderer skipping Suppressed stalls (visual verification via
 #     the snapshot)
 
 polygon outer
-0,0
-240,0
-240,160
-0,160
+(0,0)
+(240,0)
+(240,160)
+(0,160)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(240,160), area 38400
 
 set stall-angle=90
 ----
-set stall_angle_deg=90
 
 # Horizontal suppression line at mid-height of the lot. Should clear
 # stalls along both sides of the interior aisle that runs east-west.
-stall-modifier-json
-[{"polyline":[{"x":40,"y":80},{"x":200,"y":80}],"kind":"Suppressed"}]
+drive-line stall=suppressed
+(40,80)
+(200,80)
 ----
-stall-modifier-json: +1
+drive-line (40,80) -> (200,80) stall=suppressed
 
 generate
 ----
-total_stalls: 54
-
-snapshot
-----
+total_stalls: 58
+faces: 5 (boundary: 1, interior: 4)
+graph: 10 vertices, 13 edges (perimeter: 10, interior: 3)
+regions: 1

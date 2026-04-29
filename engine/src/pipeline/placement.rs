@@ -10,7 +10,7 @@ use crate::types::*;
 /// `side` is +1.0 or -1.0, selecting which side of the edge to place stalls.
 /// `edge_width` is the half-width of the aisle edge (distance from centerline
 /// to the near side of the stall row).
-/// `angle_override` overrides `params.stall_angle_deg` when set.
+/// `angle_override` overrides `params.stall_angle` when set.
 /// `flip_angle` negates the cosine component, reversing the stall lean
 /// direction. Used for one-way aisles where both sides lean the same way.
 /// `grid_offset` shifts the global grid by a fraction of stall_pitch (0.0–1.0)
@@ -32,7 +32,7 @@ pub fn fill_strip(
     flip_angle: bool,
     grid_offset: f64,
 ) -> Vec<StallQuad> {
-    let angle_deg = angle_override.unwrap_or(params.stall_angle_deg);
+    let angle_deg = angle_override.unwrap_or(params.stall_angle);
     let angle_rad = angle_deg.to_radians();
     let sin_a = angle_rad.sin();
     let cos_a = if flip_angle { -angle_rad.cos() } else { angle_rad.cos() };
@@ -63,7 +63,7 @@ pub fn fill_strip(
     // matches the effective_depth (spine-to-corridor gap) so 90° stalls
     // fill exactly from spine to corridor edge.
     let stall_depth = if angle_override.is_some() {
-        let theta = params.stall_angle_deg.to_radians();
+        let theta = params.stall_angle.to_radians();
         params.stall_depth * theta.sin() + theta.cos() * params.stall_width / 2.0
     } else {
         params.stall_depth

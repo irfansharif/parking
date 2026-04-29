@@ -4,29 +4,22 @@
 #   - graph SVG layer (blue=interior, brown=perimeter)
 
 polygon outer
-0,0
-400,0
-400,160
-0,160
+(0,0)
+(400,0)
+(400,160)
+(0,160)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(400,160), area 64000
 
 set stall-angle=90
 ----
-set stall_angle_deg=90
 
-set stalls_per_face=10
+set stalls-per-face=10
 ----
-set stalls_per_face=10
 
 generate
 ----
 total_stalls: 78
-
-graph summary
-----
-vertices: 24, edges: 37, perim_vertex_count: 4
-  perimeter: 18, interior: 19
-
-snapshot
-----
+faces: 13 (boundary: 1, interior: 12)
+graph: 24 vertices, 37 edges (perimeter: 18, interior: 19)
+regions: 1

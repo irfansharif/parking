@@ -2,6 +2,7 @@ import { AppState, Camera, VertexRef } from "./app";
 import {
   Vec2,
   EdgeArc,
+  ParkingLayout,
   ParkingLot,
   StallQuad,
   DriveAisleGraph,
@@ -103,7 +104,7 @@ export class Renderer {
           // and stretches.
           const frame = computeRegionFrame(
             state.params,
-            rd.regions[i].aisle_angle_deg,
+            rd.regions[i].aisle_angle,
             rd.regions[i].aisle_offset,
           );
           const anchor = frame.origin_world;
@@ -128,12 +129,6 @@ export class Renderer {
             ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
             ctx.fill();
           }
-        }
-      }
-
-      if (state.layers.miterFills && layout.miter_fills) {
-        for (const fill of layout.miter_fills) {
-          this.drawPolygon(fill, "rgba(255, 100, 100, 0.3)", "rgba(255, 80, 80, 0.7)", 0.5);
         }
       }
 
@@ -164,11 +159,20 @@ export class Renderer {
 
       if (state.layers.stalls) {
         for (const stall of layout.stalls) {
+          if (stall.kind === "Suppressed" || stall.kind === "Buffer") continue;
           this.drawStall(stall);
         }
       }
 
-      // 5b. Paint lines
+      // 5b. Custom-stall fills (Ada, Island). Drawn between the
+      // optional debug `stalls` layer and the paint lines so the white
+      // paint reads on top of the colored background — matches how
+      // real-world ADA/island markings look.
+      if (state.layers.customStalls) {
+        this.drawCustomStalls(layout);
+      }
+
+      // 5c. Paint lines
       if (state.layers.paintLines) {
         this.drawPaintLines(state, lot);
       }
@@ -191,6 +195,11 @@ export class Renderer {
     // 8. Pending drive line preview
     if (state.pendingDriveLine && state.pendingDriveLinePreview) {
       this.drawPendingDriveLine(state.pendingDriveLine, state.pendingDriveLinePreview);
+    }
+
+    // 8b. Pending stall-modifier line preview
+    if (state.pendingStallLine && state.pendingStallLinePreview) {
+      this.drawPendingStallLine(state.pendingStallLine, state.pendingStallLinePreview);
     }
 
     // 9. Scale bar
@@ -447,13 +456,13 @@ export class Renderer {
         fill: "rgba(200, 200, 220, 0.4)",
         stroke: "rgba(180, 180, 200, 0.7)",
       },
-      Compact: {
-        fill: "rgba(200, 200, 150, 0.4)",
-        stroke: "rgba(180, 180, 130, 0.7)",
+      Ada: {
+        fill: "rgba(80, 140, 220, 0.4)",
+        stroke: "rgba(60, 110, 190, 0.8)",
       },
-      Ev: {
-        fill: "rgba(100, 200, 100, 0.4)",
-        stroke: "rgba(80, 180, 80, 0.7)",
+      Compact: {
+        fill: "rgba(156, 175, 136, 0.4)",
+        stroke: "rgba(120, 142, 102, 0.8)",
       },
       Island: {
         fill: "rgba(75, 140, 60, 0.5)",
@@ -487,6 +496,30 @@ export class Renderer {
     ctx.stroke();
   }
 
+  /** Filled colored backgrounds for non-Standard, non-Suppressed
+   *  stalls. Sits underneath the paint-lines layer so painted edges
+   *  read on top of the color (matches real-world ADA/island marking). */
+  private drawCustomStalls(layout: ParkingLayout): void {
+    const { ctx } = this;
+    const fillFor: Record<string, string> = {
+      Ada: "rgba(60, 110, 200, 0.85)",
+      Compact: "rgba(156, 175, 136, 0.85)",
+      Island: "rgba(75, 140, 60, 0.55)",
+    };
+    for (const stall of layout.stalls) {
+      const fill = fillFor[stall.kind];
+      if (!fill) continue;
+      ctx.beginPath();
+      ctx.moveTo(stall.corners[0].x, stall.corners[0].y);
+      for (let i = 1; i < 4; i++) {
+        ctx.lineTo(stall.corners[i].x, stall.corners[i].y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+  }
+
   private drawPaintLines(_state: AppState, lot: ParkingLot): void {
     const { ctx } = this;
     ctx.save();
@@ -503,8 +536,10 @@ export class Renderer {
     if (lot.layout) {
       ctx.beginPath();
       for (const stall of lot.layout.stalls) {
+        if (stall.kind === "Suppressed") continue;
         const c = stall.corners;
-        if (stall.kind === "Island") {
+        if (stall.kind === "Island" || stall.kind === "Buffer") {
+          // Fully-closed rectangle outline — no parking, no usable entrance.
           ctx.moveTo(c[0].x, c[0].y);
           ctx.lineTo(c[1].x, c[1].y);
           ctx.lineTo(c[2].x, c[2].y);
@@ -522,7 +557,7 @@ export class Renderer {
       const hatchAngleDeg = 45;
       const hatchRad = hatchAngleDeg * Math.PI / 180;
       for (const stall of lot.layout.stalls) {
-        if (stall.kind !== "Island") continue;
+        if (stall.kind !== "Island" && stall.kind !== "Buffer") continue;
         const c = stall.corners;
         ctx.save();
         ctx.beginPath();
@@ -636,26 +671,37 @@ export class Renderer {
         const isSegmentSelected = isSelected && state.selectedEdge?.mode === "segment" && state.selectedEdge?.index === ei;
         const direction: AisleDirection | null = edge.direction ?? null;
         const isOneWay = direction === "OneWay" || direction === "OneWayReverse";
+        const isTwoWayReverse = direction === "TwoWayReverse";
+        const hasDirection = isOneWay || isTwoWayReverse;
 
-        // Edge line — segment selection is solid+thick, chain selection is dashed+thick.
-        ctx.setLineDash(isSegmentSelected ? [] : isOneWay ? [] : [2, 2]);
+        // Edge line — segment selection is solid+thick, chain selection
+        // is dashed+thick. Directional edges (one-way OR two-way-reverse)
+        // get the same yellow solid treatment so they stand out from
+        // plain bidirectional edges.
+        ctx.setLineDash(isSegmentSelected ? [] : hasDirection ? [] : [2, 2]);
         const isPerimeter = edge.interior === false;
         ctx.strokeStyle = isSelected
           ? "rgba(255, 220, 50, 0.9)"
           : isOneWay
             ? "rgba(255, 180, 50, 0.7)"
-            : isPerimeter
-              ? "rgba(255, 100, 100, 0.5)"
-              : "rgba(100, 150, 255, 0.3)";
-        ctx.lineWidth = isSegmentSelected ? 2.5 : isSelected ? 1.5 : isOneWay ? 1.0 : 0.5;
+            : isTwoWayReverse
+              ? "rgba(80, 160, 230, 0.8)"
+              : isPerimeter
+                ? "rgba(255, 100, 100, 0.5)"
+                : "rgba(100, 150, 255, 0.3)";
+        ctx.lineWidth = isSegmentSelected ? 2.5 : isSelected ? 1.5 : hasDirection ? 1.0 : 0.5;
         ctx.beginPath();
         ctx.moveTo(start.x, start.y);
         ctx.lineTo(end.x, end.y);
         ctx.stroke();
 
-        // Single-direction arrows for one-way: traffic flows
-        // start→end for OneWay and end→start for OneWayReverse.
-        if (isOneWay) {
+        // Direction markers along the edge.
+        //   OneWay / OneWayReverse → single arrow per tick, pointing
+        //     in the travel direction (start→end or end→start).
+        //   TwoWayReverse          → bidirectional ↔ at each tick:
+        //     a short shaft with arrowheads on both ends, signalling
+        //     "two-way traffic, reversed stall lean".
+        if (hasDirection) {
           const [travelStart, travelEnd] =
             direction === "OneWayReverse" ? [end, start] : [start, end];
           const dx = travelEnd.x - travelStart.x;
@@ -667,17 +713,50 @@ export class Renderer {
             const arrowSize = 5;
             const color = isSelected
               ? "rgba(255, 220, 50, 0.9)"
-              : "rgba(255, 180, 50, 0.8)";
-            for (const t of [0.33, 0.66]) {
-              const ax = travelStart.x + dx * t;
-              const ay = travelStart.y + dy * t;
+              : isTwoWayReverse
+                ? "rgba(80, 160, 230, 0.9)"
+                : "rgba(255, 180, 50, 0.8)";
+            // Helper: filled arrowhead with tip at (tx, ty), pointing
+            // along (dx, dy) (unit). Base sits ½·arrowSize behind tip.
+            const drawArrow = (tx: number, ty: number, ux: number, uy: number) => {
+              const baseX = tx - ux * arrowSize * 0.5;
+              const baseY = ty - uy * arrowSize * 0.5;
               ctx.beginPath();
-              ctx.moveTo(ax + tnx * arrowSize, ay + tny * arrowSize);
-              ctx.lineTo(ax - tnx * arrowSize * 0.5 + tny * arrowSize * 0.5, ay - tny * arrowSize * 0.5 - tnx * arrowSize * 0.5);
-              ctx.lineTo(ax - tnx * arrowSize * 0.5 - tny * arrowSize * 0.5, ay - tny * arrowSize * 0.5 + tnx * arrowSize * 0.5);
+              ctx.moveTo(tx, ty);
+              ctx.lineTo(baseX + uy * arrowSize * 0.5, baseY - ux * arrowSize * 0.5);
+              ctx.lineTo(baseX - uy * arrowSize * 0.5, baseY + ux * arrowSize * 0.5);
               ctx.closePath();
               ctx.fillStyle = color;
               ctx.fill();
+            };
+            for (const t of [0.33, 0.66]) {
+              const ax = travelStart.x + dx * t;
+              const ay = travelStart.y + dy * t;
+              if (isOneWay) {
+                // Forward arrow only, tip ahead of (ax, ay).
+                drawArrow(ax + tnx * arrowSize, ay + tny * arrowSize, tnx, tny);
+              } else {
+                // Bidirectional: shaft + arrowheads at both ends.
+                const shaftHalf = arrowSize * 1.1;
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1.0;
+                ctx.beginPath();
+                ctx.moveTo(ax - tnx * shaftHalf, ay - tny * shaftHalf);
+                ctx.lineTo(ax + tnx * shaftHalf, ay + tny * shaftHalf);
+                ctx.stroke();
+                drawArrow(
+                  ax + tnx * (shaftHalf + arrowSize * 0.5),
+                  ay + tny * (shaftHalf + arrowSize * 0.5),
+                  tnx,
+                  tny,
+                );
+                drawArrow(
+                  ax - tnx * (shaftHalf + arrowSize * 0.5),
+                  ay - tny * (shaftHalf + arrowSize * 0.5),
+                  -tnx,
+                  -tny,
+                );
+              }
             }
           }
         }
@@ -711,6 +790,29 @@ export class Renderer {
       ctx.strokeStyle = "rgba(50, 200, 100, 0.8)";
       ctx.lineWidth = 1.0;
       ctx.stroke();
+    }
+
+    // Stall-modifier lines — distinct color per kind. Always shown
+    // regardless of layer toggle (they're a small post-pass effect,
+    // not part of the structural drive-line family).
+    const stallLineColor: Record<string, string> = {
+      Suppressed: "rgba(220, 60, 60, 0.85)",   // red — "remove these stalls"
+      Ada:        "rgba(80, 140, 220, 0.95)", // ADA blue, matches engine fill
+      Compact:    "rgba(156, 175, 136, 0.95)", // sage green
+      Island:     "rgba(159, 191, 138, 0.95)", // matches island fill
+      Standard:   "rgba(120, 120, 120, 0.85)",
+    };
+    for (const sm of state.lot.stallModifiers) {
+      const pl = sm.polyline;
+      if (pl.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(pl[0].x, pl[0].y);
+      for (let i = 1; i < pl.length; i++) ctx.lineTo(pl[i].x, pl[i].y);
+      ctx.strokeStyle = stallLineColor[sm.kind] ?? stallLineColor.Suppressed;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     // Hide orphan aisle vertices (no incident edges) — vestiges of edge
@@ -774,6 +876,24 @@ export class Renderer {
       });
     }
 
+    const stallLineVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
+    lot.stallModifiers.forEach((sm, i) => {
+      const pl = sm.polyline;
+      if (pl.length === 0) return;
+      stallLineVerts.push({
+        pos: pl[0],
+        ref: { type: "stall-line", index: i, endpoint: "start" },
+        color: "#dc3c3c",
+      });
+      if (pl.length >= 2) {
+        stallLineVerts.push({
+          pos: pl[pl.length - 1],
+          ref: { type: "stall-line", index: i, endpoint: "end" },
+          color: "#dc3c3c",
+        });
+      }
+    });
+
     const annotationVerts: { pos: Vec2; ref: VertexRef; color: string }[] = [];
     lot.annotations.forEach((ann, i) => {
       const pos = annotationWorldPos(ann, lot, state.params);
@@ -822,6 +942,7 @@ export class Renderer {
     const allVerts = [
       ...(state.layers.vertices ? [...boundaryVerts, ...aisleVerts] : []),
       ...driveLineVerts,
+      ...stallLineVerts,
       ...annotationVerts,
     ];
 
@@ -882,7 +1003,7 @@ export class Renderer {
       for (let i = 0; i < rd.regions.length; i++) {
         const region = rd.regions[i];
         const [r, g, b] = colors[i % colors.length];
-        const angleRad = region.aisle_angle_deg * (Math.PI / 180);
+        const angleRad = region.aisle_angle * (Math.PI / 180);
         const dirX = Math.cos(angleRad);
         const dirY = Math.sin(angleRad);
         const cx = region.center.x;
@@ -1015,6 +1136,23 @@ export class Renderer {
     ctx.beginPath();
     ctx.arc(start.x, start.y, 3, 0, Math.PI * 2);
     ctx.fillStyle = "rgba(50, 200, 100, 0.9)";
+    ctx.fill();
+  }
+
+  private drawPendingStallLine(start: Vec2, previewEnd: Vec2): void {
+    const { ctx } = this;
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = "rgba(220, 60, 60, 0.7)";
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(previewEnd.x, previewEnd.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.beginPath();
+    ctx.arc(start.x, start.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(220, 60, 60, 0.9)";
     ctx.fill();
   }
 

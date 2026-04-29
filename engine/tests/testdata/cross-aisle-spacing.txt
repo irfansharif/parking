@@ -2,20 +2,19 @@
 # on a non-axis-aligned boundary.
 
 polygon outer
-566.27,188.01
-750,0
-718.58,459.19
-513.49,459.19
+(566.27,188.01)
+(750,0)
+(718.58,459.19)
+(513.49,459.19)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (513.490,0)-(750,459.190), area 67038.005
 
-set stalls_per_face=3
+set stalls-per-face=3
 ----
-set stalls_per_face=3
 
 generate
 ----
 total_stalls: 90
-
-snapshot
-----
+faces: 22 (boundary: 1, interior: 21)
+graph: 47 vertices, 77 edges (perimeter: 30, interior: 47)
+regions: 1

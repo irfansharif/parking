@@ -10,8 +10,8 @@
 use parking_lot_engine::pipeline::generate::generate;
 use parking_lot_engine::types::{
     AisleDirection, Annotation, Axis, DebugToggles, DriveLine,
-    EdgeArc, GenerateInput, GridStop, HolePin, ParkingLayout, ParkingParams, PerimeterLoop,
-    Polygon, RegionId, RegionOverride, Target, Vec2, VertexId,
+    EdgeArc, GenerateInput, GridStop, ParkingLayout, ParkingParams, PerimeterLoop,
+    Polygon, RegionId, RegionOverride, StallKind, StallModifier, Target, Vec2, VertexId,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,23 +46,17 @@ fn single<'a>(args: &'a DirectiveArgs, key: &str) -> Option<&'a str> {
     }
 }
 
-/// Merge KV args from the directive line and the body into one map.
-/// `annotation` and `edge-select` accept their args in either place —
-/// datadriven-friendly fixtures put them on the directive line, while
-/// fixtures whose values carry `,`/`:`/`→` push them to a body line.
-fn collect_kv<'a>(args: &'a DirectiveArgs, body: &'a str) -> HashMap<&'a str, &'a str> {
-    let mut kv: HashMap<&str, &str> = HashMap::new();
-    for (k, v) in args {
-        if v.len() == 1 {
-            kv.insert(k.as_str(), v[0].as_str());
-        }
+/// Read a `region=` arg, accepting both single-value forms (`0x…`,
+/// decimal) and the paren-wrapped two-value `(x,y)` anchor — the latter
+/// is parsed by datadriven into a 2-element values list, which we glue
+/// back into one string so `resolve_region` can treat it uniformly.
+fn region_arg(args: &DirectiveArgs) -> Option<String> {
+    let v = args.get("region")?;
+    match v.as_slice() {
+        [s] => Some(s.clone()),
+        [x, y] => Some(format!("({},{})", x, y)),
+        _ => None,
     }
-    for tok in body.split_whitespace() {
-        if let Some(eq) = tok.find('=') {
-            kv.insert(&tok[..eq], &tok[eq + 1..]);
-        }
-    }
-    kv
 }
 
 use crate::harness::svg;
@@ -82,19 +76,12 @@ pub struct FixtureCtx {
     /// that don't specify `id=N` explicitly. Starts at 1 so the
     /// default 0 stays reserved as the "no id" sentinel.
     next_drive_line_id: u32,
-    /// Currently-selected aisle-graph edge (seed + chain + mode) —
-    /// mirrors the UI's `app.state.selectedEdge`. Set by `edge-select`,
-    /// consumed by `edge-delete` / `edge-cycle`.
-    selected_edge: Option<SelectedEdge>,
-    /// When true, snapshots overlay annotation chevrons on top of the
-    /// graph. Toggled by the `show-annotations` directive.
-    show_annotations: bool,
 }
 
-/// Engine-harness analogue of the UI's `EdgeRef`. Kept in the
-/// directive module since it's pure test state; doesn't need ts-rs
-/// codegen.
-struct SelectedEdge {
+/// Engine-harness analogue of the UI's `EdgeRef`. Lives transiently
+/// inside `edge-delete` / `edge-cycle` — those directives select and
+/// commit in one shot, so no cross-directive state is needed.
+struct EdgeSelection {
     seed_index: usize,
     chain: Vec<usize>,
     /// `true` for chain mode (single-click), `false` for segment mode
@@ -119,8 +106,6 @@ impl FixtureCtx {
             default_snapshot_name,
             update_snapshots: update,
             next_drive_line_id: 1,
-            selected_edge: None,
-            show_annotations: false,
         }
     }
 }
@@ -143,48 +128,23 @@ pub fn execute(
 ) -> Result<Outcome, String> {
     match directive {
         "polygon" => polygon(ctx, args, body),
-        "polygon-info" => polygon_info(ctx),
         "set" => set_param(ctx, args),
-        "debug" => set_debug(ctx, args),
         "generate" => generate_cmd(ctx),
-        "graph" => graph_cmd(ctx, args),
-        "faces" => faces_cmd(ctx, args),
-        "annotation-json" => annotation_json(ctx, body),
-        // `annotation` and `edge-select` carry args (`,`, `:`, `→`)
-        // that datadriven's directive parser rejects, so fixtures
+        // `annotation` and `edge-{delete,cycle}` carry args (`,`, `:`,
+        // `→`) that datadriven's directive parser rejects, so fixtures
         // place those args on a body line; the dispatchers parse the
         // body directly.
         "annotation" => annotation_cmd(ctx, args, body),
         "annotations" => annotations_cmd(ctx),
         "region-override" => region_override_cmd(ctx, args),
-        "stall-modifier-json" => stall_modifier_json(ctx, body),
         "drive-line" => drive_line_cmd(ctx, args, body),
-        "edge-select" => edge_select_cmd(ctx, args, body),
-        "edge-delete" => edge_delete_cmd(ctx),
-        "edge-cycle" => edge_cycle_cmd(ctx),
-        "dormant" => dormant_cmd(ctx),
-        "show-annotations" => show_annotations_cmd(ctx),
-        "snapshot" => snapshot(ctx, args),
         _ => Err(format!("unknown directive: {}", directive)),
     }
 }
 
-fn polygon_info(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
-    let b = &ctx.input.boundary;
-    let mut lines = Vec::new();
-    lines.push(loop_info("outer", &b.outer));
-    for (i, h) in b.holes.iter().enumerate() {
-        lines.push(loop_info(&format!("hole {}", i), h));
-    }
-    Ok(Outcome {
-        output: lines.join("\n"),
-        ..Default::default()
-    })
-}
-
 fn loop_info(label: &str, pts: &[Vec2]) -> String {
     if pts.is_empty() {
-        return format!("{}: empty", label);
+        return format!("{} empty", label);
     }
     let signed = Polygon::signed_area(pts);
     let winding = if signed > 0.0 {
@@ -203,7 +163,7 @@ fn loop_info(label: &str, pts: &[Vec2]) -> String {
         max_y = max_y.max(p.y);
     }
     format!(
-        "{}: {} vertices, {}, bbox ({},{})-({},{}), area {}",
+        "{} {} vertices, {}, bbox ({},{})-({},{}), area {}",
         label,
         pts.len(),
         winding,
@@ -227,31 +187,28 @@ fn polygon(ctx: &mut FixtureCtx, args: &DirectiveArgs, body: &str) -> Result<Out
     let kind = pop_positional(args)
         .ok_or_else(|| "polygon needs <outer|hole>".to_string())?;
     let (verts, arcs) = parse_vertex_block(body)?;
-    match kind {
+    let output = match kind {
         "outer" => {
             ctx.input.boundary.outer = verts;
             ctx.input.boundary.outer_arcs = arcs;
-            Ok(Outcome {
-                output: format!(
-                    "polygon outer: {} vertices",
-                    ctx.input.boundary.outer.len()
-                ),
-                ..Default::default()
-            })
+            loop_info("polygon outer", &ctx.input.boundary.outer)
         }
         "hole" => {
-            let n = verts.len();
             ctx.input.boundary.holes.push(verts);
             ctx.input.boundary.hole_arcs.push(arcs);
-            Ok(Outcome {
-                output: format!("hole: {} vertices", n),
-                ..Default::default()
-            })
+            loop_info(
+                "polygon hole",
+                ctx.input.boundary.holes.last().unwrap(),
+            )
         }
-        other => Err(format!("polygon <outer|hole> expected, got {:?}", other)),
-    }
+        other => return Err(format!("polygon <outer|hole> expected, got {:?}", other)),
+    };
+    Ok(Outcome { output, ..Default::default() })
 }
 
+/// Body-line vertex format: `(x,y)` with an optional outgoing-edge
+/// arc as ` arc=<bulge>` on the same line. Arcs apply to the segment
+/// from this vertex to the next.
 fn parse_vertex_block(body: &str) -> Result<(Vec<Vec2>, Vec<Option<EdgeArc>>), String> {
     let mut verts = Vec::new();
     let mut arcs: Vec<Option<EdgeArc>> = Vec::new();
@@ -260,27 +217,45 @@ fn parse_vertex_block(body: &str) -> Result<(Vec<Vec2>, Vec<Option<EdgeArc>>), S
         if t.is_empty() {
             continue;
         }
-        if let Some(rest) = t.strip_prefix("arc ") {
-            // Attach to the previous vertex's outgoing edge.
-            if verts.is_empty() {
-                return Err("arc line before any vertex".to_string());
-            }
-            let a = parse_arc(rest)?;
-            let idx = verts.len() - 1;
-            while arcs.len() <= idx {
-                arcs.push(None);
-            }
-            arcs[idx] = Some(a);
-            continue;
-        }
-        verts.push(parse_xy(t)?);
-    }
-    // Pad arcs to parallel edge count so downstream code doesn't have
-    // to guard against length mismatch.
-    while arcs.len() < verts.len() {
-        arcs.push(None);
+        let (pt, arc) = parse_vertex_line(t)?;
+        verts.push(pt);
+        arcs.push(arc);
     }
     Ok((verts, arcs))
+}
+
+fn parse_vertex_line(s: &str) -> Result<(Vec2, Option<EdgeArc>), String> {
+    let inner = s
+        .strip_prefix('(')
+        .ok_or_else(|| format!("expected `(x,y)`, got {:?}", s))?;
+    let (xy, rest) = inner
+        .split_once(')')
+        .ok_or_else(|| format!("missing `)` in {:?}", s))?;
+    let pt = parse_xy(xy)?;
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return Ok((pt, None));
+    }
+    let bulge_str = rest
+        .strip_prefix("arc=")
+        .ok_or_else(|| format!("expected ` arc=<bulge>` after `(x,y)`, got {:?}", rest))?;
+    let bulge = bulge_str
+        .parse::<f64>()
+        .map_err(|e| format!("bad arc bulge {:?}: {}", bulge_str, e))?;
+    Ok((pt, Some(EdgeArc { bulge })))
+}
+
+/// Strict `(x,y)` form for anchor-style coords (`near=`, `region=`).
+/// Bare `x,y` is rejected — paren-wrapping is the canonical shape and
+/// mirrors the polygon/drive-line body syntax. (Bare `x,y` survives
+/// only as the polygon body's per-vertex format; that's parsed by
+/// `parse_xy` directly.)
+fn parse_anchor(s: &str) -> Result<Vec2, String> {
+    let inner = s
+        .strip_prefix('(')
+        .and_then(|t| t.strip_suffix(')'))
+        .ok_or_else(|| format!("anchor must be `(x,y)`, got {:?}", s))?;
+    parse_xy(inner)
 }
 
 fn parse_xy(s: &str) -> Result<Vec2, String> {
@@ -297,37 +272,17 @@ fn parse_xy(s: &str) -> Result<Vec2, String> {
     ))
 }
 
-fn parse_arc(rest: &str) -> Result<EdgeArc, String> {
-    let bulge = rest
-        .trim()
-        .parse::<f64>()
-        .map_err(|e| format!("arc expects a bulge number, got {:?}: {}", rest, e))?;
-    Ok(EdgeArc { bulge })
-}
-
 fn set_param(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Outcome, String> {
     let (raw_key, raw_val) = sole_kv(args, "set")?;
     let key = normalize_param_key(raw_key);
     apply_param(&mut ctx.input.params, &key, raw_val)?;
-    Ok(Outcome {
-        output: format!("set {}={}", key, raw_val),
-        ..Default::default()
-    })
-}
-
-fn set_debug(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Outcome, String> {
-    let (raw_key, raw_val) = sole_kv(args, "debug")?;
-    let key = raw_key.replace('-', "_");
-    let val = parse_bool(raw_val)?;
-    apply_debug(&mut ctx.input.debug, &key, val)?;
-    Ok(Outcome {
-        output: format!("debug {}={}", key, val),
-        ..Default::default()
-    })
+    // No echo — the directive line already shows what was set; an
+    // expected block that just mirrors it adds noise.
+    Ok(Outcome::default())
 }
 
 /// Extract the (only) `key=value` pair from `args`. Used by directives
-/// that take exactly one such pair (`set`, `debug`).
+/// that take exactly one such pair (currently just `set`).
 fn sole_kv<'a>(args: &'a DirectiveArgs, verb: &str) -> Result<(&'a str, &'a str), String> {
     if args.len() != 1 {
         return Err(format!("{} requires exactly one key=value", verb));
@@ -339,25 +294,12 @@ fn sole_kv<'a>(args: &'a DirectiveArgs, verb: &str) -> Result<(&'a str, &'a str)
     Ok((k.as_str(), v[0].as_str()))
 }
 
-fn apply_debug(d: &mut DebugToggles, key: &str, v: bool) -> Result<(), String> {
-    match key {
-        "spine_merging" => d.spine_merging = v,
-        "spine_extensions" => d.spine_extensions = v,
-        "stall_face_clipping" => d.stall_face_clipping = v,
-        "entrance_on_face_filter" => d.entrance_on_face_filter = v,
-        "conflict_removal" => d.conflict_removal = v,
-        "island_stall_dilation" => d.island_stall_dilation = v,
-        other => return Err(format!("unknown debug flag: {}", other)),
-    }
-    Ok(())
-}
-
 /// Mirrors `ui/src/commands.ts::KEY_ALIASES` + dash→underscore so the
 /// engine-local fixtures stay compatible with the UI's DSL.
 fn normalize_param_key(key: &str) -> String {
     let k = key.trim().replace('-', "_");
     match k.as_str() {
-        "stall_angle" | "angle" => "stall_angle_deg".to_string(),
+        "angle" => "stall_angle".to_string(),
         "width" => "stall_width".to_string(),
         "depth" => "stall_depth".to_string(),
         _ => k,
@@ -370,14 +312,16 @@ fn apply_param(params: &mut ParkingParams, key: &str, raw_val: &str) -> Result<(
         "stall_width" => params.stall_width = parse_f64(v)?,
         "stall_depth" => params.stall_depth = parse_f64(v)?,
         "aisle_width" => params.aisle_width = parse_f64(v)?,
-        "stall_angle_deg" => params.stall_angle_deg = parse_f64(v)?,
-        "aisle_angle_deg" => params.aisle_angle_deg = parse_f64(v)?,
+        "stall_angle" => params.stall_angle = parse_f64(v)?,
+        "aisle_angle" => params.aisle_angle = parse_f64(v)?,
         "aisle_offset" => params.aisle_offset = parse_f64(v)?,
         "site_offset" => params.site_offset = parse_f64(v)?,
         "stalls_per_face" => params.stalls_per_face = parse_u32(v)?,
         "use_regions" => params.use_regions = parse_bool(v)?,
         "island_stall_interval" => params.island_stall_interval = parse_u32(v)?,
         "min_stalls_per_spine" => params.min_stalls_per_spine = parse_u32(v)?,
+        "ada_stall_width" => params.ada_stall_width = parse_f64(v)?,
+        "compact_stall_width" => params.compact_stall_width = parse_f64(v)?,
         other => return Err(format!("unknown param: {}", other)),
     }
     Ok(())
@@ -399,96 +343,6 @@ fn parse_bool(s: &str) -> Result<bool, String> {
     }
 }
 
-fn faces_cmd(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Outcome, String> {
-    let layout = ctx
-        .last_layout
-        .as_ref()
-        .ok_or_else(|| "faces requires a prior `generate`".to_string())?;
-    let faces = &layout.faces;
-    let mode = pop_positional(args).unwrap_or("summary");
-    let mut out = String::new();
-    match mode {
-        "summary" => {
-            let boundary_count = faces.iter().filter(|f| f.is_boundary).count();
-            out.push_str(&format!(
-                "faces: {}, boundary: {}, interior: {}",
-                faces.len(),
-                boundary_count,
-                faces.len() - boundary_count,
-            ));
-        }
-        "sources" => {
-            // Count edge sources across all faces, bucketed by label.
-            let mut wall = 0usize;
-            let mut interior = 0usize;
-            let mut perimeter = 0usize;
-            for f in faces {
-                for s in &f.edge_sources {
-                    match s.as_str() {
-                        "wall" => wall += 1,
-                        "interior" => interior += 1,
-                        "perimeter" => perimeter += 1,
-                        _ => {}
-                    }
-                }
-            }
-            out.push_str(&format!(
-                "edge sources: wall={}, interior={}, perimeter={}",
-                wall, interior, perimeter
-            ));
-        }
-        other => {
-            return Err(format!(
-                "faces: unknown mode {:?} (summary|sources)",
-                other
-            ))
-        }
-    }
-    Ok(Outcome {
-        output: out,
-        ..Default::default()
-    })
-}
-
-fn annotation_json(ctx: &mut FixtureCtx, body: &str) -> Result<Outcome, String> {
-    // Body is a JSON array of Annotation. Each entry matches the serde
-    // shape of `parking_lot_engine::types::Annotation`, e.g.:
-    //   [{"kind":"Direction",
-    //     "target":{"on":"Perimeter","loop":{"kind":"Outer"},"arc":0.5},
-    //     "traffic":"OneWay"}]
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return Err("annotation-json body is empty".to_string());
-    }
-    let added: Vec<parking_lot_engine::types::Annotation> =
-        serde_json::from_str(trimmed).map_err(|e| format!("annotation-json parse: {}", e))?;
-    let count = added.len();
-    ctx.input.annotations.extend(added);
-    Ok(Outcome {
-        output: format!("annotation-json: +{}", count),
-        ..Default::default()
-    })
-}
-
-fn stall_modifier_json(ctx: &mut FixtureCtx, body: &str) -> Result<Outcome, String> {
-    // Body is a JSON array of StallModifier:
-    //   [{"polyline":[{"x":50,"y":60},{"x":150,"y":60}],"kind":"Suppressed"}]
-    // Single-point modifiers (suppress at a location) use a one-element
-    // polyline.
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return Err("stall-modifier-json body is empty".to_string());
-    }
-    let added: Vec<parking_lot_engine::types::StallModifier> =
-        serde_json::from_str(trimmed).map_err(|e| format!("stall-modifier-json parse: {}", e))?;
-    let count = added.len();
-    ctx.input.stall_modifiers.extend(added);
-    Ok(Outcome {
-        output: format!("stall-modifier-json: +{}", count),
-        ..Default::default()
-    })
-}
-
 fn annotations_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
     // Dump the active annotations in the stable one-line DSL — one
     // line per annotation, in insertion order. Matches the format
@@ -506,139 +360,51 @@ fn annotations_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
     })
 }
 
-fn dormant_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
-    let layout = ctx
-        .last_layout
-        .as_ref()
-        .ok_or_else(|| "dormant requires a prior `generate`".to_string())?;
-    let dormant = &layout.dormant_annotations;
-    if dormant.is_empty() {
-        return Ok(Outcome {
-            output: "dormant_annotations: 0".to_string(),
-            ..Default::default()
-        });
-    }
-    let entries: Vec<String> = dormant
-        .iter()
-        .map(|d| format!("{}: {}", d.index, d.reason))
-        .collect();
-    Ok(Outcome {
-        output: format!(
-            "dormant_annotations: {}\n  {}",
-            dormant.len(),
-            entries.join("\n  ")
-        ),
-        ..Default::default()
-    })
-}
-
-fn graph_cmd(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Outcome, String> {
-    let layout = ctx
-        .last_layout
-        .as_ref()
-        .ok_or_else(|| "graph requires a prior `generate`".to_string())?;
-    let g = &layout.resolved_graph;
-    let mut out = String::new();
-    let mode = pop_positional(args).unwrap_or("summary");
-    match mode {
-        "summary" => {
-            out.push_str(&format!(
-                "vertices: {}, edges: {}, perim_vertex_count: {}\n",
-                g.vertices.len(),
-                g.edges.len(),
-                g.perim_vertex_count
-            ));
-            let (interior, perimeter) = g.edges.iter().partition::<Vec<_>, _>(|e| e.interior);
-            out.push_str(&format!(
-                "  perimeter: {}, interior: {}",
-                perimeter.len(),
-                interior.len()
-            ));
-        }
-        "vertices" => {
-            out.push_str(&format!("vertices: {}\n", g.vertices.len()));
-            for (i, v) in g.vertices.iter().enumerate() {
-                out.push_str(&format!("  {}: ({}, {})\n", i, num(v.x), num(v.y)));
-            }
-            out.pop();
-        }
-        "edges" => {
-            out.push_str(&format!("edges: {}\n", g.edges.len()));
-            for (i, e) in g.edges.iter().enumerate() {
-                let kind = if e.interior { "interior" } else { "perimeter" };
-                let dir = match e.direction {
-                    None => "two-way",
-                    Some(AisleDirection::TwoWayReverse) => "two-way-reverse",
-                    Some(AisleDirection::OneWay) => "one-way",
-                    Some(AisleDirection::OneWayReverse) => "one-way-reverse",
-                };
-                out.push_str(&format!(
-                    "  {}: {}->{} {} {} w={}\n",
-                    i, e.start, e.end, kind, dir, num(e.width)
-                ));
-            }
-            out.pop();
-        }
-        other => {
-            return Err(format!(
-                "graph: unknown mode {:?} (summary|vertices|edges)",
-                other
-            ))
-        }
-    }
-    Ok(Outcome {
-        output: out,
-        ..Default::default()
-    })
-}
-
 fn generate_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
     let layout = generate(ctx.input.clone());
-    let total = layout.metrics.total_stalls;
-    let mut lines = vec![format!("total_stalls: {}", total)];
-    if !layout.dormant_annotations.is_empty() {
-        let entries: Vec<String> = layout
-            .dormant_annotations
-            .iter()
-            .map(|d| format!("{}: {}", d.index, d.reason))
-            .collect();
-        lines.push(format!("dormant_annotations: [{}]", entries.join("; ")));
-    }
+    let g = &layout.resolved_graph;
+    let boundary_faces = layout.faces.iter().filter(|f| f.is_boundary).count();
+    let interior_faces = layout.faces.len() - boundary_faces;
+    let interior_edges = g.edges.iter().filter(|e| e.interior).count();
+    let perimeter_edges = g.edges.len() - interior_edges;
+    let regions = layout
+        .region_debug
+        .as_ref()
+        .map(|rd| rd.regions.len())
+        .unwrap_or(0);
+    let output = format!(
+        "total_stalls: {}\n\
+         faces: {} (boundary: {}, interior: {})\n\
+         graph: {} vertices, {} edges (perimeter: {}, interior: {})\n\
+         regions: {}",
+        layout.metrics.total_stalls,
+        layout.faces.len(),
+        boundary_faces,
+        interior_faces,
+        g.vertices.len(),
+        g.edges.len(),
+        perimeter_edges,
+        interior_edges,
+        regions,
+    );
     ctx.last_layout = Some(layout);
-    Ok(Outcome {
-        output: lines.join("\n"),
-        ..Default::default()
-    })
+    Ok(Outcome { output, ..Default::default() })
 }
 
-fn show_annotations_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
-    ctx.show_annotations = true;
-    Ok(Outcome {
-        output: "show-annotations: on".to_string(),
-        ..Default::default()
-    })
-}
-
-fn snapshot(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Outcome, String> {
+/// Render an SVG snapshot for the fixture's final layout. Called by
+/// the runner once per fixture after all directives have executed; no
+/// longer surfaced as a directive in fixture files.
+pub fn snapshot(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
     let layout = ctx
         .last_layout
         .as_ref()
         .ok_or_else(|| "snapshot requires a prior `generate`".to_string())?;
 
-    let name = pop_positional(args)
-        .map(String::from)
-        .unwrap_or_else(|| ctx.default_snapshot_name.clone());
-    let file_name = if name.ends_with(".svg") {
-        name.clone()
-    } else {
-        format!("{}.svg", name)
-    };
-    let path: PathBuf = ctx.snapshot_root.join(&file_name);
+    let path: PathBuf = ctx
+        .snapshot_root
+        .join(format!("{}.svg", ctx.default_snapshot_name));
 
-    let opts = svg::SvgOptions {
-        show_annotations: ctx.show_annotations,
-        ..svg::SvgOptions::default()
-    };
+    let opts = svg::SvgOptions::default();
     let svg_text = svg::render(
         &ctx.input.boundary,
         layout,
@@ -701,10 +467,12 @@ fn snapshot_diff(label: &str, expected: &str, actual: &str) -> String {
 // drive-line / vertex / edge / annotation — mirror the UI's one-line DSL.
 // ---------------------------------------------------------------------------
 
-/// Accept optional `id=N`, `partitions`, and `hole-pin=(h,v)` args in
-/// any order. Body is exactly two `x,y` lines (start and end).
-/// Note `hole-pin` takes a paren-wrapped 2-tuple — datadriven's
-/// directive parser doesn't allow bare commas in arg values.
+/// `drive-line [partitions] [stall=<kind>]` with a 2-point `(x,y)`
+/// body. Without `stall=`, the line is a structural drive-line; with
+/// it, the body is interpreted as a stall-modifier polyline of the
+/// given `<kind>` (suppressed | standard | ada | compact | island).
+/// Annotations target a specific drive-line by `near=(x,y)`, so the
+/// directive auto-allocates IDs internally — no `id=` user arg.
 fn drive_line_cmd(
     ctx: &mut FixtureCtx,
     args: &DirectiveArgs,
@@ -720,75 +488,68 @@ fn drive_line_cmd(
     let start = points[0];
     let end = points[1];
 
-    let mut explicit_id: Option<u32> = None;
-    let mut partitions_flag = false;
-    let mut hole_pin: Option<(usize, usize)> = None;
+    let mut partitions = false;
+    let mut stall: Option<&str> = None;
     for (k, vals) in args {
         match (k.as_str(), vals.as_slice()) {
-            ("id", [v]) => {
-                explicit_id = Some(v.parse::<u32>().map_err(|e| format!("id: {}", e))?);
-            }
-            ("partitions", []) => partitions_flag = true,
-            ("hole-pin", [h, i]) => {
-                hole_pin = Some((
-                    h.parse::<usize>().map_err(|e| format!("hole-pin h: {}", e))?,
-                    i.parse::<usize>().map_err(|e| format!("hole-pin i: {}", e))?,
-                ));
-            }
+            ("partitions", []) => partitions = true,
+            ("stall", [v]) => stall = Some(v.as_str()),
             _ => return Err(format!("drive-line: unknown arg {:?}", k)),
         }
     }
 
-    let id = match explicit_id {
-        Some(n) => {
-            if n >= ctx.next_drive_line_id {
-                ctx.next_drive_line_id = n + 1;
-            }
-            n
-        }
-        None => {
-            let n = ctx.next_drive_line_id;
-            ctx.next_drive_line_id += 1;
-            n
-        }
-    };
+    if let Some(kind_str) = stall {
+        let kind = parse_stall_kind(kind_str)?;
+        ctx.input.stall_modifiers.push(StallModifier {
+            polyline: vec![start, end],
+            kind,
+        });
+        return Ok(Outcome {
+            output: format!(
+                "drive-line ({},{}) -> ({},{}) stall={}",
+                fmt_xy(start.x),
+                fmt_xy(start.y),
+                fmt_xy(end.x),
+                fmt_xy(end.y),
+                kind_str,
+            ),
+            ..Default::default()
+        });
+    }
 
-    let partitions = partitions_flag || hole_pin.is_some();
+    let id = ctx.next_drive_line_id;
+    ctx.next_drive_line_id += 1;
     ctx.input.drive_lines.push(DriveLine {
         start,
         end,
-        hole_pin: hole_pin.map(|(h, i)| HolePin {
-            hole_index: h,
-            vertex_index: i,
-        }),
+        hole_pin: None,
         id,
         partitions,
     });
 
-    // Echo the request back in the same shape as debug::format_fixture
-    // so round-tripping stays stable.
-    let id_suffix = if explicit_id.is_some() {
-        format!(" id={}", id)
-    } else {
-        String::new()
-    };
-    let pin_suffix = match (hole_pin, partitions_flag) {
-        (Some((h, i)), _) => format!(" hole-pin={},{}", h, i),
-        (None, true) => " partitions".to_string(),
-        (None, false) => String::new(),
-    };
+    let partitions_suffix = if partitions { " partitions" } else { "" };
     Ok(Outcome {
         output: format!(
-            "drive-line: {},{} -> {},{}{}{}",
+            "drive-line ({},{}) -> ({},{}){}",
             fmt_xy(start.x),
             fmt_xy(start.y),
             fmt_xy(end.x),
             fmt_xy(end.y),
-            id_suffix,
-            pin_suffix,
+            partitions_suffix,
         ),
         ..Default::default()
     })
+}
+
+fn parse_stall_kind(s: &str) -> Result<StallKind, String> {
+    match s {
+        "standard" => Ok(StallKind::Standard),
+        "ada" => Ok(StallKind::Ada),
+        "compact" => Ok(StallKind::Compact),
+        "island" => Ok(StallKind::Island),
+        "suppressed" => Ok(StallKind::Suppressed),
+        other => Err(format!("unknown stall kind {:?}", other)),
+    }
 }
 
 fn fmt_xy(v: f64) -> String {
@@ -799,9 +560,9 @@ fn fmt_xy(v: f64) -> String {
     }
 }
 
-/// Parse the UI's one-line annotation DSL. Fixtures put `<kind>` on the
-/// directive line as a positional flag and the rest of the args on a
-/// single body line — those args carry `:` / `,` / `→` characters that
+/// Parse the UI's one-line annotation DSL. Fixtures always put
+/// `<kind>` on the directive line and the args on a single body line —
+/// uniform shape, since the args may carry `:` / `,` / `→` that
 /// datadriven's directive parser rejects.
 ///
 ///   annotation <kind>
@@ -819,8 +580,25 @@ fn annotation_cmd(
 ) -> Result<Outcome, String> {
     let kind = pop_positional(args)
         .ok_or_else(|| "annotation requires a kind".to_string())?;
-    let kv = collect_kv(args, body);
-    let target = parse_annotation_target(&kv)?;
+    let mut kv: HashMap<&str, &str> = HashMap::new();
+    for tok in body.split_whitespace() {
+        if let Some(eq) = tok.find('=') {
+            kv.insert(&tok[..eq], &tok[eq + 1..]);
+        }
+    }
+    // Two ways to specify a target:
+    //   * `near=(x,y) mode=…` (no `on=`) — geometric selection of the
+    //     nearest aisle edge, optionally expanded to its collinear
+    //     chain. Formerly the `edge-delete` / `edge-cycle` directives.
+    //   * `on=<substrate> …` — substrate-specific addressing
+    //     (`on=grid region=… axis=…`, `on=drive-line near=(x,y) t=…`,
+    //     `on=perimeter loop=… edge=…`).
+    let target = if kv.contains_key("near") && !kv.contains_key("on") {
+        let sel = select_edge_from_kv(&kv, ctx, "annotation")?;
+        resolve_selection_target(ctx, &sel)?
+    } else {
+        parse_annotation_target(&kv, ctx)?
+    };
     let ann = match kind {
         "delete-vertex" => Annotation::DeleteVertex { target },
         "delete-edge" => Annotation::DeleteEdge { target },
@@ -844,25 +622,25 @@ fn annotation_cmd(
 }
 
 fn region_override_cmd(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Outcome, String> {
-    let region_str = single(args, "region")
-        .ok_or_else(|| "region-override: missing region=<id>".to_string())?;
-    let region_id = parse_region_id(region_str)?;
-    let aisle_angle_deg = single(args, "angle")
+    let region_str = region_arg(args)
+        .ok_or_else(|| "region-override: missing region=<id|(x,y)>".to_string())?;
+    let region_id = resolve_region(&region_str, ctx)?;
+    let aisle_angle = single(args, "angle")
         .map(|s| s.parse::<f64>().map_err(|e| format!("region-override angle: {}", e)))
         .transpose()?;
     let aisle_offset = single(args, "offset")
         .map(|s| s.parse::<f64>().map_err(|e| format!("region-override offset: {}", e)))
         .transpose()?;
-    if aisle_angle_deg.is_none() && aisle_offset.is_none() {
+    if aisle_angle.is_none() && aisle_offset.is_none() {
         return Err("region-override: needs at least one of angle=<n> or offset=<n>".to_string());
     }
     ctx.input.region_overrides.push(RegionOverride {
         region_id,
-        aisle_angle_deg,
+        aisle_angle,
         aisle_offset,
     });
-    let mut out = format!("region=0x{:016x}", region_id.0);
-    if let Some(a) = aisle_angle_deg {
+    let mut out = format!("region-override region=0x{:016x}", region_id.0);
+    if let Some(a) = aisle_angle {
         out.push_str(&format!(" angle={}", a));
     }
     if let Some(o) = aisle_offset {
@@ -873,6 +651,7 @@ fn region_override_cmd(ctx: &mut FixtureCtx, args: &DirectiveArgs) -> Result<Out
 
 fn parse_annotation_target(
     kv: &std::collections::HashMap<&str, &str>,
+    ctx: &FixtureCtx,
 ) -> Result<Target, String> {
     let on = kv
         .get("on")
@@ -882,7 +661,7 @@ fn parse_annotation_target(
             let region = kv
                 .get("region")
                 .ok_or_else(|| "grid: missing region=<id>".to_string())?;
-            let region = parse_region_id(region)?;
+            let region = resolve_region(region, ctx)?;
             let axis = match kv.get("axis").copied() {
                 Some("x") => Axis::X,
                 Some("y") => Axis::Y,
@@ -914,11 +693,14 @@ fn parse_annotation_target(
             })
         }
         "drive-line" => {
-            let id = kv
-                .get("id")
-                .ok_or_else(|| "drive-line: missing id".to_string())?
-                .parse::<u32>()
-                .map_err(|e| format!("drive-line id: {}", e))?;
+            let id = if let Some(near) = kv.get("near") {
+                resolve_drive_line_near(near, ctx)?
+            } else if let Some(s) = kv.get("id") {
+                s.parse::<u32>()
+                    .map_err(|e| format!("drive-line id: {}", e))?
+            } else {
+                return Err("drive-line: missing near=(x,y) or id=N".to_string());
+            };
             let t = kv
                 .get("t")
                 .ok_or_else(|| "drive-line: missing t".to_string())?
@@ -963,7 +745,63 @@ fn parse_annotation_target(
     }
 }
 
-fn parse_region_id(s: &str) -> Result<RegionId, String> {
+/// Resolve a `region=` argument. Accepts:
+///   - `(x,y)` — anchor point inside the target region. Looked up
+///     against `ctx.last_layout.region_debug.regions[*].clip_poly` via
+///     point-in-polygon. Stable across small layout tweaks and
+///     spellable from the snapshot.
+///   - `0x…` / decimal — raw `RegionId`. Engine's canonical form;
+///     copy-pasted from a previous run's echo. Brittle, but kept as a
+///     low-friction escape hatch.
+/// Resolve `near=(x,y)` (or bare `near=x,y`) to the id of the drive-
+/// line whose segment passes nearest the anchor point. Same pattern
+/// as `resolve_region`, keyed off `ctx.input.drive_lines`.
+fn resolve_drive_line_near(s: &str, ctx: &FixtureCtx) -> Result<u32, String> {
+    let p = parse_anchor(s)?;
+    let mut best: Option<(u32, f64)> = None;
+    for dl in &ctx.input.drive_lines {
+        let d = parking_lot_engine::geom::poly::point_to_segment_dist(p, dl.start, dl.end);
+        if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+            best = Some((dl.id, d));
+        }
+    }
+    best.map(|(id, _)| id)
+        .ok_or_else(|| format!("drive-line near=({}, {}) found no drive-line", p.x, p.y))
+}
+
+fn resolve_region(s: &str, ctx: &FixtureCtx) -> Result<RegionId, String> {
+    if let Some(inner) = s.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+        let p = parse_xy(inner)?;
+        let layout = ctx
+            .last_layout
+            .as_ref()
+            .ok_or_else(|| "region=(x,y) requires a prior `generate`".to_string())?;
+        let rd = layout
+            .region_debug
+            .as_ref()
+            .ok_or_else(|| "region=(x,y): layout has no region_debug".to_string())?;
+        for region in &rd.regions {
+            if parking_lot_engine::geom::clip::point_in_polygon(&p, &region.clip_poly) {
+                return Ok(region.id);
+            }
+        }
+        let centroids: Vec<String> = rd
+            .regions
+            .iter()
+            .map(|r| {
+                let n = r.clip_poly.len() as f64;
+                let cx = r.clip_poly.iter().map(|q| q.x).sum::<f64>() / n;
+                let cy = r.clip_poly.iter().map(|q| q.y).sum::<f64>() / n;
+                format!("  0x{:016x} centroid=({:.0},{:.0})", r.id.0, cx, cy)
+            })
+            .collect();
+        return Err(format!(
+            "region=(x,y): no region contains ({}, {})\navailable regions:\n{}",
+            p.x,
+            p.y,
+            centroids.join("\n"),
+        ));
+    }
     let n = if let Some(hex) = s.strip_prefix("0x") {
         u64::from_str_radix(hex, 16).map_err(|e| format!("region id hex: {}", e))?
     } else {
@@ -1021,151 +859,72 @@ fn parse_traffic(s: &str) -> Result<AisleDirection, String> {
 }
 
 // ---------------------------------------------------------------------------
-// edge-select / edge-delete / edge-cycle — harness mirrors of the UI's
-// click-to-annotation flow. `edge-select` records a seed edge + its
-// collinear chain in `ctx.selected_edge`; the commit directives resolve
-// that selection to a Grid or DriveLine target and push the
-// corresponding annotation.
+// Geometric edge selection — used by `annotation <kind> near=(x,y) mode=…`
+// to pick an aisle-graph edge by world coords (and optionally expand
+// to its collinear run) instead of via the substrate-specific
+// `on=grid region=… axis=… coord=… range=…` form.
 // ---------------------------------------------------------------------------
 
-/// `edge-select [seed=N | near=X,Y] [mode=chain|segment]`.
-/// `near=X,Y`'s comma is rejected by datadriven's directive-line
-/// parser, so fixtures using `near` push the args to a body line; the
-/// `seed=N` form fits on the directive line. Both shapes work via
-/// `collect_kv`.
-fn edge_select_cmd(
-    ctx: &mut FixtureCtx,
-    args: &DirectiveArgs,
-    body: &str,
-) -> Result<Outcome, String> {
+/// Pick the graph edge nearest `near=(x,y)` and (in chain mode) expand
+/// it to its collinear run.
+fn select_edge_from_kv(
+    kv: &HashMap<&str, &str>,
+    ctx: &FixtureCtx,
+    verb: &str,
+) -> Result<EdgeSelection, String> {
     let layout = ctx
         .last_layout
         .as_ref()
-        .ok_or_else(|| "edge-select requires a prior `generate`".to_string())?;
+        .ok_or_else(|| format!("{} requires a prior `generate`", verb))?;
     let graph = &layout.resolved_graph;
 
-    let kv = collect_kv(args, body);
-    let seed = kv
-        .get("seed")
-        .map(|v| v.parse::<usize>().map_err(|e| format!("seed: {}", e)))
-        .transpose()?;
-    let near = kv.get("near").map(|v| parse_xy(v)).transpose()?;
-    let mode = match kv.get("mode").copied().unwrap_or("chain") {
-        "chain" => "chain",
-        "segment" => "segment",
+    let p = kv
+        .get("near")
+        .map(|v| parse_anchor(v))
+        .transpose()?
+        .ok_or_else(|| format!("{} requires near=(x,y)", verb))?;
+    let is_chain_mode = match kv.get("mode").copied().unwrap_or("chain") {
+        "chain" => true,
+        "segment" => false,
         other => {
             return Err(format!(
-                "edge-select: mode must be chain|segment, got {:?}",
-                other
+                "{}: mode must be chain|segment, got {:?}",
+                verb, other
             ));
         }
     };
-    let seed_index = match (seed, near) {
-        (Some(s), _) => s,
-        (None, Some(p)) => {
-            let seen = &mut std::collections::HashSet::<(usize, usize)>::new();
-            let mut best: Option<(usize, f64)> = None;
-            for (i, edge) in graph.edges.iter().enumerate() {
-                let key = (edge.start.min(edge.end), edge.start.max(edge.end));
-                if !seen.insert(key) {
-                    continue;
-                }
-                let a = graph.vertices[edge.start];
-                let b = graph.vertices[edge.end];
-                let d = parking_lot_engine::geom::poly::point_to_segment_dist(p, a, b);
-                if best.map(|(_, bd)| d < bd).unwrap_or(true) {
-                    best = Some((i, d));
-                }
+    let seed_index = {
+        let seen = &mut std::collections::HashSet::<(usize, usize)>::new();
+        let mut best: Option<(usize, f64)> = None;
+        for (i, edge) in graph.edges.iter().enumerate() {
+            let key = (edge.start.min(edge.end), edge.start.max(edge.end));
+            if !seen.insert(key) {
+                continue;
             }
-            best.map(|(i, _)| i)
-                .ok_or_else(|| "edge-select near=X,Y found no edges".to_string())?
+            let a = graph.vertices[edge.start];
+            let b = graph.vertices[edge.end];
+            let d = parking_lot_engine::geom::poly::point_to_segment_dist(p, a, b);
+            if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                best = Some((i, d));
+            }
         }
-        _ => return Err("edge-select requires seed=<i> or near=<x>,<y>".to_string()),
+        best.map(|(i, _)| i)
+            .ok_or_else(|| format!("{} near=X,Y found no edges", verb))?
     };
-
-    let chain = if mode == "chain" {
+    let chain = if is_chain_mode {
         parking_lot_engine::resolve::find_collinear_chain(graph, seed_index)
     } else {
         vec![seed_index]
     };
-    let chain_len = chain.len();
-    ctx.selected_edge = Some(SelectedEdge {
-        seed_index,
-        chain,
-        is_chain_mode: mode == "chain",
-    });
-    Ok(Outcome {
-        output: format!(
-            "edge-select seed={} mode={} chain_len={}",
-            seed_index, mode, chain_len
-        ),
-        ..Default::default()
-    })
+    Ok(EdgeSelection { seed_index, chain, is_chain_mode })
 }
 
-fn edge_delete_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
-    let sel = ctx
-        .selected_edge
-        .take()
-        .ok_or_else(|| "edge-delete requires a prior `edge-select`".to_string())?;
-    let target = resolve_selection_target(ctx, &sel)?;
-    ctx.input.annotations.push(parking_lot_engine::types::Annotation::DeleteEdge { target });
-    Ok(Outcome {
-        output: "edge-delete".to_string(),
-        ..Default::default()
-    })
-}
-
-fn edge_cycle_cmd(ctx: &mut FixtureCtx) -> Result<Outcome, String> {
-    use parking_lot_engine::types::{Annotation, AisleDirection};
-    let sel = ctx
-        .selected_edge
-        .take()
-        .ok_or_else(|| "edge-cycle requires a prior `edge-select`".to_string())?;
-    let target = resolve_selection_target(ctx, &sel)?;
-    let existing = ctx.input.annotations.iter().position(|ann| {
-        matches!(ann, Annotation::Direction { .. })
-            && parking_lot_engine::resolve::targets_equal(annotation_target(ann), &target)
-    });
-    if let Some(idx) = existing {
-        // Non-tombstone cycle: TwoWayReverse → OneWay → OneWayReverse
-        // → TwoWayReverse. (TwoWay isn't an annotation alphabet —
-        // unannotated edges are the default and live in the tombstone
-        // state.)
-        if let Annotation::Direction { traffic, .. } = &mut ctx.input.annotations[idx] {
-            *traffic = match traffic {
-                AisleDirection::TwoWayReverse => AisleDirection::OneWay,
-                AisleDirection::OneWay => AisleDirection::OneWayReverse,
-                AisleDirection::OneWayReverse => AisleDirection::TwoWayReverse,
-            };
-        }
-    } else {
-        ctx.input.annotations.push(Annotation::Direction {
-            target,
-            traffic: AisleDirection::TwoWayReverse,
-        });
-    }
-    Ok(Outcome {
-        output: "edge-cycle".to_string(),
-        ..Default::default()
-    })
-}
-
-fn annotation_target(ann: &parking_lot_engine::types::Annotation) -> &parking_lot_engine::types::Target {
-    use parking_lot_engine::types::Annotation;
-    match ann {
-        Annotation::DeleteVertex { target } => target,
-        Annotation::DeleteEdge { target } => target,
-        Annotation::Direction { target, .. } => target,
-    }
-}
-
-/// Resolve a `SelectedEdge` to a `Target` — grid-first, drive-line
+/// Resolve an `EdgeSelection` to a `Target` — grid-first, drive-line
 /// fallback. Mirrors `app.deleteSelectedEdge` / `cycleEdgeDirection` on
 /// the UI side.
 fn resolve_selection_target(
     ctx: &FixtureCtx,
-    sel: &SelectedEdge,
+    sel: &EdgeSelection,
 ) -> Result<parking_lot_engine::types::Target, String> {
     let layout = ctx
         .last_layout

@@ -11,10 +11,6 @@
 //! rectangle building, junction wedge computation, or post-union
 //! spike cleanup.
 //!
-//! Matches the old `boundary_only_miters: true` semantics (mitered
-//! perimeter, no wedges at interior-only junctions) without the
-//! debug toggle — it falls out of the stroking strategy.
-//!
 //! `corridor_polygon` / `corridor_polygons` remain — they emit per-edge
 //! rectangles consumed by face-edge tagging (`tag_face_edges`) to
 //! classify each face contour edge against the corridor that carved it.

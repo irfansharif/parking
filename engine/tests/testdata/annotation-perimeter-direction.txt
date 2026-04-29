@@ -1,33 +1,32 @@
 # Phase 4 — perimeter-target annotation applies direction to one
 # perimeter edge and isn't dormant. Exercises:
-#   - annotation-json directive (parse + append to input.annotations)
+#   - annotation directive with `on=perimeter` substrate
 #   - annotations directive (dormant indices report)
 #   - perimeter-target resolver round-trip through the pipeline
 
 polygon outer
-0,0
-240,0
-240,160
-0,160
+(0,0)
+(240,0)
+(240,160)
+(0,160)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(240,160), area 38400
 
 set stall-angle=90
 ----
-set stall_angle_deg=90
 
-annotation-json
-[{"kind":"Direction","target":{"on":"Perimeter","loop":{"kind":"Outer"},"start":2,"end":3,"t":0.5},"traffic":"OneWay"}]
+annotation direction
+on=perimeter loop=outer edge=2→3 t=0.5 traffic=one-way
 ----
-annotation-json: +1
+annotation direction on=perimeter loop=outer edge=2→3 t=0.50 traffic=one-way
 
 generate
 ----
 total_stalls: 62
+faces: 5 (boundary: 1, interior: 4)
+graph: 10 vertices, 13 edges (perimeter: 10, interior: 3)
+regions: 1
 
 annotations
 ----
 direction on=perimeter loop=outer edge=2→3 t=0.50 traffic=one-way
-
-snapshot
-----

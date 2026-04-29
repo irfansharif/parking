@@ -14,114 +14,112 @@
 # bay separates the OneWayReverse from the TwoWayReverse).
 
 polygon outer
-0,0
-1240,0
-1240,300
-0,300
+(0,0)
+(1240,0)
+(1240,300)
+(0,300)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(1240,300), area 372000
 
 drive-line
-70,-20
-70,320
+(70,-20)
+(70,320)
 ----
-drive-line: 70,-20 -> 70,320
+drive-line (70,-20) -> (70,320)
 
 drive-line
-170,-20
-170,320
+(170,-20)
+(170,320)
 ----
-drive-line: 170,-20 -> 170,320
+drive-line (170,-20) -> (170,320)
 
 drive-line
-270,-20
-270,320
+(270,-20)
+(270,320)
 ----
-drive-line: 270,-20 -> 270,320
+drive-line (270,-20) -> (270,320)
 
 drive-line
-370,-20
-370,320
+(370,-20)
+(370,320)
 ----
-drive-line: 370,-20 -> 370,320
+drive-line (370,-20) -> (370,320)
 
 drive-line
-470,-20
-470,320
+(470,-20)
+(470,320)
 ----
-drive-line: 470,-20 -> 470,320
+drive-line (470,-20) -> (470,320)
 
 drive-line
-570,-20
-570,320
+(570,-20)
+(570,320)
 ----
-drive-line: 570,-20 -> 570,320
+drive-line (570,-20) -> (570,320)
 
 drive-line
-670,-20
-670,320
+(670,-20)
+(670,320)
 ----
-drive-line: 670,-20 -> 670,320
+drive-line (670,-20) -> (670,320)
 
 drive-line
-770,-20
-770,320
+(770,-20)
+(770,320)
 ----
-drive-line: 770,-20 -> 770,320
+drive-line (770,-20) -> (770,320)
 
 drive-line
-870,-20
-870,320
+(870,-20)
+(870,320)
 ----
-drive-line: 870,-20 -> 870,320
+drive-line (870,-20) -> (870,320)
 
 drive-line
-970,-20
-970,320
+(970,-20)
+(970,320)
 ----
-drive-line: 970,-20 -> 970,320
+drive-line (970,-20) -> (970,320)
 
 drive-line
-1070,-20
-1070,320
+(1070,-20)
+(1070,320)
 ----
-drive-line: 1070,-20 -> 1070,320
+drive-line (1070,-20) -> (1070,320)
 
 drive-line
-1170,-20
-1170,320
+(1170,-20)
+(1170,320)
 ----
-drive-line: 1170,-20 -> 1170,320
+drive-line (1170,-20) -> (1170,320)
 
-set stall_angle_deg=45
+set stall-angle=45
 ----
-set stall_angle_deg=45
 
-annotation direction on=drive-line id=2 t=0.5 traffic=one-way
+annotation direction
+on=drive-line near=(170,150) t=0.5 traffic=one-way
 ----
 annotation direction on=drive-line id=2 t=0.50 traffic=one-way
 
-annotation direction on=drive-line id=4 t=0.5 traffic=one-way-reverse
+annotation direction
+on=drive-line near=(370,150) t=0.5 traffic=one-way-reverse
 ----
 annotation direction on=drive-line id=4 t=0.50 traffic=one-way-reverse
 
-annotation direction on=drive-line id=8 t=0.5 traffic=two-way-reverse
+annotation direction
+on=drive-line near=(770,150) t=0.5 traffic=two-way-reverse
 ----
 annotation direction on=drive-line id=8 t=0.50 traffic=two-way-reverse
 
 generate
 ----
 total_stalls: 447
+faces: 45 (boundary: 1, interior: 44)
+graph: 102 vertices, 167 edges (perimeter: 70, interior: 97)
+regions: 1
 
 annotations
 ----
 direction on=drive-line id=2 t=0.50 traffic=one-way
 direction on=drive-line id=4 t=0.50 traffic=one-way-reverse
 direction on=drive-line id=8 t=0.50 traffic=two-way-reverse
-
-show-annotations
-----
-show-annotations: on
-
-snapshot
-----

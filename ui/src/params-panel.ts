@@ -13,7 +13,7 @@ interface ParamDef {
 
 const PARAM_DEFS: ParamDef[] = [
   {
-    key: "stall_angle_deg",
+    key: "stall_angle",
     label: "Stall Angle",
     min: 45,
     max: 90,
@@ -35,6 +35,33 @@ const PARAM_DEFS: ParamDef[] = [
     label: "Stall Depth",
     min: 8,
     max: 30,
+    step: 0.5,
+    unit: "ft",
+    type: "range",
+  },
+  {
+    key: "ada_stall_width",
+    label: "ADA Stall Width",
+    min: 8,
+    max: 20,
+    step: 0.5,
+    unit: "ft",
+    type: "range",
+  },
+  {
+    key: "ada_buffer_width",
+    label: "ADA Buffer Width",
+    min: 0,
+    max: 12,
+    step: 0.5,
+    unit: "ft",
+    type: "range",
+  },
+  {
+    key: "compact_stall_width",
+    label: "Compact Stall Width",
+    min: 5,
+    max: 10,
     step: 0.5,
     unit: "ft",
     type: "range",
@@ -172,6 +199,22 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
   regGroup.appendChild(regLabel);
   container.appendChild(regGroup);
 
+  // ADA shared-buffer toggle
+  const sharedGroup = document.createElement("div");
+  sharedGroup.className = "param-group layer-toggle";
+  const sharedLabel = document.createElement("label");
+  const sharedCheckbox = document.createElement("input");
+  sharedCheckbox.type = "checkbox";
+  sharedCheckbox.checked = !!app.state.params.ada_buffer_shared;
+  sharedCheckbox.addEventListener("change", () => {
+    (app.state.params as any).ada_buffer_shared = sharedCheckbox.checked;
+    app.generate();
+  });
+  sharedLabel.appendChild(sharedCheckbox);
+  sharedLabel.appendChild(document.createTextNode(" Share ADA Buffer"));
+  sharedGroup.appendChild(sharedLabel);
+  container.appendChild(sharedGroup);
+
   // Layers section
   const layersTitle = document.createElement("h2");
   layersTitle.textContent = "Layers";
@@ -179,11 +222,11 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
 
   const LAYER_DEFS: { key: keyof LayerVisibility; label: string }[] = [
     { key: "stalls", label: "Stalls" },
+    { key: "customStalls", label: "Custom Stalls (ADA, EV, …)" },
     { key: "vertices", label: "Vertices" },
     { key: "driveLines", label: "Drive Lines" },
     { key: "spines", label: "Spines" },
     { key: "faces", label: "Faces" },
-    { key: "miterFills", label: "Miter Fills" },
     { key: "islands", label: "Islands" },
     { key: "regions", label: "Regions" },
     { key: "paintLines", label: "Paint Lines" },
@@ -218,14 +261,6 @@ export function setupParamsPanel(container: HTMLElement, app: App, onUpdate: () 
   }
 
   const DEBUG_GROUPS: DebugGroupDef[] = [
-    {
-      label: "Corridor Merging",
-      toggles: [
-        { key: "miter_fills", label: "Miter Fills" },
-
-        { key: "spike_removal", label: "Spike Removal" },
-      ],
-    },
     {
       label: "Spine Generation",
       toggles: [

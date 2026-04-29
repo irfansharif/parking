@@ -9,7 +9,7 @@ use crate::types::*;
 /// band. `site_offset` is added on top by `aisle_edge_perim` for any
 /// additional user-specified setback.
 pub fn compute_inset_d(params: &ParkingParams) -> f64 {
-    let stall_angle_rad = params.stall_angle_deg.to_radians();
+    let stall_angle_rad = params.stall_angle.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin()
         + stall_angle_rad.cos() * params.stall_width / 2.0;
     effective_depth + params.aisle_width
@@ -75,7 +75,7 @@ pub fn derive_raw_holes(holes: &[Vec<Vec2>], inset_d: f64) -> Vec<Vec<Vec2>> {
 pub struct Region {
     pub id: RegionId,
     pub clip_poly: Vec<Vec2>,
-    pub aisle_angle_deg: f64,
+    pub aisle_angle: f64,
     pub aisle_offset: f64,
 }
 
@@ -152,7 +152,7 @@ pub fn decompose_regions(
             Region {
                 id,
                 clip_poly: r.clip_poly,
-                aisle_angle_deg: angle,
+                aisle_angle: angle,
                 aisle_offset: offset,
             }
         })
@@ -209,7 +209,7 @@ fn generate_region_aisles(
     outer_loop: &[Vec2],
     hole_loops: &[Vec<Vec2>],
     _hole_bases: &[usize],
-    aisle_angle_deg: f64,
+    aisle_angle: f64,
     aisle_offset: f64,
     row_spacing: f64,
     params: &ParkingParams,
@@ -218,7 +218,7 @@ fn generate_region_aisles(
     hole_splits: &mut [Vec<Vec<(f64, usize)>>],
     _perim_n: usize,
 ) -> RegionAisleResult {
-    let angle_rad = aisle_angle_deg.to_radians();
+    let angle_rad = aisle_angle.to_radians();
     let aisle_dir = Vec2::new(angle_rad.cos(), angle_rad.sin());
     let perp_dir = Vec2::new(-angle_rad.sin(), angle_rad.cos());
 
@@ -337,7 +337,7 @@ fn generate_region_aisles(
     // the canvas-space length of a face, not which y values are
     // emitted.
     let mut cross_pairs: Vec<(usize, usize)> = Vec::new();
-    let stall_pitch = params.stall_width / params.stall_angle_deg.to_radians().sin();
+    let stall_pitch = params.stall_width / params.stall_angle.to_radians().sin();
     let col_spacing = (params.stalls_per_face as f64) * stall_pitch;
     {
         // Project perimeter onto aisle_dir to find extent.
@@ -426,7 +426,7 @@ fn generate_region_aisles(
 /// Automatically generate a connected drive-aisle graph:
 /// 1. Perimeter loop (single inset of outer boundary) — stalls face outward
 /// 2. Hole loops (aisle-edge rings around each hole) — stalls face away from hole
-/// 3. Interior parallel aisles at stall_angle_deg, clipped to perimeter minus holes
+/// 3. Interior parallel aisles at stall_angle, clipped to perimeter minus holes
 /// 4. Interior aisle endpoints spliced into perimeter edges for full connectivity
 /// `partitioning_lines` contains `(drive_line_id, start, end)` for each
 /// drive line with `partitions == true`. These are used for region
@@ -547,11 +547,11 @@ pub fn auto_generate(
     // outer loop with global angle/offset (and the single-region
     // override, if any).
     let fallback_run = || -> (Option<Vec<Vec2>>, f64, f64) {
-        let mut angle = params.aisle_angle_deg;
+        let mut angle = params.aisle_angle;
         let mut offset = params.aisle_offset;
         for ov in region_overrides {
             if ov.region_id == RegionId::single_region_fallback() {
-                if let Some(a) = ov.aisle_angle_deg { angle = a; }
+                if let Some(a) = ov.aisle_angle { angle = a; }
                 if let Some(o) = ov.aisle_offset { offset = o; }
             }
         }
@@ -576,12 +576,12 @@ pub fn auto_generate(
             &hole_loops,
             &hole_loop_ids,
             partitioning_lines,
-            params.aisle_angle_deg,
+            params.aisle_angle,
             params.aisle_offset,
         );
         for ov in region_overrides {
             if let Some(r) = regions.iter_mut().find(|r| r.id == ov.region_id) {
-                if let Some(a) = ov.aisle_angle_deg { r.aisle_angle_deg = a; }
+                if let Some(a) = ov.aisle_angle { r.aisle_angle = a; }
                 if let Some(o) = ov.aisle_offset { r.aisle_offset = o; }
             }
         }
@@ -602,7 +602,7 @@ pub fn auto_generate(
             .iter()
             .map(|r| {
                 (Some(intersect_with_inset(&r.clip_poly, &outer_loop)),
-                 r.aisle_angle_deg,
+                 r.aisle_angle,
                  r.aisle_offset)
             })
             .collect()

@@ -100,7 +100,7 @@ pub fn target_world_pos(
         } => {
             let rd = region_debug?;
             let ri = rd.regions.iter().find(|r| r.id == *region)?;
-            let frame = AbstractFrame::region(params, ri.aisle_angle_deg, ri.aisle_offset);
+            let frame = AbstractFrame::region(params, ri.aisle_angle, ri.aisle_offset);
             let abs = match range {
                 None => match axis {
                     // Whole line — anchor at (coord, 0) on the fixed axis.
@@ -193,7 +193,7 @@ pub fn world_to_abstract_vertex(
         if !point_in_polygon(&world, &region.clip_poly) {
             continue;
         }
-        let frame = AbstractFrame::region(params, region.aisle_angle_deg, region.aisle_offset);
+        let frame = AbstractFrame::region(params, region.aisle_angle, region.aisle_offset);
         let abs = frame.inverse(world);
         let xi = abs.x.round() as i32;
         let yi = abs.y.round() as i32;
@@ -324,7 +324,7 @@ pub fn chain_to_abstract_lattice_edge(
         if !point_in_polygon(&mid, &region.clip_poly) {
             continue;
         }
-        let frame = AbstractFrame::region(params, region.aisle_angle_deg, region.aisle_offset);
+        let frame = AbstractFrame::region(params, region.aisle_angle, region.aisle_offset);
         let abs: Vec<_> = chain_points.iter().map(|p| frame.inverse(*p)).collect();
         let (xmin, xmax) = minmax(abs.iter().map(|p| p.x));
         let (ymin, ymax) = minmax(abs.iter().map(|p| p.y));
@@ -393,7 +393,7 @@ pub fn chain_extents_in_region(
     if chain_points.len() < 2 {
         return None;
     }
-    let frame = AbstractFrame::region(params, region.aisle_angle_deg, region.aisle_offset);
+    let frame = AbstractFrame::region(params, region.aisle_angle, region.aisle_offset);
     let abs: Vec<_> = chain_points.iter().map(|p| frame.inverse(*p)).collect();
     let (xmin, xmax) = minmax(abs.iter().map(|p| p.x));
     let (ymin, ymax) = minmax(abs.iter().map(|p| p.y));

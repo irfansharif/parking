@@ -6,21 +6,19 @@
 # its peak (x ≈ 330 for this fixture's raw_outer).
 
 polygon outer
-0,0
-200,0
-arc -1.0
-200,200
-0,200
+(0,0)
+(200,0) arc=-1.0
+(200,200)
+(0,200)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(200,200), area 40000
 
 set stall-angle=90
 ----
-set stall_angle_deg=90
 
 generate
 ----
 total_stalls: 87
-
-snapshot
-----
+faces: 10 (boundary: 1, interior: 9)
+graph: 22 vertices, 31 edges (perimeter: 18, interior: 13)
+regions: 1

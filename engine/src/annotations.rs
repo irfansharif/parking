@@ -71,7 +71,7 @@ pub(crate) fn resolve_regions_for_frames(
             &hole_loops,
             &hole_loop_ids,
             partitioning_lines,
-            input.params.aisle_angle_deg,
+            input.params.aisle_angle,
             input.params.aisle_offset,
         )
     } else {
@@ -81,14 +81,14 @@ pub(crate) fn resolve_regions_for_frames(
         region_list.push(Region {
             id: RegionId::single_region_fallback(),
             clip_poly: input.boundary.outer.clone(),
-            aisle_angle_deg: input.params.aisle_angle_deg,
+            aisle_angle: input.params.aisle_angle,
             aisle_offset: input.params.aisle_offset,
         });
     }
     for ov in &input.region_overrides {
         if let Some(r) = region_list.iter_mut().find(|r| r.id == ov.region_id) {
-            if let Some(a) = ov.aisle_angle_deg {
-                r.aisle_angle_deg = a;
+            if let Some(a) = ov.aisle_angle {
+                r.aisle_angle = a;
             }
             if let Some(o) = ov.aisle_offset {
                 r.aisle_offset = o;
@@ -98,7 +98,7 @@ pub(crate) fn resolve_regions_for_frames(
     region_list
         .into_iter()
         .map(|r| {
-            let frame = AbstractFrame::region(&input.params, r.aisle_angle_deg, r.aisle_offset);
+            let frame = AbstractFrame::region(&input.params, r.aisle_angle, r.aisle_offset);
             ResolvedRegion {
                 id: r.id,
                 clip_poly: r.clip_poly,

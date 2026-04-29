@@ -18,11 +18,6 @@ pub struct SvgOptions {
     /// `height` so stalls render at a fixed physical size regardless of
     /// which viewer is showing the file.
     pub px_per_unit: f64,
-    /// When true, overlay annotation badges (chevrons) on top of the
-    /// graph layer so tests can visually surface where Direction
-    /// annotations were applied. Default false — most snapshots want
-    /// clean lot output without annotation chrome.
-    pub show_annotations: bool,
 }
 
 impl Default for SvgOptions {
@@ -30,7 +25,6 @@ impl Default for SvgOptions {
         Self {
             margin: 0.05,
             px_per_unit: 2.0,
-            show_annotations: false,
         }
     }
 }
@@ -107,9 +101,7 @@ pub fn render(
     render_stalls(&mut out, &layout.stalls);
     render_paint(&mut out, &layout.stalls, &layout.islands);
     render_graph(&mut out, &layout.resolved_graph);
-    if opts.show_annotations {
-        render_annotations(&mut out, annotations, drive_lines);
-    }
+    render_annotations(&mut out, annotations, drive_lines);
 
     out.push_str("</g>\n</svg>\n");
     out
@@ -191,16 +183,17 @@ fn render_paint(out: &mut String, stalls: &[StallQuad], islands: &[Island]) {
 
     // Stall paint: 3 sides, front open. Regular stalls leave [2]→[3]
     // open (aisle/entrance); island stalls leave [0]→[1] open (back,
-    // connecting to the island).
+    // connecting to the island). Buffer zones (ADA access aisles) get
+    // a closed rectangle outline plus diagonal stripes.
     for s in stalls {
         if s.kind == StallKind::Suppressed {
             continue;
         }
         let c = &s.corners;
-        let path = if s.kind == StallKind::Island {
-            [c[1], c[2], c[3], c[0]]
-        } else {
-            [c[3], c[0], c[1], c[2]]
+        let path: &[Vec2] = match s.kind {
+            StallKind::Island => &[c[1], c[2], c[3], c[0]],
+            StallKind::Buffer => &[c[0], c[1], c[2], c[3], c[0]],
+            _ => &[c[3], c[0], c[1], c[2]],
         };
         out.push_str("<polyline points=\"");
         for (i, p) in path.iter().enumerate() {
@@ -212,12 +205,11 @@ fn render_paint(out: &mut String, stalls: &[StallQuad], islands: &[Island]) {
         out.push_str("\"/>\n");
     }
 
-    // Island-stall hatching: 45° stripes clipped to each stall quad.
-    // Computed as line–quad intersections so the output is a flat list
-    // of segments — no SVG <clipPath> plumbing needed to stay
-    // byte-stable.
+    // Diagonal hatch fill for Island stalls and Buffer zones — same
+    // 45° stripe pattern, line–quad clipped per stall so the output
+    // is a flat list of segments.
     for s in stalls {
-        if s.kind != StallKind::Island {
+        if s.kind != StallKind::Island && s.kind != StallKind::Buffer {
             continue;
         }
         emit_hatch(out, &s.corners);
@@ -495,8 +487,11 @@ fn stall_color(kind: &StallKind) -> Option<&'static str> {
     // on top.
     match kind {
         StallKind::Standard | StallKind::Island => None,
-        StallKind::Compact => Some("#d8d096"),
-        StallKind::Ev => Some("#7ec6d9"),
+        StallKind::Ada => Some("#0a6cb9"),
+        StallKind::Compact => Some("#9caf88"),
+        // Buffer fill is none here — the diagonal hatching is drawn
+        // by the paint layer (see render_paint).
+        StallKind::Buffer => None,
         // Unreachable — render_stalls skips Suppressed before dispatching
         // here — but the match must be exhaustive.
         StallKind::Suppressed => None,

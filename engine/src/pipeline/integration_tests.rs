@@ -53,7 +53,7 @@ mod tests {
         let params = ParkingParams::default();
         let graph = auto_generate(&boundary, &params, &[], &[]);
 
-        let (stalls, spines, _, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default());
+        let (stalls, spines, _, _) = generate_from_spines(&graph, &boundary, &params, &DebugToggles::default(), &[]);
         eprintln!("\nTotal stalls: {}", stalls.len());
         eprintln!("Total spines: {}", spines.len());
         assert!(stalls.len() >= 50);
@@ -86,7 +86,7 @@ mod tests {
                 i, e.start, e.end, s.x, s.y, end.x, end.y, e.width);
         }
 
-        let stall_angle_rad = params.stall_angle_deg.to_radians();
+        let stall_angle_rad = params.stall_angle.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
         let per_edge_corridors = corridor_polygons(&graph);
         let corridor_polys: Vec<Vec<Vec2>> = per_edge_corridors.iter().map(|(p, _, _)| p.clone()).collect();
@@ -159,10 +159,10 @@ mod tests {
         let params = ParkingParams::default();
         let debug = DebugToggles::default();
 
-        let (stalls, _, _faces_out, _, islands) =
+        let (stalls, _, _faces_out, islands) =
             generate_from_spines(
                 &crate::graph::auto_generate(&boundary, &params, &[], &[]),
-                &boundary, &params, &debug,
+                &boundary, &params, &debug, &[],
             );
 
         eprintln!("Total stalls: {}, islands: {}", stalls.len(), islands.len());
@@ -207,7 +207,7 @@ mod tests {
         let debug = DebugToggles::default();
         let graph = auto_generate(&boundary, &params, &[], &[]);
 
-        let stall_angle_rad = params.stall_angle_deg.to_radians();
+        let stall_angle_rad = params.stall_angle.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
         let per_edge_corridors = corridor_polygons(&graph);
         let merged_corridors = merge_corridor_surface(&graph, params.aisle_width);
@@ -355,8 +355,8 @@ mod tests {
             test_corridor_along(face_contour[2], face_contour[3]),
         ];
 
-        let params = ParkingParams { stall_angle_deg: 90.0, ..ParkingParams::default() };
-        let stall_angle_rad = params.stall_angle_deg.to_radians();
+        let params = ParkingParams { stall_angle: 90.0, ..ParkingParams::default() };
+        let stall_angle_rad = params.stall_angle.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
         let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &DebugToggles::default(), &[], None);
@@ -447,8 +447,8 @@ mod tests {
             test_corridor_along(face_contour[3], face_contour[4]),
         ];
 
-        let params = ParkingParams { stall_angle_deg: 90.0, ..ParkingParams::default() };
-        let stall_angle_rad = params.stall_angle_deg.to_radians();
+        let params = ParkingParams { stall_angle: 90.0, ..ParkingParams::default() };
+        let stall_angle_rad = params.stall_angle.to_radians();
         let effective_depth = params.stall_depth * stall_angle_rad.sin();
 
         let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &DebugToggles::default(), &[], None);
@@ -549,9 +549,9 @@ mod tests {
             test_corridor_along(face_contour[2], face_contour[3]),
         ];
 
-        let params = ParkingParams { stall_angle_deg: 90.0, ..ParkingParams::default() };
+        let params = ParkingParams { stall_angle: 90.0, ..ParkingParams::default() };
         let effective_depth = params.stall_depth
-            * params.stall_angle_deg.to_radians().sin();
+            * params.stall_angle.to_radians().sin();
 
         let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &DebugToggles::default(), &[], None);
         let stalls: Vec<(StallQuad, usize)> = place_stalls_on_spines(&spines, &params)
@@ -598,9 +598,9 @@ mod tests {
             test_corridor_along(face_contour[1], face_contour[2]),
         ];
 
-        let params = ParkingParams { stall_angle_deg: 90.0, ..ParkingParams::default() };
+        let params = ParkingParams { stall_angle: 90.0, ..ParkingParams::default() };
         let effective_depth =
-            params.stall_depth * params.stall_angle_deg.to_radians().sin();
+            params.stall_depth * params.stall_angle.to_radians().sin();
 
         let spines = compute_face_spines(&shape, effective_depth, &corridor_shapes, &[], false, &DebugToggles::default(), &[], None);
 
@@ -690,7 +690,7 @@ mod tests {
         let merged_corridors = merge_corridor_surface(&graph, input.params.aisle_width);
 
         let effective_depth = input.params.stall_depth
-            * input.params.stall_angle_deg.to_radians().sin();
+            * input.params.stall_angle.to_radians().sin();
 
         for (fi, face) in layout.faces.iter().enumerate() {
             let contour = &face.contour;
@@ -782,7 +782,7 @@ mod tests {
         let merged_corridors = merge_corridor_surface(&graph, input.params.aisle_width);
 
         let effective_depth = input.params.stall_depth
-            * input.params.stall_angle_deg.to_radians().sin();
+            * input.params.stall_angle.to_radians().sin();
 
         // Examine each face.
         for (fi, face) in layout.faces.iter().enumerate() {
@@ -870,15 +870,11 @@ mod tests {
 
         let layout = generate(input);
         eprintln!("\n=== drive line horizontal with hole ===");
-        eprintln!("stalls: {}, faces: {}, miter_fills: {}",
-            layout.stalls.len(), layout.faces.len(), layout.miter_fills.len());
+        eprintln!("stalls: {}, faces: {}",
+            layout.stalls.len(), layout.faces.len());
         eprintln!("resolved graph: {} vertices, {} edges",
             layout.resolved_graph.vertices.len(), layout.resolved_graph.edges.len());
 
-        // The drive line should produce interior segments that avoid the
-        // hole. The pipeline emits no separate `miter_fills` anymore —
-        // junction joins are now baked into the merged corridor surface
-        // by `i_overlay` stroke — so we assert on stalls and faces only.
         assert!(layout.stalls.len() > 0, "should produce stalls");
         assert!(layout.faces.len() > 0, "should produce faces");
     }
@@ -1071,7 +1067,7 @@ mod tests {
         // =========================================================
         {
             let params = ParkingParams {
-                stall_angle_deg: 90.0,
+                stall_angle: 90.0,
                 island_stall_interval: 5,
                 ..ParkingParams::default()
             };
@@ -1084,7 +1080,7 @@ mod tests {
                     .map(|(q, fi, _)| (q.clone(), *fi)).collect();
                 let spines = vec![spine];
 
-                mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params);
+                mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params, &[], 0.0);
                 let spr = spine_range(&spines[0], dir);
                 check_invariants(&stalls_3, 0, dir, 5, spr, &format!("single_90deg_n{}", actual_n));
             }
@@ -1098,7 +1094,7 @@ mod tests {
 
             for &interval in &[2, 3, 4, 5, 6, 8, 10] {
                 let params = ParkingParams {
-                    stall_angle_deg: 90.0,
+                    stall_angle: 90.0,
                     island_stall_interval: interval,
                     ..ParkingParams::default()
                 };
@@ -1108,7 +1104,7 @@ mod tests {
                     .map(|(q, fi, _)| (q.clone(), *fi)).collect();
                 let spines = vec![spine];
 
-                mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params);
+                mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params, &[], 0.0);
                 let spr = spine_range(&spines[0], dir);
                 check_invariants(&stalls_3, 0, dir, interval as usize, spr,
                     &format!("single_interval{}_n{}", interval, actual_n));
@@ -1120,7 +1116,7 @@ mod tests {
         // =========================================================
         {
             let params = ParkingParams {
-                stall_angle_deg: 45.0,
+                stall_angle: 45.0,
                 island_stall_interval: 5,
                 ..ParkingParams::default()
             };
@@ -1133,7 +1129,7 @@ mod tests {
                     .map(|(q, fi, _)| (q.clone(), *fi)).collect();
                 let spines = vec![spine];
 
-                mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params);
+                mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params, &[], 0.0);
                 let spr = spine_range(&spines[0], dir);
                 check_invariants(&stalls_3, 0, dir, 5, spr, &format!("angled45_n{}", actual_n));
             }
@@ -1145,7 +1141,7 @@ mod tests {
         // =========================================================
         {
             let params = ParkingParams {
-                stall_angle_deg: 90.0,
+                stall_angle: 90.0,
                 island_stall_interval: 5,
                 ..ParkingParams::default()
             };
@@ -1158,7 +1154,7 @@ mod tests {
                 .map(|(q, fi, _)| (q.clone(), *fi)).collect();
             let spines = vec![spine_a, spine_b];
 
-            mark_island_stalls(&mut stalls_a, &mut tagged, &spines, &params);
+            mark_island_stalls(&mut stalls_a, &mut tagged, &spines, &params, &[], 0.0);
             let spr0 = spine_range(&spines[0], dir);
             let spr1 = spine_range(&spines[1], dir);
             check_invariants(&stalls_a, 0, dir, 5, spr0, "two_rows_spine0");
@@ -1170,7 +1166,7 @@ mod tests {
         // =========================================================
         {
             let params = ParkingParams {
-                stall_angle_deg: 90.0,
+                stall_angle: 90.0,
                 island_stall_interval: 5,
                 ..ParkingParams::default()
             };
@@ -1180,7 +1176,7 @@ mod tests {
                 .map(|(q, fi, _)| (q.clone(), *fi)).collect();
             let spines = vec![spine];
 
-            mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params);
+            mark_island_stalls(&mut stalls_3, &mut tagged, &spines, &params, &[], 0.0);
 
             for (s3, _, _) in &stalls_3 {
                 let key = stall_key(s3);

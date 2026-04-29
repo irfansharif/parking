@@ -46,6 +46,7 @@ import type {
   RegionInfo,
   SpliceVertexResult,
   PerimeterPosResult,
+  StallModifier,
   Vec2,
   Annotation as EngineAnnotation,
   DriveLine as EngineDriveLine,
@@ -121,6 +122,7 @@ export type Annotation = EngineAnnotation & { _active?: boolean };
 export interface ParkingLot {
   boundary: Polygon;
   driveLines: DriveLine[];
+  stallModifiers: StallModifier[];
   annotations: Annotation[];
   aisleVector: { start: Vec2; end: Vec2 };
   /**
@@ -157,7 +159,7 @@ export interface ParkingLot {
 
 /** Compute the root (lot-wide) abstract frame from params. */
 export function computeRootFrame(params: ParkingParams): AbstractFrame {
-  return compute_region_frame_js(params, params.aisle_angle_deg, params.aisle_offset) as AbstractFrame;
+  return compute_region_frame_js(params, params.aisle_angle, params.aisle_offset) as AbstractFrame;
 }
 
 /**

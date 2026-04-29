@@ -3,21 +3,19 @@
 # chord going +y, so the arc sweeps OUTWARD into +x.
 
 polygon outer
-0,0
-200,0
-arc -0.3
-200,200
-0,200
+(0,0)
+(200,0) arc=-0.3
+(200,200)
+(0,200)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(200,200), area 40000
 
 set stall-angle=90
 ----
-set stall_angle_deg=90
 
 generate
 ----
 total_stalls: 70
-
-snapshot
-----
+faces: 7 (boundary: 1, interior: 6)
+graph: 17 vertices, 24 edges (perimeter: 14, interior: 10)
+regions: 1

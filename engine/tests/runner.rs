@@ -10,7 +10,7 @@
 
 mod harness;
 
-use harness::directives::{execute, FixtureCtx};
+use harness::directives::{execute, snapshot, FixtureCtx};
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
@@ -65,6 +65,16 @@ fn run_fixture(path: &Path) {
             })
         });
     });
+
+    // Auto-snapshot the final layout. Skipped if the fixture never ran
+    // `generate` (e.g. parse-only fixtures); under UPDATE_SNAPSHOTS=1
+    // the .svg golden is (re)written, otherwise it's diffed.
+    if ctx.last_layout.is_some() {
+        let outcome = snapshot(&mut ctx).expect("snapshot");
+        if let Some(err) = outcome.snapshot_error {
+            panic!("{}", err);
+        }
+    }
 }
 
 // -- individual tests ------------------------------------------------
@@ -106,6 +116,11 @@ fn perimeter_delete_arc_vertex() {
 #[test]
 fn stall_modifier_suppress() {
     run_fixture(&testdata_dir().join("stall-modifier-suppress.txt"));
+}
+
+#[test]
+fn stall_modifier_resize() {
+    run_fixture(&testdata_dir().join("stall-modifier-resize.txt"));
 }
 
 #[test]

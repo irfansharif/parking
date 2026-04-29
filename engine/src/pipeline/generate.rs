@@ -87,8 +87,8 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     let derived_outer = derive_raw_outer(&input.boundary.outer, inset_d, input.params.site_offset);
     let derived_holes = derive_raw_holes(&input.boundary.holes, inset_d);
 
-    let (stalls, spines, faces, miter_fills, islands) =
-        generate_from_spines(&graph, &input.boundary, &input.params, &input.debug);
+    let (stalls, spines, faces, islands) =
+        generate_from_spines(&graph, &input.boundary, &input.params, &input.debug, &input.stall_modifiers);
 
     let mut stalls = stalls;
 
@@ -98,7 +98,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     // draw pixel-perfect lines.
     if !input.stall_modifiers.is_empty() {
         let radius = input.params.stall_depth * 0.5;
-        crate::pipeline::filter::apply_stall_modifiers(&mut stalls, &input.stall_modifiers, radius);
+        crate::pipeline::filter::apply_stall_modifiers(&mut stalls, &input.stall_modifiers, radius, &input.params);
     }
 
     // Suppressed and Island stalls stay in the layout (so downstream
@@ -106,7 +106,11 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     // aren't usable parking.
     let total = stalls
         .iter()
-        .filter(|s| s.kind != StallKind::Suppressed && s.kind != StallKind::Island)
+        .filter(|s| {
+            s.kind != StallKind::Suppressed
+                && s.kind != StallKind::Island
+                && s.kind != StallKind::Buffer
+        })
         .count();
 
     // Always compute region debug info. When no separators exist, the
@@ -145,7 +149,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
                 &hole_loops,
                 &hole_loop_ids,
                 &partitioning_lines,
-                input.params.aisle_angle_deg,
+                input.params.aisle_angle,
                 input.params.aisle_offset,
             )
         } else {
@@ -159,7 +163,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
             region_list.push(Region {
                 id: RegionId::single_region_fallback(),
                 clip_poly: input.boundary.outer.clone(),
-                aisle_angle_deg: input.params.aisle_angle_deg,
+                aisle_angle: input.params.aisle_angle,
                 aisle_offset: input.params.aisle_offset,
             });
         }
@@ -167,7 +171,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         // Apply per-region overrides.
         for ov in &input.region_overrides {
             if let Some(r) = region_list.iter_mut().find(|r| r.id == ov.region_id) {
-                if let Some(a) = ov.aisle_angle_deg { r.aisle_angle_deg = a; }
+                if let Some(a) = ov.aisle_angle { r.aisle_angle = a; }
                 if let Some(o) = ov.aisle_offset { r.aisle_offset = o; }
             }
         }
@@ -178,7 +182,7 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
                 RegionInfo {
                     id: r.id,
                     clip_poly: r.clip_poly,
-                    aisle_angle_deg: r.aisle_angle_deg,
+                    aisle_angle: r.aisle_angle,
                     aisle_offset: r.aisle_offset,
                     center,
                 }
@@ -195,7 +199,6 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
         resolved_graph: graph,
         spines,
         faces,
-        miter_fills,
         islands,
         derived_outer,
         derived_holes,
@@ -604,14 +607,15 @@ mod tests {
 
 
 /// Generate stalls from positive-space face extraction + per-edge spine shifting.
-/// Returns (stalls, spine_lines, faces, miter_fills, islands).
+/// Returns (stalls, spine_lines, faces, islands).
 pub fn generate_from_spines(
     graph: &DriveAisleGraph,
     boundary: &Polygon,
     params: &ParkingParams,
     debug: &DebugToggles,
-) -> (Vec<StallQuad>, Vec<SpineLine>, Vec<Face>, Vec<Vec<Vec2>>, Vec<crate::types::Island>) {
-    let stall_angle_rad = params.stall_angle_deg.to_radians();
+    stall_modifiers: &[crate::types::StallModifier],
+) -> (Vec<StallQuad>, Vec<SpineLine>, Vec<Face>, Vec<crate::types::Island>) {
+    let stall_angle_rad = params.stall_angle.to_radians();
     let effective_depth = params.stall_depth * stall_angle_rad.sin()
         + stall_angle_rad.cos() * params.stall_width / 2.0;
     let inset_d = compute_inset_d(params);
@@ -837,9 +841,11 @@ pub fn generate_from_spines(
 
     // --- Island stall marking ---
     if params.island_stall_interval > 0 {
+        let modifier_radius = params.stall_depth * 0.5;
         mark_island_stalls(
             &mut all_surviving_3, &mut all_tagged,
             &all_spines, params,
+            stall_modifiers, modifier_radius,
         );
     }
 
@@ -896,9 +902,5 @@ pub fn generate_from_spines(
         })
         .collect();
 
-    // miter_fills was a debug overlay surfacing the hand-rolled junction
-    // wedges; the stroke-based corridor merge has no separate wedges,
-    // so the slot is now always empty (kept in the return to avoid
-    // churning the wasm boundary in this commit).
-    (all_stalls, spine_lines, face_list, vec![], islands)
+    (all_stalls, spine_lines, face_list, islands)
 }

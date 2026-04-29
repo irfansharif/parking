@@ -1,20 +1,19 @@
 # Larger rectangle at 90° — exercises stall density on a bigger footprint.
 
 polygon outer
-0,0
-300,0
-300,200
-0,200
+(0,0)
+(300,0)
+(300,200)
+(0,200)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(300,200), area 60000
 
 set stall-angle=90
 ----
-set stall_angle_deg=90
 
 generate
 ----
 total_stalls: 92
-
-snapshot
-----
+faces: 11 (boundary: 1, interior: 10)
+graph: 18 vertices, 27 edges (perimeter: 14, interior: 13)
+regions: 1

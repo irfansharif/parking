@@ -17,8 +17,8 @@ export interface CommandAPI {
 }
 
 const KEY_ALIASES: Record<string, string> = {
-  stall_angle: "stall_angle_deg",
-  angle: "stall_angle_deg",
+  stall_angle: "stall_angle",
+  angle: "stall_angle",
   width: "stall_width",
   depth: "stall_depth",
 };
@@ -41,6 +41,7 @@ export function createCommandAPI(app: App): CommandAPI {
             hole_ids: [],
           };
           lot.driveLines = [];
+          lot.stallModifiers = [];
           lot.annotations = [];
           return "cleared";
         }

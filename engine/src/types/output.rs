@@ -15,8 +15,13 @@ use super::geom::Vec2;
 #[ts(export)]
 pub enum StallKind {
     Standard,
+    Ada,
+    /// Striped no-park access aisle adjacent to one or more ADA
+    /// stalls. Auto-inserted by `apply_stall_modifiers` when an ADA
+    /// modifier line places a cluster; not user-paintable directly.
+    /// Doesn't count toward `total_stalls`.
+    Buffer,
     Compact,
-    Ev,
     Island,
     /// Stall suppressed by a `StallModifier` post-pass. The renderer
     /// skips these entirely; kept as a distinguished variant (rather
@@ -177,7 +182,7 @@ pub struct RegionDebug {
 pub struct RegionInfo {
     pub id: super::addressing::RegionId,
     pub clip_poly: Vec<Vec2>,
-    pub aisle_angle_deg: f64,
+    pub aisle_angle: f64,
     pub aisle_offset: f64,
     pub center: Vec2,
 }

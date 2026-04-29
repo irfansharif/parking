@@ -3,27 +3,26 @@
 # an unusual per-face stall budget.
 
 polygon outer
--48.47,0
-750,0
-782.80,654.85
-0,654.85
+(-48.47,0)
+(750,0)
+(782.80,654.85)
+(0,654.85)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (-48.470,0)-(782.800,654.850), area 517747.330
 
 polygon hole
-275,150
-475,150
-375,343.66
+(275,150)
+(475,150)
+(375,343.66)
 ----
-hole: 3 vertices
+polygon hole 3 vertices, ccw, bbox (275,150)-(475,343.660), area 19366
 
-set stalls_per_face=179
+set stalls-per-face=179
 ----
-set stalls_per_face=179
 
 generate
 ----
 total_stalls: 1083
-
-snapshot
-----
+faces: 20 (boundary: 2, interior: 18)
+graph: 43 vertices, 61 edges (perimeter: 43, interior: 18)
+regions: 1

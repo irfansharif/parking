@@ -75,6 +75,7 @@ function setupToolbar(app: App, renderer: Renderer): void {
     { mode: "add-boundary", label: "Add Boundary (B)", key: "b" },
     { mode: "add-hole", label: "Add Hole (H)", key: "h" },
     { mode: "add-drive-line", label: "Drive Line (L)", key: "l" },
+    { mode: "add-stall-line", label: "Stall Line (M)", key: "m" },
   ];
 
   const buttons: HTMLButtonElement[] = [];
@@ -99,6 +100,10 @@ function setupToolbar(app: App, renderer: Renderer): void {
     if (app.state.editMode === "add-drive-line" && mode !== "add-drive-line") {
       app.state.pendingDriveLine = null;
       app.state.pendingDriveLinePreview = null;
+    }
+    if (app.state.editMode === "add-stall-line" && mode !== "add-stall-line") {
+      app.state.pendingStallLine = null;
+      app.state.pendingStallLinePreview = null;
     }
     app.state.editMode = mode;
     app.state.selectedVertex = null;

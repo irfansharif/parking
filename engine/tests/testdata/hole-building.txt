@@ -2,28 +2,27 @@
 # hole case at 60° stall angle.
 
 polygon outer
-0,0
-200,0
-200,150
-0,150
+(0,0)
+(200,0)
+(200,150)
+(0,150)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(200,150), area 30000
 
 polygon hole
-80,50
-120,50
-120,100
-80,100
+(80,50)
+(120,50)
+(120,100)
+(80,100)
 ----
-hole: 4 vertices
+polygon hole 4 vertices, ccw, bbox (80,50)-(120,100), area 2000
 
 set stall-angle=60
 ----
-set stall_angle_deg=60
 
 generate
 ----
 total_stalls: 39
-
-snapshot
-----
+faces: 5 (boundary: 4, interior: 1)
+graph: 14 vertices, 17 edges (perimeter: 14, interior: 3)
+regions: 1

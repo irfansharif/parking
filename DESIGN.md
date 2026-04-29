@@ -165,8 +165,8 @@ skips stalls of that kind. So:
   (useful for clearing entrances, fire lanes, or any corridor that
   should remain unobstructed). Suppression applies regardless of the
   stall's prior kind.
-- Any other kind (`Compact`, `Ev`, etc.) — retypes overlapping stalls.
-  `Standard`, `Compact`, and `Ev` are retypeable; `Island` is preserved
+- Any other kind (`Ada`, etc.) — retypes overlapping stalls.
+  `Standard` and `Ada` are retypeable; `Island` is preserved
   (it's coupled to already-carved landscape geometry, so retyping would
   create a conflict).
 
@@ -721,7 +721,7 @@ core warrants extra clearance beyond its hole footprint.
 
 ### 5.2 Custom Stall Types and Placement
 
-The prototype's `StallKind` enum (Standard, Compact, Ev, Island, Suppressed)
+The prototype's `StallKind` enum (Standard, Ada, Island, Suppressed)
 provides the hook. In production we want something akin to:
 
 - User-specified counts per type (not auto-calculated — letting users do the

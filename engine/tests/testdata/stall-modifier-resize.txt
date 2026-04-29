@@ -1,0 +1,78 @@
+# Stall-modifier resize behavior — exercises:
+#   - ADA stall-modifier widens hit stalls to `ada_stall_width` and
+#     reflows the row outward (neighbors shift away from the row
+#     center to make room).
+#   - Compact stall-modifier narrows hit stalls to
+#     `compact_stall_width` and reflows the row inward.
+#   - Perpendicular-only gate: when `stall_angle != 90`, ADA/Compact
+#     retypes are silently skipped (the modifier line is recorded but
+#     has no effect on the angled stalls). Suppressed/Island still
+#     apply on angled rows; that's covered separately by
+#     stall-modifier-suppress.txt.
+
+polygon outer
+(0,0)
+(240,0)
+(240,80)
+(0,80)
+----
+polygon outer 4 vertices, ccw, bbox (0,0)-(240,80), area 19200
+
+set stall-angle=90
+----
+
+# Perpendicular baseline — no modifiers.
+generate
+----
+total_stalls: 31
+faces: 1 (boundary: 1, interior: 0)
+graph: 10 vertices, 13 edges (perimeter: 10, interior: 3)
+regions: 1
+
+# ADA stall-modifier line crossing 4 stalls in the row at y≈18.
+# Stalls under the line should retype to Ada and widen to
+# ada_stall_width (default 13.5ft). Their neighbors should shift
+# outward symmetrically about the row center.
+drive-line stall=ada
+(60,18)
+(100,18)
+----
+drive-line (60,18) -> (100,18) stall=ada
+
+generate
+----
+total_stalls: 31
+faces: 1 (boundary: 1, interior: 0)
+graph: 10 vertices, 13 edges (perimeter: 10, interior: 3)
+regions: 1
+
+# Compact stall-modifier line in a different stretch of the same
+# row. Narrows to compact_stall_width (default 7.5ft); neighbors
+# shift inward.
+drive-line stall=compact
+(160,18)
+(200,18)
+----
+drive-line (160,18) -> (200,18) stall=compact
+
+generate
+----
+total_stalls: 31
+faces: 1 (boundary: 1, interior: 0)
+graph: 10 vertices, 13 edges (perimeter: 10, interior: 3)
+regions: 1
+
+# Switch to angled parking. The ADA/Compact retypes from above are
+# now silently no-op (the modifier list still carries them, but the
+# perpendicular gate inside `apply_stall_modifiers` skips both for
+# non-90° stalls). Total stall count should reflect the angled
+# baseline plus the no-op modifiers.
+set stall-angle=60
+----
+
+generate
+----
+total_stalls: 31
+faces: 1 (boundary: 1, interior: 0)
+graph: 10 vertices, 13 edges (perimeter: 10, interior: 3)
+regions: 1

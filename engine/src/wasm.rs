@@ -100,11 +100,11 @@ pub fn project_to_arc_js(
 #[wasm_bindgen]
 pub fn compute_region_frame_js(
     params: JsValue,
-    aisle_angle_deg: f64,
+    aisle_angle: f64,
     aisle_offset: f64,
 ) -> Result<JsValue, JsValue> {
     let params: ParkingParams = serde_wasm_bindgen::from_value(params)?;
-    let frame = AbstractFrame::region(&params, aisle_angle_deg, aisle_offset);
+    let frame = AbstractFrame::region(&params, aisle_angle, aisle_offset);
     Ok(serde_wasm_bindgen::to_value(&frame)?)
 }
 

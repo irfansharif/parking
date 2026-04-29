@@ -5,28 +5,27 @@
 #   - snapshot producing a deterministic SVG golden
 
 polygon outer
-0,0
-240,0
-240,160
-0,160
+(0,0)
+(240,0)
+(240,160)
+(0,160)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(240,160), area 38400
 
 polygon hole
-90,60
-150,60
-150,100
-90,100
+(90,60)
+(150,60)
+(150,100)
+(90,100)
 ----
-hole: 4 vertices
+polygon hole 4 vertices, ccw, bbox (90,60)-(150,100), area 2400
 
 set stall-angle=90
 ----
-set stall_angle_deg=90
 
 generate
 ----
 total_stalls: 46
-
-snapshot
-----
+faces: 6 (boundary: 2, interior: 4)
+graph: 16 vertices, 20 edges (perimeter: 16, interior: 4)
+regions: 1

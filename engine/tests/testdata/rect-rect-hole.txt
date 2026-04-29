@@ -3,24 +3,24 @@
 # every aisle-facing edge (not just some sides).
 
 polygon outer
-0,0
-800,0
-800,800
-0,800
+(0,0)
+(800,0)
+(800,800)
+(0,800)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (0,0)-(800,800), area 640000
 
 polygon hole
-300,300
-500,300
-500,500
-300,500
+(300,300)
+(500,300)
+(500,500)
+(300,500)
 ----
-hole: 4 vertices
+polygon hole 4 vertices, ccw, bbox (300,300)-(500,500), area 40000
 
 generate
 ----
 total_stalls: 1007
-
-snapshot
-----
+faces: 58 (boundary: 2, interior: 56)
+graph: 99 vertices, 167 edges (perimeter: 48, interior: 119)
+regions: 1

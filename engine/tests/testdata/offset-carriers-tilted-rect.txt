@@ -5,16 +5,16 @@
 # truncation.
 
 polygon outer
-10,0
-400,30
-380,300
--10,280
+(10,0)
+(400,30)
+(380,300)
+(-10,280)
 ----
-polygon outer: 4 vertices
+polygon outer 4 vertices, ccw, bbox (-10,0)-(400,300), area 107750
 
 generate
 ----
 total_stalls: 168
-
-snapshot
-----
+faces: 15 (boundary: 1, interior: 14)
+graph: 24 vertices, 37 edges (perimeter: 18, interior: 19)
+regions: 1

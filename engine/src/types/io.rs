@@ -28,8 +28,8 @@ pub struct ParkingParams {
     pub stall_width: f64,
     pub stall_depth: f64,
     pub aisle_width: f64,
-    pub stall_angle_deg: f64,
-    pub aisle_angle_deg: f64,
+    pub stall_angle: f64,
+    pub aisle_angle: f64,
     pub aisle_offset: f64,
     pub site_offset: f64,
     /// Number of stalls along the aisle direction in one face — i.e.,
@@ -70,6 +70,28 @@ pub struct ParkingParams {
     /// when `DebugToggles.island_corner_rounding` is on.
     #[serde(default = "default_island_corner_radius")]
     pub island_corner_radius: f64,
+    /// ADA accessible stall width (feet). When a stall-modifier line
+    /// retypes a stall to `Ada`, its quad is widened symmetrically
+    /// from `stall_width` up to this value. Real ADA spec is ~13ft for
+    /// regular and ~16ft for van-accessible (incl. striped aisle).
+    #[serde(default = "default_ada_stall_width")]
+    pub ada_stall_width: f64,
+    /// Compact stall width (feet). Narrower than `stall_width` —
+    /// typical real-world compact stalls are 7.5–8 ft. The same
+    /// per-row reflow that handles ADA widening also handles compact
+    /// narrowing: neighbors shift inward to absorb the freed space.
+    #[serde(default = "default_compact_stall_width")]
+    pub compact_stall_width: f64,
+    /// ADA access-aisle width (feet) — the striped no-park zone next
+    /// to each ADA stall. Real spec: 5 ft for car spaces, 8 ft for
+    /// van-accessible. Set 0 to disable.
+    #[serde(default = "default_ada_buffer_width")]
+    pub ada_buffer_width: f64,
+    /// When true, two adjacent ADA stalls share one buffer between
+    /// them: `[ADA][buf][ADA][buf][ADA]`. When false, each ADA stall
+    /// gets its own buffer: `[ADA][buf][ADA][buf][ADA][buf]`.
+    #[serde(default = "default_ada_buffer_shared")]
+    pub ada_buffer_shared: bool,
 }
 
 fn default_min_stalls_per_spine() -> u32 {
@@ -92,10 +114,26 @@ fn default_island_corner_radius() -> f64 {
     6.0
 }
 
+fn default_ada_stall_width() -> f64 {
+    13.5
+}
+
+fn default_compact_stall_width() -> f64 {
+    7.5
+}
+
+fn default_ada_buffer_width() -> f64 {
+    5.0
+}
+
+fn default_ada_buffer_shared() -> bool {
+    true
+}
+
 impl ParkingParams {
     /// Stall pitch: spacing between stall centers along a spine.
     pub fn stall_pitch(&self) -> f64 {
-        let sin_a = self.stall_angle_deg.to_radians().sin();
+        let sin_a = self.stall_angle.to_radians().sin();
         if sin_a.abs() > 1e-12 { self.stall_width / sin_a } else { self.stall_width }
     }
 
@@ -104,7 +142,7 @@ impl ParkingParams {
     /// `effective_depth` used in auto-generation (see
     /// `aisle_graph.rs:compute_inset_d`).
     pub fn effective_depth(&self) -> f64 {
-        let rad = self.stall_angle_deg.to_radians();
+        let rad = self.stall_angle.to_radians();
         self.stall_depth * rad.sin() + rad.cos() * self.stall_width / 2.0
     }
 }
@@ -115,8 +153,8 @@ impl Default for ParkingParams {
             stall_width: 9.0,
             stall_depth: 18.0,
             aisle_width: 12.0,
-            stall_angle_deg: 45.0,
-            aisle_angle_deg: 90.0,
+            stall_angle: 45.0,
+            aisle_angle: 90.0,
             aisle_offset: 0.0,
             site_offset: 0.0,
             stalls_per_face: 15,
@@ -127,6 +165,10 @@ impl Default for ParkingParams {
             spine_merge_angle_deg: 8.1,
             spine_merge_endpoint_tol: 1.0,
             island_corner_radius: 6.0,
+            ada_stall_width: 8.0,
+            compact_stall_width: 7.5,
+            ada_buffer_width: 5.0,
+            ada_buffer_shared: true,
         }
     }
 }
@@ -142,14 +184,6 @@ fn default_true() -> bool {
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DebugToggles {
-    // Corridor merging
-    #[serde(default = "default_true")]
-    pub miter_fills: bool,
-    #[serde(default = "default_true")]
-    pub boundary_only_miters: bool,
-    #[serde(default = "default_true")]
-    pub spike_removal: bool,
-
     // Spine generation
     /// Trim each spine endpoint inward from its face edge based on the
     /// corner angle with the neighboring contour edge (see
@@ -193,9 +227,6 @@ pub struct DebugToggles {
 impl Default for DebugToggles {
     fn default() -> Self {
         Self {
-            miter_fills: true,
-            boundary_only_miters: true,
-            spike_removal: true,
             spine_end_trim: true,
             spine_merging: true,
             spine_extensions: true,
@@ -238,9 +269,9 @@ pub struct GenerateInput {
 ///
 /// - `kind = Suppressed` + a polyline → remove stalls from rendering
 ///   (used for fire lanes, loading zones, entrance corridors).
-/// - Any other `kind` → retype overlapping stalls (ADA, EV, Compact,
-///   etc.). A zero-length polyline (single point) places a single
-///   retyped stall at that location.
+/// - Any other `kind` → retype overlapping stalls (ADA, EV, Island).
+///   A zero-length polyline (single point) places a single retyped
+///   stall at that location.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct StallModifier {
@@ -253,7 +284,7 @@ pub struct StallModifier {
 pub struct RegionOverride {
     pub region_id: RegionId,
     #[ts(optional)]
-    pub aisle_angle_deg: Option<f64>,
+    pub aisle_angle: Option<f64>,
     #[ts(optional)]
     pub aisle_offset: Option<f64>,
 }
@@ -272,8 +303,6 @@ pub struct ParkingLayout {
     pub spines: Vec<SpineLine>,
     #[serde(default)]
     pub faces: Vec<Face>,
-    #[serde(default)]
-    pub miter_fills: Vec<Vec<Vec2>>,
     #[serde(default)]
     pub islands: Vec<Island>,
     /// Raw lot boundary derived by expanding the aisle-edge perimeter outward.
