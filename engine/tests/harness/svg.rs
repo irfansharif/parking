@@ -488,7 +488,7 @@ fn stall_color(kind: &StallKind) -> Option<&'static str> {
     match kind {
         StallKind::Standard | StallKind::Island => None,
         StallKind::Ada => Some("#0a6cb9"),
-        StallKind::Compact => Some("#9caf88"),
+        StallKind::Compact => Some("#e69138"),
         // Buffer fill is none here — the diagonal hatching is drawn
         // by the paint layer (see render_paint).
         StallKind::Buffer => None,

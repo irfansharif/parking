@@ -463,8 +463,8 @@ export class Renderer {
         stroke: "rgba(60, 110, 190, 0.8)",
       },
       Compact: {
-        fill: "rgba(156, 175, 136, 0.4)",
-        stroke: "rgba(120, 142, 102, 0.8)",
+        fill: "rgba(230, 145, 56, 0.4)",
+        stroke: "rgba(190, 110, 30, 0.8)",
       },
       Island: {
         fill: "rgba(75, 140, 60, 0.5)",
@@ -505,7 +505,7 @@ export class Renderer {
     const { ctx } = this;
     const fillFor: Record<string, string> = {
       Ada: "rgba(60, 110, 200, 0.85)",
-      Compact: "rgba(156, 175, 136, 0.85)",
+      Compact: "rgba(230, 145, 56, 0.85)",
       Island: "rgba(75, 140, 60, 0.55)",
     };
     for (const stall of layout.stalls) {
@@ -810,7 +810,7 @@ export class Renderer {
     const stallLineColor: Record<string, string> = {
       Suppressed: "rgba(220, 60, 60, 0.85)",   // red — "remove these stalls"
       Ada:        "rgba(80, 140, 220, 0.95)", // ADA blue, matches engine fill
-      Compact:    "rgba(156, 175, 136, 0.95)", // sage green
+      Compact:    "rgba(230, 145, 56, 0.95)", // warm orange
       Island:     "rgba(159, 191, 138, 0.95)", // matches island fill
       Standard:   "rgba(120, 120, 120, 0.85)",
     };
