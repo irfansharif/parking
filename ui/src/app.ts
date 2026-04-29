@@ -302,6 +302,20 @@ export class App {
           ],
           kind: "Island",
         },
+        {
+          polyline: [
+            { x: 201.87, y: 127.27 },
+            { x: 201.87, y: 169.58 },
+          ],
+          kind: "Island",
+        },
+        {
+          polyline: [
+            { x: 21.54, y: 434.72 },
+            { x: 21.54, y: 489.73 },
+          ],
+          kind: "Suppressed",
+        },
       ],
       regionOverrides: {
         "221108085334326": { offset: 154.58 },
@@ -886,13 +900,12 @@ export class App {
   }
 
   /** Cycle a stall-modifier line's kind:
-   *  Suppressed → Standard → Ada → Compact → Island → Suppressed. */
+   *  Suppressed → Ada → Compact → Island → Suppressed. */
   cycleStallLineKind(index: number): void {
     const sm = this.state.lot.stallModifiers[index];
     if (!sm) return;
     const next: { [k: string]: StallKind } = {
-      Suppressed: "Standard",
-      Standard: "Ada",
+      Suppressed: "Ada",
       Ada: "Compact",
       Compact: "Island",
       Island: "Suppressed",

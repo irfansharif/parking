@@ -531,20 +531,26 @@ export class Renderer {
     // corners: [0]=back_left, [1]=back_right, [2]=aisle_right, [3]=aisle_left
     // Regular stalls: paint three sides — left/back/right — leaving
     //   the aisle entrance ([2]→[3]) open.
-    // Island stalls: fully closed rectangle — no usable entrance, so
-    //   all four sides paint (including the entrance).
+    // Buffer stalls: fully closed rectangle — no parking, no usable entrance.
+    // Island stalls: just back ([0]→[1]) and aisle ([2]→[3]); the hatch
+    //   inside makes it read as a no-park area without boxing in the
+    //   neighboring stalls' side paint.
     if (lot.layout) {
       ctx.beginPath();
       for (const stall of lot.layout.stalls) {
         if (stall.kind === "Suppressed") continue;
         const c = stall.corners;
-        if (stall.kind === "Island" || stall.kind === "Buffer") {
-          // Fully-closed rectangle outline — no parking, no usable entrance.
+        if (stall.kind === "Buffer") {
           ctx.moveTo(c[0].x, c[0].y);
           ctx.lineTo(c[1].x, c[1].y);
           ctx.lineTo(c[2].x, c[2].y);
           ctx.lineTo(c[3].x, c[3].y);
           ctx.closePath();
+        } else if (stall.kind === "Island") {
+          ctx.moveTo(c[0].x, c[0].y);
+          ctx.lineTo(c[1].x, c[1].y);
+          ctx.moveTo(c[2].x, c[2].y);
+          ctx.lineTo(c[3].x, c[3].y);
         } else {
           ctx.moveTo(c[3].x, c[3].y);
           ctx.lineTo(c[0].x, c[0].y);

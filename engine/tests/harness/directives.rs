@@ -543,7 +543,6 @@ fn drive_line_cmd(
 
 fn parse_stall_kind(s: &str) -> Result<StallKind, String> {
     match s {
-        "standard" => Ok(StallKind::Standard),
         "ada" => Ok(StallKind::Ada),
         "compact" => Ok(StallKind::Compact),
         "island" => Ok(StallKind::Island),

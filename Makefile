@@ -7,6 +7,7 @@ bindings:
 	cd engine && TS_RS_EXPORT_DIR=$(CURDIR)/ui/src/bindings cargo test --lib export_bindings --quiet
 
 build-engine: bindings
+	rm -rf ui/src/wasm
 	cd engine && touch src/lib.rs && wasm-pack build --target web --release --out-dir ../ui/src/wasm
 
 dev: build-engine

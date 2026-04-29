@@ -41,32 +41,59 @@ drive-line partitions
 ----
 drive-line (446.56,335.61) -> (454.87,-53.66) partitions
 
-# Initial generate — populates region_debug so the `region=(x,y)`
-# anchors below can resolve to RegionIds via point-in-polygon.
-generate
+drive-line stall=suppressed
+(205.37,39.08)
+(244.63,39.08)
 ----
-total_stalls: 951
-faces: 47 (boundary: 2, interior: 45)
-graph: 103 vertices, 152 edges (perimeter: 66, interior: 86)
-regions: 2
+drive-line (205.37,39.08) -> (244.63,39.08) stall=suppressed
+
+drive-line stall=ada
+(414.14,434.72)
+(412.17,298.61)
+----
+drive-line (414.14,434.72) -> (412.17,298.61) stall=ada
+
+drive-line stall=compact
+(502.84,638.35)
+(704.25,646.60)
+----
+drive-line (502.84,638.35) -> (704.25,646.60) stall=compact
+
+drive-line stall=island
+(817.96,446.80)
+(712.33,536.65)
+----
+drive-line (817.96,446.80) -> (712.33,536.65) stall=island
+
+drive-line stall=island
+(201.87,127.27)
+(201.87,169.58)
+----
+drive-line (201.87,127.27) -> (201.87,169.58) stall=island
+
+drive-line stall=suppressed
+(21.54,434.72)
+(21.54,489.73)
+----
+drive-line (21.54,434.72) -> (21.54,489.73) stall=suppressed
 
 annotation direction
-on=grid region=(676,137) axis=x coord=-5 range=lattice:-3,lattice:-1 traffic=one-way
+on=grid region=0x00004d49a4f0412e axis=x coord=-5 range=lattice:-3,lattice:-1 traffic=one-way
 ----
 annotation direction on=grid region=0x00004d49a4f0412e axis=x coord=-5 range=lattice:-3,lattice:-1 traffic=one-way
 
 annotation delete-edge
-on=grid region=(676,137) axis=y coord=-2 range=lattice:-9,lattice:-4
+on=grid region=0x00004d49a4f0412e axis=y coord=-2 range=lattice:-9,lattice:-4
 ----
 annotation delete-edge on=grid region=0x00004d49a4f0412e axis=y coord=-2 range=lattice:-9,lattice:-4
 
 annotation delete-edge
-on=drive-line near=(228,517) t=0.80
+on=drive-line id=1 t=0.80
 ----
 annotation delete-edge on=drive-line id=1 t=0.80
 
 annotation delete-edge
-on=grid region=(597,340) axis=x coord=-5 range=lattice:0,lattice:2
+on=grid region=0x00002663fca3dc50 axis=x coord=-5 range=lattice:0,lattice:2
 ----
 annotation delete-edge on=grid region=0x00002663fca3dc50 axis=x coord=-5 range=lattice:0,lattice:2
 
@@ -76,42 +103,50 @@ on=perimeter loop=outer edge=2→3 t=0.63
 annotation delete-vertex on=perimeter loop=outer edge=2→3 t=0.63
 
 annotation delete-edge
-on=grid region=(597,340) axis=x coord=-16 range=lattice:0,lattice:2
+on=grid region=0x00002663fca3dc50 axis=x coord=-16 range=lattice:0,lattice:2
 ----
 annotation delete-edge on=grid region=0x00002663fca3dc50 axis=x coord=-16 range=lattice:0,lattice:2
 
 annotation delete-edge
-on=grid region=(597,340) axis=y coord=1 range=lattice:-16,lattice:-15
+on=grid region=0x00002663fca3dc50 axis=y coord=1 range=lattice:-16,lattice:-15
 ----
 annotation delete-edge on=grid region=0x00002663fca3dc50 axis=y coord=1 range=lattice:-16,lattice:-15
 
 annotation direction
-on=grid region=(597,340) axis=x coord=-4 range=lattice:0,lattice:2 traffic=one-way-reverse
+on=grid region=0x00002663fca3dc50 axis=x coord=-4 range=lattice:0,lattice:2 traffic=one-way-reverse
 ----
 annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-4 range=lattice:0,lattice:2 traffic=one-way-reverse
 
 annotation direction
-on=grid region=(597,340) axis=x coord=-3 range=lattice:0,lattice:2 traffic=two-way-reverse
+on=grid region=0x00002663fca3dc50 axis=x coord=-3 range=lattice:0,lattice:2 traffic=two-way-reverse
 ----
 annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-3 range=lattice:0,lattice:2 traffic=two-way-reverse
 
 annotation direction
-on=grid region=(597,340) axis=x coord=-1 range=lattice:0,lattice:2 traffic=one-way-reverse
+on=grid region=0x00002663fca3dc50 axis=x coord=-1 range=lattice:0,lattice:2 traffic=one-way-reverse
 ----
 annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-1 range=lattice:0,lattice:2 traffic=one-way-reverse
 
 annotation direction
-on=grid region=(597,340) axis=x coord=-12 range=lattice:0,lattice:2 traffic=two-way-reverse
+on=grid region=0x00002663fca3dc50 axis=x coord=-12 range=lattice:0,lattice:2 traffic=two-way-reverse
 ----
 annotation direction on=grid region=0x00002663fca3dc50 axis=x coord=-12 range=lattice:0,lattice:2 traffic=two-way-reverse
 
-region-override region=(597,340) angle=92
+region-override region=0x0000c918bce22136 offset=154.58
+----
+region-override region=0x0000c918bce22136 offset=154.58
+
+region-override region=0x000004ac5a8577bd angle=2 offset=-79.50
+----
+region-override region=0x000004ac5a8577bd angle=2 offset=-79.5
+
+region-override region=0x00002663fca3dc50 angle=92
 ----
 region-override region=0x00002663fca3dc50 angle=92
 
 generate
 ----
-total_stalls: 1004
+total_stalls: 992
 faces: 37 (boundary: 2, interior: 35)
 graph: 100 vertices, 121 edges (perimeter: 65, interior: 56)
 regions: 2

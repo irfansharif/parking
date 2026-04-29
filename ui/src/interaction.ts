@@ -487,7 +487,7 @@ export function updateModeHint(app: App): void {
     } else if (app.state.selectedVertex?.type === "drive-line") {
       hint.textContent = "Drive-line selected. F to toggle partitions. Drag to move endpoint. Delete to remove.";
     } else if (app.state.selectedVertex?.type === "stall-line") {
-      hint.textContent = "Stall-line selected. F to cycle kind (Suppressed → Standard → Ada → Compact → Island). Drag to move endpoint. Delete to remove.";
+      hint.textContent = "Stall-line selected. F to cycle kind (Suppressed → Ada → Compact → Island). Drag to move endpoint. Delete to remove.";
     } else if (app.state.selectedVertex) {
       hint.textContent = "Drag to move. Delete to remove. Right-drag to pan.";
     } else {

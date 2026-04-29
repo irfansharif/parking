@@ -129,12 +129,13 @@ pub fn format_fixture(input: &GenerateInput) -> String {
             continue;
         }
         let kind_str = match sm.kind {
-            StallKind::Standard => "standard",
             StallKind::Ada => "ada",
             StallKind::Compact => "compact",
             StallKind::Island => "island",
             StallKind::Suppressed => "suppressed",
-            StallKind::Buffer => continue,
+            // Standard is a no-op modifier (engine ignores it) and Buffer
+            // is auto-inserted, so neither is user-paintable.
+            StallKind::Standard | StallKind::Buffer => continue,
         };
         let a = sm.polyline.first().unwrap();
         let b = sm.polyline.last().unwrap();
