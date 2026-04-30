@@ -200,16 +200,15 @@
 <line x1="111.640" y1="172.090" x2="55.820" y2="172.090" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="55.820" y1="172.090" x2="27.910" y2="172.090" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="223.279" y1="27.910" x2="223.279" y2="172.090" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
-<line x1="167.459" y1="27.910" x2="167.459" y2="100" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
+<line x1="167.459" y1="27.910" x2="167.459" y2="172.090" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="111.640" y1="27.910" x2="111.640" y2="100" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="55.820" y1="27.910" x2="55.820" y2="100" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="27.910" y1="100" x2="27.910" y2="27.910" stroke="#a84a1e" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="55.820" y1="100" x2="55.820" y2="172.090" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="111.640" y1="100" x2="111.640" y2="172.090" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
-<line x1="167.459" y1="100" x2="167.459" y2="172.090" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="27.910" y1="100" x2="55.820" y2="100" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <line x1="55.820" y1="100" x2="111.640" y2="100" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
-<line x1="111.640" y1="100" x2="167.459" y2="100" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
+<line x1="111.640" y1="100" x2="150" y2="100" stroke="#3e68a8" stroke-width="0.6" stroke-dasharray="8 5"/>
 <circle cx="27.910" cy="172.090" r="0.8" fill="#a84a1e"/>
 <circle cx="27.910" cy="27.910" r="0.8" fill="#a84a1e"/>
 <circle cx="272.090" cy="27.910" r="0.8" fill="#a84a1e"/>
@@ -225,7 +224,7 @@
 <circle cx="27.910" cy="100" r="0.8" fill="#3e68a8"/>
 <circle cx="55.820" cy="100" r="0.8" fill="#3e68a8"/>
 <circle cx="111.640" cy="100" r="0.8" fill="#3e68a8"/>
-<circle cx="167.459" cy="100" r="0.8" fill="#3e68a8"/>
+<circle cx="150" cy="100" r="0.8" fill="#3e68a8"/>
 </g>
 </g>
 </svg>

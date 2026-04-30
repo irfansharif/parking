@@ -776,26 +776,9 @@ export class Renderer {
       ctx.setLineDash([]);
     }
 
-    // Draw drive line edges (solid green + faint infinite extent)
+    // Draw drive line edges (solid green between control endpoints).
     const allDriveLines = state.layers.annotations ? state.lot.driveLines : [];
     for (const dl of allDriveLines) {
-      const dir = { x: dl.end.x - dl.start.x, y: dl.end.y - dl.start.y };
-      const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y);
-      if (len > 1e-9) {
-        const nx = dir.x / len;
-        const ny = dir.y / len;
-        const ext = 10000;
-        // Faint infinite extent
-        ctx.beginPath();
-        ctx.moveTo(dl.start.x - nx * ext, dl.start.y - ny * ext);
-        ctx.lineTo(dl.end.x + nx * ext, dl.end.y + ny * ext);
-        ctx.strokeStyle = "rgba(50, 200, 100, 0.25)";
-        ctx.lineWidth = 0.5;
-        ctx.setLineDash([4, 4]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-      // Solid control segment
       ctx.beginPath();
       ctx.moveTo(dl.start.x, dl.start.y);
       ctx.lineTo(dl.end.x, dl.end.y);

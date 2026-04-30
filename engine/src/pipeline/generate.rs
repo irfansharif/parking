@@ -207,10 +207,11 @@ pub fn generate(input: GenerateInput) -> ParkingLayout {
     }
 }
 
-/// Clip drive lines against the inset perimeter/expanded holes and clamp to
-/// the nearest existing aisle graph edge from each control point. This means
-/// a short segment between two inner aisles only extends to those aisles,
-/// while a long segment spanning the lot still clips to the perimeter.
+/// Clip drive lines against the inset perimeter/expanded holes, strictly
+/// within the user-drawn control segment [start, end]. The line never
+/// extends past either endpoint — to reach a target aisle or vertex, the
+/// user moves the endpoint to it.
+///
 /// Returns (graph, splice_anchors) where splice_anchors[i] = Some((drive_line_id, t))
 /// for any vertex placed by the drive-line splice (t is normalized [0, 1] along
 /// the user-drawn line), and None otherwise. Anchors are parallel to graph.vertices.
@@ -258,18 +259,10 @@ fn clip_drive_lines(
         let origin = dl.start;
         let seg_len = dir.length();
 
-        // Find nearest auto graph edge intersections to clamp the extent.
+        // Drive lines operate strictly between their two control endpoints
+        // — no extension to the nearest graph edge or perimeter beyond.
+        // To reach a target aisle/vertex, move the endpoint to it.
         let graph_hits = intersect_line_with_graph_edges(origin, dir_norm, auto_graph);
-        // t_start: nearest hit at or before control point A (t <= 0)
-        let t_start = graph_hits.iter().rev()
-            .find(|&&t| t <= 0.0)
-            .copied()
-            .unwrap_or(f64::NEG_INFINITY);
-        // t_end: nearest hit at or after control point B (t >= seg_len)
-        let t_end = graph_hits.iter()
-            .find(|&&t| t >= seg_len)
-            .copied()
-            .unwrap_or(f64::INFINITY);
 
         // Intersect with inset perimeter (not raw boundary).
         let outer_hits = intersect_line_polygon(origin, dir_norm, &outer_loop);
@@ -292,11 +285,11 @@ fn clip_drive_lines(
             intervals = subtract_intervals(&intervals, &hole_ivs);
         }
 
-        // Clamp intervals to [t_start, t_end] — the nearest graph edges.
+        // Clamp intervals to [0, seg_len] — strictly the user-drawn segment.
         intervals = intervals.iter()
             .filter_map(|&(a, b)| {
-                let a = a.max(t_start);
-                let b = b.min(t_end);
+                let a = a.max(0.0);
+                let b = b.min(seg_len);
                 if a < b { Some((a, b)) } else { None }
             })
             .collect();
@@ -306,16 +299,14 @@ fn clip_drive_lines(
         // Split each interval at interior graph edge crossings so vertices
         // land exactly on graph edges regardless of control point placement.
         for &(ta, tb) in &intervals {
-            // Use graph edge crossings as split points — both interior
-            // and perimeter. This avoids polygon intersection positions
-            // which can differ slightly from graph edges.
-            let mut splits: Vec<f64> = Vec::new();
+            // Splits: the interval endpoints (so the segment is covered end
+            // to end) plus every graph hit that lies strictly inside it.
+            let mut splits: Vec<f64> = vec![ta, tb];
             for &t in &graph_hits {
-                if t >= ta - 3.0 && t <= tb + 3.0 {
+                if t > ta + 0.5 && t < tb - 0.5 {
                     splits.push(t);
                 }
             }
-            if splits.is_empty() { continue; }
             splits.sort_by(|a, b| a.partial_cmp(b).unwrap());
             // Deduplicate nearby splits.
             let mut deduped = vec![splits[0]];
@@ -339,6 +330,16 @@ fn clip_drive_lines(
         }
     }
 
+    // Split drive edges at their mutual crossings. Each drive line on its
+    // own contributes only collinear edges, so this only fires across
+    // edges from different drive lines. Without this pass, two drive
+    // lines that cross (typical case: a partitioning drive line acting as
+    // a region boundary, and another drive line drawn through it) would
+    // visually intersect without sharing a vertex — `clip_drive_lines`
+    // intersects each line independently against `auto_graph` only, so
+    // drive-vs-drive crossings slip through.
+    split_drive_edge_crossings(&mut vertices, &mut edges, &mut anchors, 0.5);
+
     let graph = DriveAisleGraph {
         vertices,
         edges,
@@ -346,6 +347,100 @@ fn clip_drive_lines(
     };
     debug_assert_eq!(graph.vertices.len(), anchors.len());
     (graph, anchors)
+}
+
+/// Split drive edges at their mutual crossings. Mirrors
+/// `graph::aisle::split_at_crossings` but operates on a single
+/// `Vec<AisleEdge>` (preserving each edge's metadata) and a parallel
+/// `anchors` vector so newly inserted crossing vertices stay paired with
+/// the drive-line splice-anchor table.
+fn split_drive_edge_crossings(
+    vertices: &mut Vec<Vec2>,
+    edges: &mut Vec<AisleEdge>,
+    anchors: &mut Vec<Option<(u32, f64)>>,
+    tol: f64,
+) {
+    let n = edges.len();
+    let mut splits: Vec<Vec<(f64, usize)>> = vec![Vec::new(); n];
+
+    for i in 0..n {
+        let pa = vertices[edges[i].start];
+        let da = vertices[edges[i].end] - pa;
+        let la = da.length();
+        if la < 1e-12 { continue; }
+
+        for j in (i + 1)..n {
+            let pb = vertices[edges[j].start];
+            let db = vertices[edges[j].end] - pb;
+            let lb = db.length();
+            if lb < 1e-12 { continue; }
+
+            let denom = da.cross(db);
+            if denom.abs() < 1e-12 { continue; }
+
+            let h = pb - pa;
+            let ta = h.cross(db) / denom;
+            let tb = h.cross(da) / denom;
+
+            if ta > tol / la && ta < 1.0 - tol / la
+                && tb > tol / lb && tb < 1.0 - tol / lb
+            {
+                let pt = pa + da * ta;
+                // Find or add a vertex at the crossing. New vertices need a
+                // parallel `None` anchor entry to keep the two arrays aligned.
+                let vi = {
+                    let mut found = None;
+                    for (k, v) in vertices.iter().enumerate() {
+                        if (*v - pt).length() < tol {
+                            found = Some(k);
+                            break;
+                        }
+                    }
+                    if let Some(k) = found {
+                        k
+                    } else {
+                        let k = vertices.len();
+                        vertices.push(pt);
+                        anchors.push(None);
+                        k
+                    }
+                };
+                splits[i].push((ta, vi));
+                splits[j].push((tb, vi));
+            }
+        }
+    }
+
+    if splits.iter().all(|s| s.is_empty()) {
+        return;
+    }
+
+    let original = std::mem::take(edges);
+    for (i, edge) in original.into_iter().enumerate() {
+        if splits[i].is_empty() {
+            edges.push(edge);
+            continue;
+        }
+        splits[i].sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut prev = edge.start;
+        for &(_, vi) in &splits[i] {
+            edges.push(AisleEdge {
+                start: prev,
+                end: vi,
+                width: edge.width,
+                interior: edge.interior,
+                direction: edge.direction.clone(),
+            });
+            prev = vi;
+        }
+        edges.push(AisleEdge {
+            start: prev,
+            end: edge.end,
+            width: edge.width,
+            interior: edge.interior,
+            direction: edge.direction.clone(),
+        });
+    }
 }
 
 /// Like find_or_add_vertex but also tracks the splice anchor for the

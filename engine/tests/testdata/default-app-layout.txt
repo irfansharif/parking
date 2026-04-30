@@ -146,7 +146,7 @@ region-override region=0x00002663fca3dc50 angle=92
 
 generate
 ----
-total_stalls: 992
-faces: 37 (boundary: 2, interior: 35)
-graph: 100 vertices, 121 edges (perimeter: 65, interior: 56)
+total_stalls: 1004
+faces: 36 (boundary: 2, interior: 34)
+graph: 100 vertices, 119 edges (perimeter: 65, interior: 54)
 regions: 2

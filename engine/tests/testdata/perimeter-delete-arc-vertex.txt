@@ -37,7 +37,7 @@ annotation delete-vertex on=perimeter loop=outer edge=2→3 t=0.50
 # anything non-zero would surface here.
 generate
 ----
-total_stalls: 57
+total_stalls: 59
 faces: 4 (boundary: 1, interior: 3)
 graph: 13 vertices, 14 edges (perimeter: 11, interior: 3)
 regions: 1

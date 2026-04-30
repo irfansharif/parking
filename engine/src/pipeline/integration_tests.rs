@@ -880,6 +880,57 @@ mod tests {
     }
 
 
+    /// Two drive lines that cross each other must share a vertex at the
+    /// crossing. Without an explicit drive-vs-drive splice pass, each
+    /// drive line is processed independently against the auto graph and
+    /// they pass through each other topologically — visually intersecting
+    /// without any junction.
+    #[test]
+    fn test_drive_line_drive_line_crossing() {
+        use crate::pipeline::generate::generate;
+        use crate::types::{GenerateInput, DriveLine};
+
+        let input = GenerateInput {
+            boundary: Polygon {
+                outer: vec![
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(400.0, 0.0),
+                    Vec2::new(400.0, 300.0),
+                    Vec2::new(0.0, 300.0),
+                ],
+                ..Default::default()
+            },
+            // Horizontal partitioning line at y=150 + vertical non-partitioning
+            // line at x=150. They cross at (150, 150).
+            drive_lines: vec![
+                DriveLine {
+                    start: Vec2::new(0.0, 150.0),
+                    end: Vec2::new(400.0, 150.0),
+                    hole_pin: None, id: 1, partitions: true,
+                },
+                DriveLine {
+                    start: Vec2::new(150.0, 60.0),
+                    end: Vec2::new(150.0, 240.0),
+                    hole_pin: None, id: 2, partitions: false,
+                },
+            ],
+            annotations: vec![],
+            params: ParkingParams::default(),
+            debug: DebugToggles::default(),
+            region_overrides: vec![],
+            stall_modifiers: Vec::new(),
+        };
+
+        let layout = generate(input);
+        let g = &layout.resolved_graph;
+        let crossing = g.vertices.iter().enumerate().find(|(_, v)| {
+            (v.x - 150.0).abs() < 0.5 && (v.y - 150.0).abs() < 0.5
+        });
+        let (idx, _) = crossing.expect("vertex at drive-line × drive-line crossing");
+        let degree = g.edges.iter().filter(|e| e.start == idx || e.end == idx).count();
+        assert_eq!(degree, 4, "crossing must be a degree-4 junction");
+    }
+
     /// End-to-end test: use the full generate pipeline with a TwoWay
     /// annotation on an auto-generated graph (simulating the UI flow).
     #[test]

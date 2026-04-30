@@ -1,6 +1,5 @@
-# Long drive line (both endpoints past the graph edge that it crosses).
-# The splice vertex at x≈180.3 should land at the exact same precise
-# coordinate as in the short-line variant.
+# Long drive line (50,100) -> (250,100). Splice vertices land at every
+# auto-graph crossing strictly inside the control segment.
 
 polygon outer
 (0,0)
@@ -20,5 +19,5 @@ generate
 ----
 total_stalls: 68
 faces: 11 (boundary: 1, interior: 10)
-graph: 18 vertices, 27 edges (perimeter: 14, interior: 13)
+graph: 18 vertices, 25 edges (perimeter: 12, interior: 13)
 regions: 1

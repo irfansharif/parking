@@ -16,7 +16,7 @@
 //! classify each face contour edge against the corridor that carved it.
 
 use i_overlay::mesh::stroke::offset::StrokeOffset;
-use i_overlay::mesh::style::{LineJoin, StrokeStyle};
+use i_overlay::mesh::style::{LineCap, LineJoin, StrokeStyle};
 
 use crate::geom::boolean::{self, FillRule};
 use crate::types::*;
@@ -93,8 +93,21 @@ pub(crate) fn merge_corridor_surface(
     aisle_width: f64,
 ) -> Vec<Vec<Vec<Vec2>>> {
     let stroke_width = aisle_width * 2.0;
+    // Round caps on segment endpoints. Each interior aisle is its own
+    // 2-point polyline; at every junction multiple aisles meet and their
+    // round semicircles compose into a full disk that covers oblique
+    // angles. With butt caps, an oblique 4-way junction (e.g., a diagonal
+    // drive line crossing a perpendicular cross-aisle) leaves triangular
+    // gaps on the obtuse-angle sides, which survive into the face
+    // polygon as "nubs" and let stalls encroach into the corridor.
+    // `Round(angle)` controls the arc segment size; pi/16 ≈ 11° is fine
+    // for visualisation and keeps the polyline count modest.
+    let cap = || LineCap::Round(std::f64::consts::PI / 16.0);
     let make_style = || {
-        StrokeStyle::new(stroke_width).line_join(LineJoin::Miter(MITER_MIN_SHARP_ANGLE))
+        StrokeStyle::new(stroke_width)
+            .line_join(LineJoin::Miter(MITER_MIN_SHARP_ANGLE))
+            .start_cap(cap())
+            .end_cap(cap())
     };
 
     let mut union_paths: Vec<Vec<Vec2>> = Vec::new();

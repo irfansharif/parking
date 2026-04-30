@@ -1,5 +1,6 @@
-# Short drive line (endpoint BEFORE the graph edge that it crosses).
-# The splice vertex must still land on the vertical edge at x≈180.3.
+# Short drive line (50,100) -> (130,100). Splice vertices land at every
+# auto-graph crossing strictly inside the control segment — the line
+# never extends past either endpoint to reach a further edge.
 
 polygon outer
 (0,0)
@@ -17,7 +18,7 @@ drive-line (50,100) -> (130,100)
 
 generate
 ----
-total_stalls: 86
-faces: 9 (boundary: 1, interior: 8)
-graph: 16 vertices, 23 edges (perimeter: 13, interior: 10)
+total_stalls: 90
+faces: 8 (boundary: 1, interior: 7)
+graph: 16 vertices, 21 edges (perimeter: 12, interior: 9)
 regions: 1

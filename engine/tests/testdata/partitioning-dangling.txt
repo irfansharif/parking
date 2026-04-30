@@ -20,5 +20,5 @@ generate
 ----
 total_stalls: 86
 faces: 9 (boundary: 1, interior: 8)
-graph: 16 vertices, 23 edges (perimeter: 13, interior: 10)
+graph: 16 vertices, 22 edges (perimeter: 13, interior: 9)
 regions: 1
