@@ -24,7 +24,7 @@ drive-line (471.79,-42.94) -> (139.44,696.35)
 
 generate
 ----
-total_stalls: 731
+total_stalls: 735
 faces: 60 (boundary: 2, interior: 58)
 graph: 96 vertices, 160 edges (perimeter: 50, interior: 110)
 regions: 1

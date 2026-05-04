@@ -18,6 +18,6 @@ drive-line (50,100) -> (250,100)
 generate
 ----
 total_stalls: 68
-faces: 11 (boundary: 1, interior: 10)
+faces: 9 (boundary: 1, interior: 8)
 graph: 18 vertices, 25 edges (perimeter: 12, interior: 13)
 regions: 1

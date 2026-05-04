@@ -22,7 +22,7 @@ set stalls-per-face=179
 
 generate
 ----
-total_stalls: 1083
+total_stalls: 1085
 faces: 20 (boundary: 2, interior: 18)
 graph: 43 vertices, 61 edges (perimeter: 43, interior: 18)
 regions: 1

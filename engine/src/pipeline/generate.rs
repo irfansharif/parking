@@ -508,7 +508,14 @@ fn append_graph(
     b: DriveAisleGraph,
     b_anchors: Vec<Option<(u32, f64)>>,
 ) -> (DriveAisleGraph, Vec<Option<(u32, f64)>>) {
-    let vtx_tolerance = 1.0;
+    // vtx_tolerance is for "drive vertex matches an existing auto vertex
+    // at the same world position" — UI snap-to-vertex lands coordinates
+    // exactly, so a tight threshold is enough. With 1.0 a drive line drawn
+    // close to an auto interior aisle would silently snap onto it: every
+    // splice point would merge with the auto aisle's endpoints, every
+    // middle drive sub-edge would be skipped as a duplicate of the auto
+    // aisle's edge, and the corridor would be lost.
+    let vtx_tolerance = 0.05;
     let edge_tolerance = 2.0;
     let a_vertex_count = a.vertices.len();
     let mut vertices = a.vertices;

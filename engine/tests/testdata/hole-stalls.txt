@@ -20,7 +20,7 @@ polygon hole 3 vertices, ccw, bbox (275.430,150)-(475,350), area 19817.000
 
 generate
 ----
-total_stalls: 530
+total_stalls: 534
 faces: 43 (boundary: 2, interior: 41)
 graph: 66 vertices, 104 edges (perimeter: 43, interior: 61)
 regions: 1

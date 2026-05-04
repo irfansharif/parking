@@ -95,7 +95,7 @@ pub struct ParkingParams {
 }
 
 fn default_min_stalls_per_spine() -> u32 {
-    3
+    2
 }
 
 fn default_arc_discretize_tolerance() -> f64 {
@@ -160,7 +160,7 @@ impl Default for ParkingParams {
             stalls_per_face: 15,
             use_regions: false,
             island_stall_interval: 8,
-            min_stalls_per_spine: 3,
+            min_stalls_per_spine: 2,
             arc_discretize_tolerance: 5.0,
             spine_merge_angle_deg: 8.1,
             spine_merge_endpoint_tol: 1.0,

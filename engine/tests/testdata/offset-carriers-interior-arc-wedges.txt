@@ -29,7 +29,7 @@ set stall-angle=90
 
 generate
 ----
-total_stalls: 64
+total_stalls: 76
 faces: 6 (boundary: 1, interior: 5)
 graph: 34 vertices, 53 edges (perimeter: 22, interior: 31)
 regions: 3

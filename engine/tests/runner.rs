@@ -168,6 +168,7 @@ fn drive_line_intersection() {
     run_fixture(&testdata_dir().join("drive-line-intersection.txt"));
 }
 
+
 #[test]
 fn partitioning_two_regions() {
     run_fixture(&testdata_dir().join("partitioning-two-regions.txt"));

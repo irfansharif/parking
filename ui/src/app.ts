@@ -134,6 +134,15 @@ export class App {
     this.generateFn = generateFn;
     this.onUpdate = onUpdate;
 
+    // Drive-line ids for the default lot's pre-seeded lines flow through
+    // the same monotonic allocator user-created lines use. Annotations
+    // that reference these lines key off these allocated ids — never
+    // hand-written numbers — so a user-minted line can never collide
+    // with a default-lot line, and the allocator is implicitly sync'd.
+    const defaultDl1 = this.newDriveLineId();
+    const defaultDl2 = this.newDriveLineId();
+    const defaultDl3 = this.newDriveLineId();
+
     const defaultLot: ParkingLot = {
       boundary: {
         outer: [
@@ -179,7 +188,7 @@ export class App {
         },
         {
           kind: "DeleteEdge",
-          target: { on: "DriveLine", id: 1, t: 0.80 },
+          target: { on: "DriveLine", id: defaultDl1, t: 0.80 },
         },
         {
           kind: "DeleteEdge",
@@ -272,9 +281,9 @@ export class App {
         90,
       ),
       driveLines: [
-        { id: 1, start: { x: 312.28, y: 518.60 }, end: { x: 144.72, y: 515.73 }, partitions: false },
-        { id: 2, start: { x: 1186.57, y: 153.66 }, end: { x: 475.79, y: 349.25 }, partitions: true },
-        { id: 3, start: { x: 446.56, y: 335.61 }, end: { x: 454.87, y: -53.66 }, partitions: true },
+        { id: defaultDl1, start: { x: 312.28, y: 518.60 }, end: { x: 144.72, y: 515.73 }, partitions: false },
+        { id: defaultDl2, start: { x: 1186.57, y: 153.66 }, end: { x: 475.79, y: 349.25 }, partitions: true },
+        { id: defaultDl3, start: { x: 446.56, y: 335.61 }, end: { x: 454.87, y: -53.66 }, partitions: true },
       ],
       stallModifiers: [
         {
@@ -341,7 +350,7 @@ export class App {
         stalls_per_face: 29,
         use_regions: true,
         island_stall_interval: 12,
-        min_stalls_per_spine: 3,
+        min_stalls_per_spine: 2,
         arc_discretize_tolerance: 5,
         spine_merge_angle_deg: 8.1,
         spine_merge_endpoint_tol: 1,
